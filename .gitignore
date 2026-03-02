@@ -16,5 +16,9 @@ agent_snapshot_meta.json
 *.out
 *.pid
 
+# Runs directory (raw memories, scratchpads)
+runs/
+raw_memory.ndjson
+
 # Misc
 .DS_Store

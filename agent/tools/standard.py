@@ -265,6 +265,7 @@ def tool_save_snapshot_meta(state: AgentState, path: str) -> ToolResult:
         payload = {
             "long_term": list(state.long_term),
             "evolved_tools": state.meta.get("evolved_tools", {}),
+            "scratchpad": state.meta.get("scratchpad", ""),
         }
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -286,6 +287,7 @@ def tool_load_snapshot_meta(state: AgentState, path: str, overwrite: bool = Fals
 
         long_term = payload.get("long_term", [])
         evolved = payload.get("evolved_tools", {})
+        scratchpad = payload.get("scratchpad", "")
         if not isinstance(long_term, list) or not all(isinstance(x, str) for x in long_term):
             return ToolResult(success=False, output=None, error="snapshot.long_term must be list[str]")
         if not isinstance(evolved, dict):
@@ -293,6 +295,8 @@ def tool_load_snapshot_meta(state: AgentState, path: str, overwrite: bool = Fals
 
         state.long_term = list(long_term)
         state.meta["evolved_tools"] = evolved
+        if isinstance(scratchpad, str):
+            state.meta["scratchpad"] = scratchpad
 
         restored = 0
         skipped = 0

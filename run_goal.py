@@ -6,6 +6,7 @@ from pathlib import Path
 from agent import Agent
 
 DEFAULT_SNAPSHOT = "./agent_snapshot_meta.json"
+DEFAULT_RUNS_DIR = "./runs"
 
 
 def ensure_env_defaults():
@@ -18,6 +19,16 @@ def ensure_env_defaults():
 def main():
     ensure_env_defaults()
 
+    # Per-run workspace (raw memory, scratchpad copies, etc.)
+    from datetime import datetime
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    runs_dir = Path(os.environ.get("RUNS_DIR", DEFAULT_RUNS_DIR))
+    run_dir = runs_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Default raw memory path per run
+    os.environ.setdefault("RAW_MEMORY_PATH", str(run_dir / "raw_memory.ndjson"))
+
     goal = " ".join(sys.argv[1:]).strip() if len(sys.argv) > 1 else ""
     if not goal:
         print("Enter your goal/task, then press Ctrl-D (EOF) to run:\n")
@@ -29,6 +40,19 @@ def main():
 
     snapshot_path = os.environ.get("AGENT_SNAPSHOT", DEFAULT_SNAPSHOT)
     snapshot_exists = Path(snapshot_path).exists()
+
+    # Print scratchpad preview (if any) BEFORE LLM run
+    if snapshot_exists:
+        try:
+            import json
+            snap = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+            sp = snap.get("scratchpad", "") if isinstance(snap, dict) else ""
+            if isinstance(sp, str) and sp.strip():
+                print("\n=== SCRATCHPAD (loaded from snapshot) ===\n")
+                print(sp.strip())
+                print("\n=== END SCRATCHPAD ===\n")
+        except Exception:
+            pass
 
     # Prefix instruction: always load snapshot first (offline restore tool)
     prefix = (
@@ -69,12 +93,19 @@ def main():
         # Resume with same goal (the new info is in short_term)
         state = agent.run(goal, state=state)
 
+    # Always persist a copy of scratchpad for analysis (per-run)
+    try:
+        sp = state.meta.get("scratchpad", "")
+        (run_dir / "scratchpad.md").write_text(sp or "", encoding="utf-8")
+    except Exception:
+        pass
+
     # Optional: persist snapshot after run (so long_term is not lost between processes)
     if os.environ.get("AUTO_SAVE_SNAPSHOT_ON_EXIT", "0") == "1":
         snap = os.environ.get("AGENT_SNAPSHOT", DEFAULT_SNAPSHOT)
         try:
             if "save_snapshot_meta" in state.tools:
-                # call tool directly (offline) to persist long_term + evolved_tools
+                # call tool directly (offline) to persist long_term + evolved_tools + scratchpad
                 state.tools["save_snapshot_meta"].fn(state=state, path=snap)
                 print(f"\n[run_goal] snapshot saved: {snap}")
             else:
@@ -84,6 +115,10 @@ def main():
 
     print("\n=== RUN_GOAL RESULT ===")
     print(state.meta.get("final_answer") or "(no final_answer)")
+
+    print(f"\n[run_goal] run_dir: {run_dir}")
+    print(f"[run_goal] raw_memory: {os.environ.get('RAW_MEMORY_PATH')}")
+    print(f"[run_goal] scratchpad_copy: {run_dir / 'scratchpad.md'}")
 
 
 if __name__ == "__main__":
