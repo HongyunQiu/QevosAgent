@@ -27,6 +27,50 @@ def tool_remember(state: AgentState, content: str) -> ToolResult:
     )
 
 
+def tool_raw_append(state: AgentState, content: str, path: str = "./raw_memory.ndjson") -> ToolResult:
+    """Append raw memory (full-fidelity notes / transcript fragments) to an NDJSON file.
+
+    This is the '原始记忆' channel: never summarize here, just append.
+    """
+    try:
+        if not content:
+            return ToolResult(success=False, output=None, error="content 不能为空")
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json, time
+        rec = {"ts": int(time.time()), "content": content}
+        with p.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+        return ToolResult(success=True, output=f"raw appended: {p.resolve()}")
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+def tool_scratchpad_get(state: AgentState) -> ToolResult:
+    """Get current scratchpad."""
+    return ToolResult(success=True, output=state.meta.get("scratchpad", ""))
+
+
+def tool_scratchpad_set(state: AgentState, content: str) -> ToolResult:
+    """Overwrite scratchpad (editable short-term working memory)."""
+    state.meta["scratchpad"] = (content or "").strip()
+    return ToolResult(success=True, output=f"scratchpad set ({len(state.meta['scratchpad'])} chars)")
+
+
+def tool_scratchpad_append(state: AgentState, content: str) -> ToolResult:
+    """Append to scratchpad."""
+    cur = state.meta.get("scratchpad", "")
+    add = (content or "").strip()
+    if not add:
+        return ToolResult(success=False, output=None, error="content 不能为空")
+    if cur:
+        cur = cur.rstrip() + "\n" + add
+    else:
+        cur = add
+    state.meta["scratchpad"] = cur
+    return ToolResult(success=True, output=f"scratchpad appended ({len(cur)} chars)")
+
+
 def tool_run_python(state: AgentState, code: str) -> ToolResult:
     """在隔离子进程中执行 Python 代码并返回输出。"""
     try:
@@ -297,6 +341,33 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description="把重要发现、结论或经验写入长期记忆，供未来参考",
             args_schema={"content": "要记忆的内容（字符串）"},
             fn=tool_remember,
+        ),
+        ToolSpec(
+            name="raw_append",
+            description="【原始记忆】把原始信息/完整片段追加写入 NDJSON 文件（不总结不去噪）",
+            args_schema={
+                "content": "要追加的原始内容",
+                "path": "文件路径（默认 ./raw_memory.ndjson）",
+            },
+            fn=tool_raw_append,
+        ),
+        ToolSpec(
+            name="scratchpad_get",
+            description="读取草稿本（可编辑的工作短期记忆）",
+            args_schema={},
+            fn=tool_scratchpad_get,
+        ),
+        ToolSpec(
+            name="scratchpad_set",
+            description="覆盖写入草稿本（会替换原内容）",
+            args_schema={"content": "草稿本内容"},
+            fn=tool_scratchpad_set,
+        ),
+        ToolSpec(
+            name="scratchpad_append",
+            description="向草稿本末尾追加内容",
+            args_schema={"content": "要追加的内容"},
+            fn=tool_scratchpad_append,
         ),
         ToolSpec(
             name="think",

@@ -200,7 +200,7 @@ def run(
             hooks.on_iteration_start(state.iteration, state)
 
         # 1. 构建当前 system prompt（工具集可能已进化，每次重新生成）
-        system = build_system_prompt(state.tools, state.long_term)
+        system = build_system_prompt(state.tools, state.long_term, scratchpad=state.meta.get('scratchpad',''))
 
         # 2. 构建消息上下文
         messages = build_context_messages(state)
@@ -330,6 +330,20 @@ def run(
                 "role": "user",
                 "content": feedback,
             })
+
+            # Optional: auto-append raw memory log (full transcript fragments)
+            import os
+            if os.environ.get("AUTO_RAW_LOG", "0") == "1":
+                try:
+                    path = os.environ.get("RAW_MEMORY_PATH", "./raw_memory.ndjson")
+                    # record minimal structured info
+                    state.tools.get("raw_append").fn(
+                        state=state,
+                        content=f"ITER={state.iteration} TOOL={action.tool} ARGS={action.args} RESULT={result.to_str()}",
+                        path=path,
+                    )
+                except Exception:
+                    pass
 
         state.iteration += 1
 

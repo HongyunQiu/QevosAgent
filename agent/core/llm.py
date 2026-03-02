@@ -144,7 +144,7 @@ class AnthropicBackend(LLMBackend):
 
 # ── System Prompt 构建器 ───────────────────────────────────────────────────────
 
-def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str]) -> str:
+def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratchpad: str = "") -> str:
     """
     动态构建 system prompt。
     工具集变化（进化后）时，prompt 会自动更新——这是工具进化能生效的关键。
@@ -167,6 +167,10 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str]) -> str
             f"- {m}" for m in long_term
         )
 
+    scratchpad_section = ""
+    if scratchpad and scratchpad.strip():
+        scratchpad_section = "\n\n## 草稿本（可编辑的工作短期记忆，去噪后的关键信息/计划）\n" + scratchpad.strip()
+
     return f"""你是一个通用自主智能体。你通过循环调用工具来完成任意目标。
 
 ## 输出格式（严格遵守，必须是合法 JSON）
@@ -181,6 +185,7 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str]) -> str
 ## 可用工具
 {tools_section}
 {memory_section}
+{scratchpad_section}
 
 ## 行为准则
 1. 每次只做一个动作（一次工具调用）
