@@ -69,8 +69,12 @@ class Agent:
         self.max_iterations = max_iterations
         self.hooks = console_hooks() if verbose else AgentHooks()
 
-    def run(self, goal: str) -> AgentState:
-        """运行智能体直到目标完成或超过最大迭代次数。"""
+    def run(self, goal: str, state: AgentState = None) -> AgentState:
+        """运行智能体直到目标完成或超过最大迭代次数。
+
+        If `state` is provided, the agent will resume from that state (used for
+        pause/continue workflows).
+        """
         state = run(
             goal=goal,
             llm=self.llm,
@@ -78,6 +82,7 @@ class Agent:
             long_term=self.long_term,
             max_iterations=self.max_iterations,
             hooks=self.hooks,
+            state=state,
         )
         # 把这次运行的长期记忆持久化回 Agent 实例（跨次运行积累经验）
         self.long_term = state.long_term

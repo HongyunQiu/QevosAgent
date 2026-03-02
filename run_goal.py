@@ -47,6 +47,28 @@ def main():
 
     state = agent.run(full_goal)
 
+    # If the agent paused for input, prompt the user and resume.
+    while state.meta.get("paused") and state.meta.get("awaiting_input"):
+        q = state.meta.get("awaiting_input")
+        print("\n=== NEED INPUT ===")
+        print(q)
+        try:
+            user_input = input("\nYour answer> ").strip()
+        except EOFError:
+            print("\n[run_goal] No interactive stdin available (EOF). Please rerun in a real terminal to answer.")
+            break
+        if not user_input:
+            print("No input provided; exiting.")
+            break
+
+        # Inject user input into the same conversation state and resume.
+        state.short_term.append({
+            "role": "user",
+            "content": f"[用户补充信息]\n{user_input}",
+        })
+        # Resume with same goal (the new info is in short_term)
+        state = agent.run(goal, state=state)
+
     print("\n=== RUN_GOAL RESULT ===")
     print(state.meta.get("final_answer") or "(no final_answer)")
 

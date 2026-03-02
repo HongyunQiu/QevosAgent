@@ -341,6 +341,12 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             fn=tool_set_goal,
         ),
         ToolSpec(
+            name="ask_user",
+            description="当缺少关键信息时，向人类提问并暂停本次运行，等待命令行输入后继续",
+            args_schema={"question": "要向人类询问的问题（字符串）"},
+            fn=lambda state, question: ToolResult(success=True, output={"question": question}),
+        ),
+        ToolSpec(
             name="save_snapshot_meta",
             description="保存长期记忆(state.long_term)和进化工具配方(state.meta['evolved_tools'])到一个 JSON 快照文件",
             args_schema={"path": "快照文件路径（如 ./agent_snapshot_meta.json）"},
