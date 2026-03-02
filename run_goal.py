@@ -54,11 +54,16 @@ def main():
         except Exception:
             pass
 
-    # Prefix instruction: always load snapshot first (offline restore tool)
-    prefix = (
-        f"请先调用 load_snapshot_meta(path='{snapshot_path}') 加载快照，恢复长期记忆与工具。"
-        f"如果文件不存在（exists={snapshot_exists}），请先解释缺少什么并给出下一步。\n\n"
-    )
+    # Prefix instruction: load snapshot when available; otherwise proceed without it.
+    if snapshot_exists:
+        prefix = (
+            f"请先调用 load_snapshot_meta(path='{snapshot_path}') 加载快照，恢复长期记忆与工具。\n\n"
+        )
+    else:
+        prefix = (
+            f"提示：快照文件不存在({snapshot_path})。请直接继续完成任务；"
+            f"如确实需要跨次记忆/工具，可在结束时保存快照。\n\n"
+        )
 
     full_goal = prefix + goal
 

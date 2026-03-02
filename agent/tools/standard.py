@@ -53,12 +53,19 @@ def tool_scratchpad_get(state: AgentState) -> ToolResult:
 
 def tool_scratchpad_set(state: AgentState, content: str) -> ToolResult:
     """Overwrite scratchpad (editable short-term working memory)."""
-    state.meta["scratchpad"] = (content or "").strip()
+    import os
+    max_chars = int(os.environ.get("SCRATCHPAD_MAX_CHARS", "2000"))
+    text = (content or "").strip()
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n...[SCRATCHPAD_TRUNCATED]"
+    state.meta["scratchpad"] = text
     return ToolResult(success=True, output=f"scratchpad set ({len(state.meta['scratchpad'])} chars)")
 
 
 def tool_scratchpad_append(state: AgentState, content: str) -> ToolResult:
     """Append to scratchpad."""
+    import os
+    max_chars = int(os.environ.get("SCRATCHPAD_MAX_CHARS", "2000"))
     cur = state.meta.get("scratchpad", "")
     add = (content or "").strip()
     if not add:
@@ -67,6 +74,8 @@ def tool_scratchpad_append(state: AgentState, content: str) -> ToolResult:
         cur = cur.rstrip() + "\n" + add
     else:
         cur = add
+    if len(cur) > max_chars:
+        cur = cur[:max_chars] + "\n...[SCRATCHPAD_TRUNCATED]"
     state.meta["scratchpad"] = cur
     return ToolResult(success=True, output=f"scratchpad appended ({len(cur)} chars)")
 

@@ -169,7 +169,12 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratc
 
     scratchpad_section = ""
     if scratchpad and scratchpad.strip():
-        scratchpad_section = "\n\n## 草稿本（可编辑的工作短期记忆，去噪后的关键信息/计划）\n" + scratchpad.strip()
+        scratchpad_section = (
+            "\n\n## 草稿本（可编辑的工作短期记忆，去噪后的关键信息/计划）\n"
+            "- 要求：简短、结构化、可随时重写；不要粘贴原始大段内容（原文应写入 raw_memory 或文件并引用路径）。\n"
+            "- 建议长度：<= 2000 字符。\n\n"
+            + scratchpad.strip()
+        )
 
     return f"""你是一个通用自主智能体。你通过循环调用工具来完成任意目标。
 
