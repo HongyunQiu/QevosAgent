@@ -114,9 +114,11 @@ def console_hooks() -> AgentHooks:
     def on_result(r):
         icon = "✅" if r.success else "❌"
         text = r.to_str()
-        # 截断过长输出
-        if len(text) > 500:
-            text = text[:500] + "...[截断]"
+        # 截断过长输出（可配置，避免刷屏）
+        import os
+        max_len = int(os.environ.get("TOOL_RESULT_PRINT_MAX_CHARS", "5000"))
+        if len(text) > max_len:
+            text = text[:max_len] + "...[截断]"
         print(f"{icon} 结果: {text}")
 
     def on_done(ans):
