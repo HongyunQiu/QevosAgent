@@ -246,6 +246,10 @@ def run(
         # 4. 解析动作
         action = parse_response(raw_response)
 
+        # Reset JSON-parse retry counter on successful parsing.
+        if action.type != ActionType.ERROR:
+            state.meta.pop("json_parse_retry", None)
+
         # 回调：输出思考
         if hooks.on_thought and action.thought:
             hooks.on_thought(action.thought)
@@ -296,10 +300,41 @@ def run(
             error_msg = action.thought
             if hooks.on_error:
                 hooks.on_error(error_msg)
+
+            # Self-heal: JSON parse errors are often caused by truncated output when
+            # tool_call args contain long strings (e.g. Python code). In that case,
+            # automatically increase max_tokens and retry.
+            import os
+            if (
+                isinstance(error_msg, str)
+                and "JSON 解析失败" in error_msg
+                and hasattr(llm, "max_tokens")
+            ):
+                retry_n = int(state.meta.get("json_parse_retry", 0))
+                retry_max = int(os.environ.get("JSON_PARSE_RETRY_MAX", "3"))
+                cap = int(os.environ.get("LLM_MAX_TOKENS_CAP", "8192"))
+                old = int(getattr(llm, "max_tokens", 0) or 0)
+                if retry_n < retry_max and old > 0 and old < cap:
+                    new = min(cap, max(old + 1, old * 2))
+                    try:
+                        setattr(llm, "max_tokens", new)
+                    except Exception:
+                        pass
+                    state.meta["json_parse_retry"] = retry_n + 1
+                    state.long_term.append(
+                        f"[自我修复] JSON 解析失败，疑似输出被截断：max_tokens {old}→{new} 后重试。"
+                    )
+                    if hooks.on_error:
+                        hooks.on_error(f"[自我修复] 提升 max_tokens {old}→{new} 并重试")
+
             # 把错误反馈给 LLM，让它自我修正
             state.short_term.append({
                 "role": "user",
-                "content": f"[系统] 输出格式错误，请严格按照 JSON 格式重新回复。错误详情: {error_msg}"
+                "content": (
+                    "[系统] 输出格式错误，请严格按照 JSON 格式重新回复。"
+                    "只输出 JSON，不要额外文本；如需调用工具，请尽量让 args 简短（例如把长代码放在多行字符串中或拆步）。"
+                    f"错误详情: {error_msg}"
+                )
             })
             state.iteration += 1
             continue
