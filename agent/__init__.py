@@ -51,7 +51,8 @@ class Agent:
                 model=model or os.environ.get("OPENAI_MODEL") or "gpt-4o",
                 api_key=api_key,
                 base_url=base_url,
-                max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "2048")),
+                # Default higher because tool_call JSON (esp. long code strings) is easy to truncate.
+                max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "4096")),
             )
         elif backend == "anthropic":
             self.llm = AnthropicBackend(
