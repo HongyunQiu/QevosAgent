@@ -27,14 +27,20 @@ def tool_remember(state: AgentState, content: str) -> ToolResult:
     )
 
 
-def tool_raw_append(state: AgentState, content: str, path: str = "./raw_memory.ndjson") -> ToolResult:
+def tool_raw_append(state: AgentState, content: str, path: str = "") -> ToolResult:
     """Append raw memory (full-fidelity notes / transcript fragments) to an NDJSON file.
 
     This is the '原始记忆' channel: never summarize here, just append.
+
+    Notes:
+    - If `path` is empty, we default to env RAW_MEMORY_PATH (set by run_goal.py per-run),
+      falling back to ./raw_memory.ndjson.
     """
     try:
         if not content:
             return ToolResult(success=False, output=None, error="content 不能为空")
+        if not path:
+            path = os.environ.get("RAW_MEMORY_PATH", "./raw_memory.ndjson")
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         import json as _json, time
@@ -360,7 +366,7 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description="【原始记忆】把原始信息/完整片段追加写入 NDJSON 文件（不总结不去噪）",
             args_schema={
                 "content": "要追加的原始内容",
-                "path": "文件路径（默认 ./raw_memory.ndjson）",
+                "path": "文件路径（可选；默认使用环境变量 RAW_MEMORY_PATH，其次 ./raw_memory.ndjson）",
             },
             fn=tool_raw_append,
         ),
