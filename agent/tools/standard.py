@@ -151,9 +151,15 @@ def tool_run_python(state: AgentState, code: str) -> ToolResult:
 
 
 def tool_write_file(state: AgentState, path: str, content: str) -> ToolResult:
-    """把内容写入文件（自动创建父目录）。"""
+    """把内容写入文件（自动创建父目录）。
+
+    Supports env-var expansion in path, e.g. "$RUN_DIR/artifacts/x.json".
+    """
     try:
-        p = Path(path)
+        import os
+        # Expand $VARS and ~
+        path2 = os.path.expandvars(os.path.expanduser(path))
+        p = Path(path2)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return ToolResult(
@@ -165,9 +171,14 @@ def tool_write_file(state: AgentState, path: str, content: str) -> ToolResult:
 
 
 def tool_read_file(state: AgentState, path: str) -> ToolResult:
-    """读取文件内容。"""
+    """读取文件内容。
+
+    Supports env-var expansion in path, e.g. "$RUN_DIR/artifacts/x.json".
+    """
     try:
-        content = Path(path).read_text(encoding="utf-8")
+        import os
+        path2 = os.path.expandvars(os.path.expanduser(path))
+        content = Path(path2).read_text(encoding="utf-8")
         return ToolResult(success=True, output=content)
     except FileNotFoundError:
         return ToolResult(success=False, output=None, error=f"文件不存在: {path}")
