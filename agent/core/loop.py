@@ -324,7 +324,8 @@ def run(
             # The model must self-define acceptance criteria + evidence, then we
             # do minimal hard checks (e.g. claimed artifact paths exist). If the
             # gate fails, we DO NOT exit; we append a system feedback and keep looping.
-            def _acceptance_gate(state: AgentState, final_answer: str | None):
+            from typing import Optional
+            def _acceptance_gate(state: AgentState, final_answer: Optional[str]):
                 import os, re
                 from pathlib import Path
 
