@@ -302,7 +302,8 @@ def tool_load_snapshot_meta(state: AgentState, path: str, overwrite: bool = Fals
 
         long_term = payload.get("long_term", [])
         evolved = payload.get("evolved_tools", {})
-        scratchpad = payload.get("scratchpad", "")
+        # scratchpad is intentionally NOT restored by default to avoid stale/noisy runs.
+        # If you want scratchpad persistence, re-enable restoration here.
         if not isinstance(long_term, list) or not all(isinstance(x, str) for x in long_term):
             return ToolResult(success=False, output=None, error="snapshot.long_term must be list[str]")
         if not isinstance(evolved, dict):
@@ -310,8 +311,6 @@ def tool_load_snapshot_meta(state: AgentState, path: str, overwrite: bool = Fals
 
         state.long_term = list(long_term)
         state.meta["evolved_tools"] = evolved
-        if isinstance(scratchpad, str):
-            state.meta["scratchpad"] = scratchpad
 
         restored = 0
         skipped = 0

@@ -26,6 +26,9 @@ def main():
     run_dir = runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Per-run dirs exposed to the agent
+    os.environ.setdefault("RUN_DIR", str(run_dir))
+
     # Default raw memory path per run
     os.environ.setdefault("RAW_MEMORY_PATH", str(run_dir / "raw_memory.ndjson"))
 
@@ -41,29 +44,40 @@ def main():
     snapshot_path = os.environ.get("AGENT_SNAPSHOT", DEFAULT_SNAPSHOT)
     snapshot_exists = Path(snapshot_path).exists()
 
-    # Print scratchpad preview (if any) BEFORE LLM run
-    if snapshot_exists:
-        try:
-            import json
-            snap = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
-            sp = snap.get("scratchpad", "") if isinstance(snap, dict) else ""
-            if isinstance(sp, str) and sp.strip():
-                print("\n=== SCRATCHPAD (loaded from snapshot) ===\n")
-                print(sp.strip())
-                print("\n=== END SCRATCHPAD ===\n")
-        except Exception:
-            pass
+    # Scratchpad preview printing disabled: scratchpad is often stale/low-signal and noisy in logs.
 
     # Prefix instruction: load snapshot when available; otherwise proceed without it.
     if snapshot_exists:
         prefix = (
-            f"请先调用 load_snapshot_meta(path='{snapshot_path}') 加载快照，恢复长期记忆与工具。\n\n"
+            f"你必须先调用 load_snapshot_meta(path='{snapshot_path}') 加载快照，恢复长期记忆与工具。\n"
+            f"注意：加载快照只是准备步骤；完成后必须继续完成下面的用户目标，绝不能在此提前 done。\n\n"
         )
     else:
         prefix = (
-            f"提示：快照文件不存在({snapshot_path})。请直接继续完成任务；"
+            f"提示：快照文件不存在({snapshot_path})。请直接继续完成下面的用户目标；"
             f"如确实需要跨次记忆/工具，可在结束时保存快照。\n\n"
         )
+
+    # Load repo conventions (OpenClaw-style) if present.
+    # Keep it short; it's a hard constraint but should not bloat prompts.
+    conventions = ""
+    try:
+        p = Path("./AGENTS.md")
+        if p.exists():
+            conventions = p.read_text(encoding="utf-8").strip()
+    except Exception:
+        conventions = ""
+
+    if conventions:
+        prefix = (
+            prefix
+            + "【总规范】你必须遵守仓库根目录的 AGENTS.md（运行规范）。\n"
+            + f"本次运行 RUN_DIR={run_dir}；所有临时/中间产物必须写入 {run_dir}/artifacts/。\n\n"
+            + conventions
+            + "\n\n"
+        )
+    else:
+        prefix = prefix + f"提示：本次运行 RUN_DIR={run_dir}。建议将临时/中间产物写入 {run_dir}/artifacts/。\n\n"
 
     full_goal = prefix + goal
 
