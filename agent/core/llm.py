@@ -215,6 +215,10 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratc
 - 当任务需要多步执行时：
   1) 在开始执行前，先用 scratchpad_set 写出一个简短计划/分解（3-8 条即可）。
   2) 每次工具调用得到关键新信息后，用 scratchpad_append 追加“关键发现/结论/下一步”。
+- 在准备结束(action=done)之前，必须在草稿本追加一个 **ACCEPTANCE** 区块（验收自评）：
+  - criteria: 本次任务的验收标准
+  - evidence: 证据（文件路径/关键片段），尤其是你声称写入的 artifacts 路径
+  - verdict: PASS/FAIL
 - 草稿本必须：简短、结构化、可随时重写；禁止粘贴大段原文（原文应写入 artifacts 文件并在草稿本引用路径）。
 - 长度限制：<= 2000 字符（系统会截断）。
 """

@@ -175,6 +175,29 @@ def run(
             tools=dict(tools),  # 复制一份，允许运行时修改（进化）
             long_term=list(long_term or []),
         )
+        # Seed scratchpad with the *raw user goal* (during-run visibility).
+        # Avoid including injected prefixes/policies (kept elsewhere in prompt).
+        try:
+            import os
+            raw_goal = (os.environ.get("USER_GOAL") or goal).strip()
+        except Exception:
+            raw_goal = goal.strip()
+        # Keep task description separately so scratchpad_set won't accidentally wipe it.
+        state.meta["_task_desc"] = raw_goal
+
+        # The model may overwrite/extend it via scratchpad_set/append.
+        state.meta["scratchpad"] = f"任务描述:\n{raw_goal}\n"
+        try:
+            import os
+            from pathlib import Path
+            run_dir = os.environ.get("RUN_DIR")
+            if run_dir:
+                p = Path(run_dir) / "scratchpad.md"
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(state.meta["scratchpad"], encoding="utf-8")
+        except Exception:
+            pass
+
         # 初始用户消息
         state.short_term.append({
             "role": "user",
@@ -297,6 +320,83 @@ def run(
 
         # 6. 根据动作类型分支处理
         if action.type == ActionType.DONE:
+            # ── Acceptance gate ─────────────────────────────────────────────
+            # The model must self-define acceptance criteria + evidence, then we
+            # do minimal hard checks (e.g. claimed artifact paths exist). If the
+            # gate fails, we DO NOT exit; we append a system feedback and keep looping.
+            def _acceptance_gate(state: AgentState, final_answer: str | None):
+                import os, re
+                from pathlib import Path
+
+                sp = state.meta.get("scratchpad", "")
+                if not isinstance(sp, str):
+                    sp = ""
+
+                # Require a self-check block in scratchpad.
+                # Format (recommended):
+                #   ACCEPTANCE:
+                #   - criteria: ...
+                #   - evidence: runs/.../artifacts/xxx.md
+                #   - verdict: PASS
+                if "ACCEPTANCE" not in sp.upper():
+                    return False, [
+                        {
+                            "code": "acceptance_missing",
+                            "message": "缺少验收自评。请在草稿本追加一个 ACCEPTANCE 区块：包含验收标准(criteria)、证据(evidence 路径/片段)与结论(verdict)。",
+                        }
+                    ]
+
+                # Minimal hard checks: any claimed artifact paths in scratchpad/final_answer must exist.
+                text = (sp or "") + "\n" + (final_answer or "")
+                # match runs/... paths
+                paths = set(re.findall(r"(runs/\d{8}-\d{6}/[^\s\)\]\}<>\"']+)", text))
+                # Also allow $RUN_DIR placeholder
+                run_dir = os.environ.get("RUN_DIR")
+                if run_dir:
+                    # Expand common pattern like $RUN_DIR/artifacts/x
+                    for m in re.findall(r"\$RUN_DIR/([^\s\)\]\}<>\"']+)", text):
+                        paths.add(str(Path(run_dir) / m))
+
+                failures = []
+                for p in sorted(paths):
+                    pp = Path(p)
+                    # normalize relative to repo root for runs/... paths
+                    if not pp.is_absolute() and str(pp).startswith("runs/"):
+                        pp = Path(pp)
+                    if not pp.exists():
+                        failures.append({
+                            "code": "artifact_missing",
+                            "message": f"宣称/引用的产物不存在: {p}。若应生成该文件，请先 write_file 落盘后再 done。",
+                        })
+
+                if failures:
+                    return False, failures
+
+                return True, []
+
+            passed, failures = _acceptance_gate(state, action.final_answer)
+            if not passed:
+                state.meta.setdefault("acceptance_failures", []).append({
+                    "iteration": state.iteration,
+                    "failures": failures,
+                })
+                if hooks.on_error:
+                    hooks.on_error("[验收失败] 未通过验收，继续 loop 进行补救")
+
+                # Feed back to the model with concrete failures.
+                state.short_term.append({
+                    "role": "user",
+                    "content": (
+                        "[系统][验收失败] 你刚才尝试 done，但未通过验收，因此不会退出。\n"
+                        "你必须先补救并满足验收，再次 done。\n\n"
+                        f"失败原因: {json.dumps(failures, ensure_ascii=False, indent=2)}\n\n"
+                        "补救建议: 若缺少产物文件，请调用 write_file 生成；若缺少验收自评，请用 scratchpad_append 追加 ACCEPTANCE 区块(标准+证据+结论)。"
+                    ),
+                })
+                state.iteration += 1
+                continue
+
+            # Gate passed: finalize
             if hooks.on_done:
                 hooks.on_done(action.final_answer or "（无最终输出）")
             state.meta["final_answer"] = action.final_answer
