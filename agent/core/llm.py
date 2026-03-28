@@ -227,21 +227,49 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratc
 # ── 响应解析器 ────────────────────────────────────────────────────────────────
 
 def parse_response(raw: str) -> Action:
+    """Parse the LLM raw response into an Action.
+
+    The model is instructed to output exactly one JSON object, but in practice it
+    may:
+      - wrap JSON in markdown fences
+      - prepend/append extra text
+      - output multiple JSON objects back-to-back
+
+    We therefore try, in order:
+      1) extract ```json ...``` fenced block
+      2) parse the entire trimmed text as JSON
+      3) fall back to extracting the *first* JSON object via JSONDecoder.raw_decode
+
+    This makes the agent robust to the common "Extra data" and "prefix text" errors.
     """
-    把 LLM 的原始文本解析成 Action。
-    做了防御性处理：模型有时会在 JSON 外面包裹 markdown 代码块。
-    """
-    # 尝试提取 ```json ... ``` 块
-    match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
+    # 1) Try extracting a fenced JSON block.
+    match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL | re.IGNORECASE)
     text = match.group(1).strip() if match else raw.strip()
 
+    data = None
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as e:
-        return Action(
-            type=ActionType.ERROR,
-            thought=f"JSON 解析失败: {e}\n原始输出: {raw[:300]}"
-        )
+    except json.JSONDecodeError:
+        # 3) Fallback: find and decode the first JSON object within the text.
+        # This handles cases like:
+        #   "First tool call.\n{...}" or "{...}\n{...}"
+        try:
+            s = text
+            start = s.find("{")
+            if start == -1:
+                raise
+            dec = json.JSONDecoder()
+            obj, end = dec.raw_decode(s[start:])
+            data = obj
+        except Exception as e:
+            # Keep error message compact; the loop will feed it back.
+            return Action(
+                type=ActionType.ERROR,
+                thought=(
+                    f"JSON 解析失败: {e}\n"
+                    f"原始输出(截断): {raw[:300]}"
+                ),
+            )
 
     # Defensive: some servers/models may emit `null` or a non-object JSON.
     if not isinstance(data, dict):

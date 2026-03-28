@@ -348,29 +348,71 @@ def run(
                     ]
 
                 # Minimal hard checks: any claimed artifact paths in scratchpad/final_answer must exist.
-                text = (sp or "") + "\n" + (final_answer or "")
-                # match runs/... paths (be conservative; avoid capturing trailing punctuation/backticks)
-                raw_paths = set(re.findall(r"(runs/\d{8}-\d{6}/[^\s`\)\]\}<>\"']+)", text))
+                #
+                # NOTE: The model often appends punctuation/CJK text right after a path (e.g. "...json。草稿本...")
+                # which breaks naive regex extraction. We therefore:
+                #   1) Prefer parsing evidence lines ("evidence: ...") and splitting tokens.
+                #   2) Fall back to conservative path regex.
+                #   3) Normalize relative paths against repo_root (derived from $RUN_DIR when available).
 
-                # Also allow $RUN_DIR placeholder
+                text = (sp or "") + "\n" + (final_answer or "")
+
                 run_dir = os.environ.get("RUN_DIR")
+                repo_root: Path
                 if run_dir:
-                    for m in re.findall(r"\$RUN_DIR/([^\s`\)\]\}<>\"']+)", text):
+                    # RUN_DIR = <repo>/runs/<run_id>
+                    repo_root = Path(run_dir).resolve().parent.parent
+                else:
+                    repo_root = Path.cwd().resolve()
+
+                raw_paths: set[str] = set()
+
+                # (1) Evidence-line parsing (most reliable)
+                for line in text.splitlines():
+                    m = re.search(r"\bevidence\s*:\s*(.+)$", line, flags=re.IGNORECASE)
+                    if not m:
+                        continue
+                    rhs = m.group(1).strip()
+                    # split by common separators, keep non-empty tokens
+                    for tok in re.split(r"[\s,;]+", rhs):
+                        if tok:
+                            raw_paths.add(tok)
+
+                # (2) Fallback: match common relative artifact paths.
+                # Exclude typical punctuation (English + CJK) from the tail.
+                raw_paths |= set(
+                    re.findall(
+                        r"((?:runs/\d{8}-\d{6}|artifacts)/[^\s`\)\]\}<>\"'，。；：！？]+)",
+                        text,
+                    )
+                )
+
+                # (3) Also allow $RUN_DIR placeholder
+                if run_dir:
+                    for m in re.findall(r"\$RUN_DIR/([^\s`\)\]\}<>\"'，。；：！？]+)", text):
                         raw_paths.add(str(Path(run_dir) / m))
 
-                # Strip common trailing punctuation (English + CJK)
+                # Strip common wrapping/trailing punctuation (English + CJK)
                 def _clean_path(s: str) -> str:
-                    return s.rstrip("`.,;:!?)\"'】）》》，。；：！？’”）")
+                    s2 = s.strip().strip("`\"'")
+                    return s2.rstrip("`.,;:!?)\"'】）》》，。；：！？’”）")
 
-                paths = {_clean_path(p) for p in raw_paths if p}
+                paths = [_clean_path(p) for p in raw_paths if p]
+
+                # Normalize to absolute paths for existence checks.
+                norm_paths: list[Path] = []
+                for p in paths:
+                    pp = Path(p)
+                    if not pp.is_absolute():
+                        pp = (repo_root / pp)
+                    norm_paths.append(pp)
 
                 failures = []
-                for p in sorted(paths):
-                    pp = Path(p)
+                for pp in sorted({p.resolve() for p in norm_paths}):
                     if not pp.exists():
                         failures.append({
                             "code": "artifact_missing",
-                            "message": f"宣称/引用的产物不存在: {p}。若应生成该文件，请先 write_file 落盘后再 done。",
+                            "message": f"宣称/引用的产物不存在: {pp}。若应生成该文件，请先 write_file 落盘后再 done。",
                         })
 
                 if failures:

@@ -10,10 +10,20 @@ DEFAULT_RUNS_DIR = "./runs"
 
 
 def ensure_env_defaults():
-    # Defaults for your local OpenAI-compatible vLLM (gpt-oss-120b)
-    os.environ.setdefault("OPENAI_BASE_URL", "http://172.24.168.225:8389/v1")
-    os.environ.setdefault("OPENAI_API_KEY", "local")
-    os.environ.setdefault("OPENAI_MODEL", "openai/gpt-oss-120b")
+    # Model profile switch (optional):
+    #   OPENAI_PROFILE=oss120b      -> 172.24.168.225:8389 / openai/gpt-oss-120b
+    #   OPENAI_PROFILE=qwen3527dgx  -> 172.24.217.40:8000 / qwen3527dgx
+    profile = (os.environ.get("OPENAI_PROFILE") or "oss120b").strip().lower()
+
+    if profile == "qwen3527dgx":
+        os.environ.setdefault("OPENAI_BASE_URL", "http://172.24.217.40:8000/v1")
+        os.environ.setdefault("OPENAI_API_KEY", "local")
+        os.environ.setdefault("OPENAI_MODEL", "qwen3527dgx")
+    else:
+        # Defaults for your local OpenAI-compatible vLLM (gpt-oss-120b)
+        os.environ.setdefault("OPENAI_BASE_URL", "http://172.24.168.225:8389/v1")
+        os.environ.setdefault("OPENAI_API_KEY", "local")
+        os.environ.setdefault("OPENAI_MODEL", "openai/gpt-oss-120b")
 
 
 def main():

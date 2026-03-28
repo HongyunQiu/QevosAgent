@@ -72,6 +72,16 @@ agent = Agent(backend="openai", api_key="sk-...")
 agent.run("你的目标")
 ```
 
+### run_goal.py 切换本地模型
+
+```bash
+# 默认：oss120b
+python run_goal.py "帮我总结这个项目"
+
+# 切到 qwen3527dgx（ZeroTier 内网）
+OPENAI_PROFILE=qwen3527dgx python run_goal.py "帮我总结这个项目"
+```
+
 ## 自定义工具
 
 ```python
