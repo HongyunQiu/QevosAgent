@@ -25,16 +25,29 @@ def execute(action: Action, state: AgentState) -> ToolResult:
         )
 
     try:
-        result = spec.fn(state=state, **action.args)
+        filtered_args = dict(action.args or {})
+        if spec.args_schema:
+            allowed = set(spec.args_schema.keys())
+            ignored = sorted(k for k in filtered_args.keys() if k not in allowed)
+            if ignored:
+                filtered_args = {k: v for k, v in filtered_args.items() if k in allowed}
+                state.meta.setdefault("ignored_tool_args", []).append({
+                    "tool": tool_name,
+                    "ignored_args": ignored,
+                })
+
+        result = spec.fn(state=state, **filtered_args)
         # 工具函数应返回 ToolResult，但做一层兼容处理
         if isinstance(result, ToolResult):
             return result
         return ToolResult(success=True, output=result)
     except TypeError as e:
+        allowed_args = sorted(spec.args_schema.keys()) if getattr(spec, "args_schema", None) else []
+        hint = f"；允许参数: {allowed_args}" if allowed_args else ""
         return ToolResult(
             success=False,
             output=None,
-            error=f"工具参数错误: {e}"
+            error=f"工具参数错误: {e}{hint}"
         )
     except Exception as e:
         return ToolResult(

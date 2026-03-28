@@ -209,6 +209,7 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratc
 3. 遇到错误，分析原因后换一种方式重试
 4. 目标完成后，用 action=done 退出并给出 final_answer
 5. 优先利用长期记忆中的经验，避免重复犯错
+6. 如果已有进化工具出现定义/契约错误，优先使用 `validate_tool_recipe`、`repair_tool_candidate`、`promote_tool_candidate` 修复旧工具；不要仅仅换名字继续注册同义新工具
 
 ## 草稿本（scratchpad）使用规则（强制）
 - 草稿本用于“执行过程中的中间记录与分析”，是你在多步任务中的工作台。
@@ -217,8 +218,10 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratc
   2) 每次工具调用得到关键新信息后，用 scratchpad_append 追加“关键发现/结论/下一步”。
 - 在准备结束(action=done)之前，必须在草稿本追加一个 **ACCEPTANCE** 区块（验收自评）：
   - criteria: 本次任务的验收标准
-  - evidence: 证据（文件路径/关键片段），尤其是你声称写入的 artifacts 路径
+  - evidence_type: `artifact` | `tool_result` | `observation` | `none`
+  - evidence: 证据。只有当 `evidence_type=artifact` 时才填写真实文件路径；其他类型写简短文字说明即可
   - verdict: PASS/FAIL
+- 默认优先根据任务选择合适的 `evidence_type`：只有真正生成了文件产物时才使用 `artifact`
 - 草稿本必须：简短、结构化、可随时重写；禁止粘贴大段原文（原文应写入 artifacts 文件并在草稿本引用路径）。
 - 长度限制：<= 2000 字符（系统会截断）。
 """

@@ -5,16 +5,97 @@
 """
 
 import os
+import ast
 import json
 import subprocess
 import textwrap
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Tuple
 
 from ..core.types import AgentState, ToolSpec, ToolResult
 
 
 # ── 工具函数实现 ──────────────────────────────────────────────────────────────
+
+
+def _validate_evolved_tool_python_code(python_code: str) -> list[str]:
+    """Best-effort static validation for persisted tool recipes."""
+    errors: list[str] = []
+    try:
+        tree = ast.parse(textwrap.dedent(python_code))
+    except SyntaxError as e:
+        return [f"代码语法错误: {e}"]
+
+    tool_result_calls = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "ToolResult":
+            continue
+
+        tool_result_calls += 1
+        kw_names = [kw.arg for kw in node.keywords if kw.arg is not None]
+        unknown = [name for name in kw_names if name not in {"success", "output", "error"}]
+        if unknown:
+            errors.append(f"ToolResult 使用了未知关键字: {unknown}")
+        if "success" not in kw_names and len(node.args) < 1:
+            errors.append("ToolResult 缺少 success 参数")
+        if "output" not in kw_names and len(node.args) < 2:
+            errors.append("ToolResult 缺少 output 参数")
+
+    if tool_result_calls == 0:
+        errors.append("python_code 中未找到 ToolResult(...) 返回")
+
+    return list(dict.fromkeys(errors))
+
+
+def _make_tool_wrapper(fn, tool_name: str):
+    def wrapper(state: AgentState, **kwargs) -> ToolResult:
+        return fn(state, **kwargs)
+
+    wrapper.__name__ = tool_name
+    return wrapper
+
+
+def _materialize_tool_recipe(
+    name: str,
+    description: str,
+    args_schema: dict,
+    python_code: str,
+) -> Tuple[Optional[ToolSpec], list[str]]:
+    validation_errors = _validate_evolved_tool_python_code(python_code)
+    if validation_errors:
+        return None, validation_errors
+
+    namespace: dict[str, Any] = {"ToolResult": ToolResult}
+    try:
+        exec(textwrap.dedent(python_code), namespace)
+    except SyntaxError as e:
+        return None, [f"代码语法错误: {e}"]
+    except Exception as e:
+        return None, [f"代码定义错误: {e}"]
+
+    run_fn = namespace.get("run")
+    if run_fn is None or not callable(run_fn):
+        return None, ["python_code 必须定义一个名为 `run` 的函数。"]
+
+    spec = ToolSpec(
+        name=name,
+        description=description,
+        args_schema=args_schema if isinstance(args_schema, dict) else {},
+        fn=_make_tool_wrapper(run_fn, name),
+        is_evolve_tool=False,
+    )
+    return spec, []
+
+
+def _build_tool_recipe(name: str, description: str, args_schema: dict, python_code: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "args_schema": args_schema if isinstance(args_schema, dict) else {},
+        "python_code": textwrap.dedent(python_code).strip(),
+    }
 
 def tool_remember(state: AgentState, content: str) -> ToolResult:
     """把重要结论写入长期记忆。"""
@@ -266,46 +347,19 @@ def tool_register_tool(
             error=f"工具 '{name}' 已存在。如需覆盖，请先确认。"
         )
 
-    # 在隔离命名空间中执行代码
-    namespace: dict[str, Any] = {"ToolResult": ToolResult}
-    try:
-        exec(textwrap.dedent(python_code), namespace)
-    except SyntaxError as e:
-        return ToolResult(success=False, output=None, error=f"代码语法错误: {e}")
-    except Exception as e:
-        return ToolResult(success=False, output=None, error=f"代码定义错误: {e}")
-
-    run_fn = namespace.get("run")
-    if run_fn is None or not callable(run_fn):
+    spec, validation_errors = _materialize_tool_recipe(name, description, args_schema, python_code)
+    if spec is None:
         return ToolResult(
             success=False,
             output=None,
-            error="python_code 必须定义一个名为 `run` 的函数。"
+            error="；".join(validation_errors),
         )
 
-    # 包装成符合工具签名的函数
-    def make_wrapper(fn):
-        def wrapper(state: AgentState, **kwargs) -> ToolResult:
-            return fn(state, **kwargs)
-        wrapper.__name__ = name
-        return wrapper
-
-    state.tools[name] = ToolSpec(
-        name=name,
-        description=description,
-        args_schema=args_schema,
-        fn=make_wrapper(run_fn),
-        is_evolve_tool=False,
-    )
+    state.tools[name] = spec
 
     # Record evolved tool recipe for persistence/snapshots.
     # We keep this out of ToolSpec to stay minimal and avoid breaking call sites.
-    state.meta.setdefault("evolved_tools", {})[name] = {
-        "name": name,
-        "description": description,
-        "args_schema": args_schema,
-        "python_code": textwrap.dedent(python_code).strip(),
-    }
+    state.meta.setdefault("evolved_tools", {})[name] = _build_tool_recipe(name, description, args_schema, python_code)
 
     # 把这次进化记录到长期记忆
     state.long_term.append(
@@ -318,20 +372,164 @@ def tool_register_tool(
     )
 
 
+def tool_validate_tool_recipe(
+    state: AgentState,
+    name: str,
+    description: str,
+    args_schema: dict,
+    python_code: str,
+) -> ToolResult:
+    """Validate a candidate tool recipe without registering it."""
+    spec, errors = _materialize_tool_recipe(name, description, args_schema, python_code)
+    recipe = _build_tool_recipe(name, description, args_schema, python_code)
+    return ToolResult(
+        success=True,
+        output={
+            "ok": spec is not None,
+            "errors": errors,
+            "recipe": recipe,
+        },
+    )
+
+
+def tool_repair_tool_candidate(
+    state: AgentState,
+    name: str,
+    description: str,
+    args_schema: dict,
+    python_code: str,
+) -> ToolResult:
+    """Store a validated candidate repair for an existing tool."""
+    if name not in state.tools and name not in state.meta.get("evolved_tools", {}):
+        return ToolResult(success=False, output=None, error=f"工具 '{name}' 不存在，无法修复。")
+
+    validation = tool_validate_tool_recipe(
+        state=state,
+        name=name,
+        description=description,
+        args_schema=args_schema,
+        python_code=python_code,
+    ).output
+    if not validation["ok"]:
+        state.meta.setdefault("tool_repair_failures", []).append({
+            "name": name,
+            "errors": list(validation["errors"]),
+        })
+        return ToolResult(
+            success=False,
+            output=validation,
+            error="；".join(validation["errors"]) or "候选修复未通过校验",
+        )
+
+    candidate = dict(validation["recipe"])
+    candidate["validation"] = {
+        "ok": True,
+        "errors": [],
+    }
+    state.meta.setdefault("tool_repair_candidates", {})[name] = candidate
+    state.long_term.append(f"[工具修复候选] 为工具 '{name}' 生成了待晋升修复版本。")
+    return ToolResult(
+        success=True,
+        output={
+            "name": name,
+            "candidate_stored": True,
+            "validation": candidate["validation"],
+        },
+    )
+
+
+def tool_promote_tool_candidate(state: AgentState, name: str) -> ToolResult:
+    """Promote a validated repair candidate into the formal tool registry."""
+    candidates = state.meta.get("tool_repair_candidates", {})
+    candidate = candidates.get(name)
+    if not candidate:
+        return ToolResult(success=False, output=None, error=f"工具 '{name}' 没有待晋升候选版本。")
+
+    validation = candidate.get("validation", {})
+    if not validation.get("ok"):
+        errs = validation.get("errors") or ["候选版本未通过校验"]
+        return ToolResult(success=False, output=None, error="；".join(errs))
+
+    spec, errors = _materialize_tool_recipe(
+        candidate.get("name", name),
+        candidate.get("description", ""),
+        candidate.get("args_schema", {}),
+        candidate.get("python_code", ""),
+    )
+    if spec is None:
+        state.meta.setdefault("tool_repair_failures", []).append({
+            "name": name,
+            "errors": list(errors),
+        })
+        return ToolResult(success=False, output=None, error="；".join(errors))
+
+    previous_recipe = state.meta.get("evolved_tools", {}).get(name)
+    state.tools[name] = spec
+    state.meta.setdefault("evolved_tools", {})[name] = _build_tool_recipe(
+        name,
+        candidate.get("description", ""),
+        candidate.get("args_schema", {}),
+        candidate.get("python_code", ""),
+    )
+    state.meta.setdefault("tool_repair_history", []).append({
+        "name": name,
+        "previous_recipe": previous_recipe,
+        "promoted_recipe": state.meta["evolved_tools"][name],
+    })
+    state.meta.get("tool_repair_candidates", {}).pop(name, None)
+    state.meta.get("invalid_evolved_tools", {}).pop(name, None)
+    state.long_term.append(f"[工具修复] 工具 '{name}' 的候选版本已晋升为正式版本。")
+    return ToolResult(
+        success=True,
+        output={
+            "name": name,
+            "promoted": True,
+        },
+    )
+
+
 # ── 工具集构建器 ──────────────────────────────────────────────────────────────
 
 def tool_save_snapshot_meta(state: AgentState, path: str) -> ToolResult:
     """Persist long_term + evolved_tools recipes to a JSON snapshot."""
     try:
+        evolved_tools = state.meta.get("evolved_tools", {})
+        valid_evolved_tools = {}
+        invalid_evolved_tools = {}
+        for name, rec in evolved_tools.items():
+            python_code = rec.get("python_code", "") if isinstance(rec, dict) else ""
+            errors = _validate_evolved_tool_python_code(python_code) if python_code else ["缺少 python_code"]
+            if errors:
+                invalid_evolved_tools[name] = {
+                    "errors": errors,
+                    "recipe": rec,
+                }
+                continue
+            valid_evolved_tools[name] = rec
+
+        if invalid_evolved_tools:
+            state.meta["invalid_evolved_tools"] = invalid_evolved_tools
+
         payload = {
             "long_term": list(state.long_term),
-            "evolved_tools": state.meta.get("evolved_tools", {}),
+            "evolved_tools": valid_evolved_tools,
+            "tool_repair_candidates": state.meta.get("tool_repair_candidates", {}),
+            "tool_repair_failures": state.meta.get("tool_repair_failures", []),
+            "tool_repair_history": state.meta.get("tool_repair_history", []),
             "scratchpad": state.meta.get("scratchpad", ""),
         }
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return ToolResult(success=True, output=f"Snapshot saved to {p.resolve()}")
+        return ToolResult(
+            success=True,
+            output={
+                "path": str(p.resolve()),
+                "saved_tools": len(valid_evolved_tools),
+                "skipped_invalid_tools": len(invalid_evolved_tools),
+                "saved_repair_candidates": len(payload["tool_repair_candidates"]),
+            },
+        )
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
@@ -348,18 +546,51 @@ def tool_load_snapshot_meta(state: AgentState, path: str, overwrite: bool = Fals
 
         long_term = payload.get("long_term", [])
         evolved = payload.get("evolved_tools", {})
+        repair_candidates = payload.get("tool_repair_candidates", {})
         # scratchpad is intentionally NOT restored by default to avoid stale/noisy runs.
         # If you want scratchpad persistence, re-enable restoration here.
         if not isinstance(long_term, list) or not all(isinstance(x, str) for x in long_term):
             return ToolResult(success=False, output=None, error="snapshot.long_term must be list[str]")
         if not isinstance(evolved, dict):
             return ToolResult(success=False, output=None, error="snapshot.evolved_tools must be dict")
+        if not isinstance(repair_candidates, dict):
+            return ToolResult(success=False, output=None, error="snapshot.tool_repair_candidates must be dict")
 
         state.long_term = list(long_term)
         state.meta["evolved_tools"] = evolved
+        state.meta.setdefault("invalid_evolved_tools", {})
+        restored_candidates = {}
+        restored_candidate_failures = list(payload.get("tool_repair_failures", []))
+        for cand_name, cand in repair_candidates.items():
+            if not isinstance(cand, dict):
+                restored_candidate_failures.append({
+                    "name": cand_name,
+                    "errors": ["候选修复元数据不是对象"],
+                })
+                continue
+            spec, errors = _materialize_tool_recipe(
+                cand.get("name", cand_name),
+                cand.get("description", ""),
+                cand.get("args_schema", {}),
+                cand.get("python_code", ""),
+            )
+            if spec is None:
+                restored_candidate_failures.append({
+                    "name": cand_name,
+                    "errors": errors,
+                })
+                continue
+            restored = dict(cand)
+            restored["validation"] = {"ok": True, "errors": []}
+            restored_candidates[cand_name] = restored
+
+        state.meta["tool_repair_candidates"] = restored_candidates
+        state.meta["tool_repair_failures"] = restored_candidate_failures
+        state.meta["tool_repair_history"] = payload.get("tool_repair_history", [])
 
         restored = 0
         skipped = 0
+        invalid = 0
         for name, rec in evolved.items():
             if not overwrite and name in state.tools:
                 skipped += 1
@@ -369,30 +600,44 @@ def tool_load_snapshot_meta(state: AgentState, path: str, overwrite: bool = Fals
             description = rec.get("description", "")
             args_schema = rec.get("args_schema", {})
             if not isinstance(python_code, str) or not python_code.strip():
+                invalid += 1
+                state.meta["invalid_evolved_tools"][name] = {
+                    "errors": ["缺少 python_code"],
+                    "recipe": rec,
+                }
                 continue
 
-            namespace: dict[str, Any] = {"ToolResult": ToolResult}
-            exec(textwrap.dedent(python_code), namespace)
-            run_fn = namespace.get("run")
-            if run_fn is None or not callable(run_fn):
+            validation_errors = _validate_evolved_tool_python_code(python_code)
+            if validation_errors:
+                invalid += 1
+                state.meta["invalid_evolved_tools"][name] = {
+                    "errors": validation_errors,
+                    "recipe": rec,
+                }
                 continue
 
-            def make_wrapper(fn, tool_name):
-                def wrapper(state: AgentState, **kwargs) -> ToolResult:
-                    return fn(state, **kwargs)
-                wrapper.__name__ = tool_name
-                return wrapper
+            spec, errors = _materialize_tool_recipe(name, description, args_schema, python_code)
+            if spec is None:
+                invalid += 1
+                state.meta["invalid_evolved_tools"][name] = {
+                    "errors": errors,
+                    "recipe": rec,
+                }
+                continue
 
-            state.tools[name] = ToolSpec(
-                name=name,
-                description=description,
-                args_schema=args_schema if isinstance(args_schema, dict) else {},
-                fn=make_wrapper(run_fn, name),
-                is_evolve_tool=False,
-            )
+            state.tools[name] = spec
             restored += 1
 
-        return ToolResult(success=True, output={"restored": restored, "skipped": skipped, "long_term": len(state.long_term)})
+        return ToolResult(
+            success=True,
+            output={
+                "restored": restored,
+                "skipped": skipped,
+                "invalid": invalid,
+                "repair_candidates": len(repair_candidates),
+                "long_term": len(state.long_term),
+            },
+        )
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
@@ -495,6 +740,36 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "overwrite": "是否覆盖同名已有工具（bool，默认 false）",
             },
             fn=tool_load_snapshot_meta,
+        ),
+        ToolSpec(
+            name="validate_tool_recipe",
+            description="校验一个工具候选配方是否满足 run(state, ...) 和 ToolResult(success, output, error) 契约，不会注册也不会覆盖工具",
+            args_schema={
+                "name": "目标工具名称",
+                "description": "工具功能描述",
+                "args_schema": "参数说明字典 {param_name: description}",
+                "python_code": "候选 Python 代码，需定义 run(state, **kwargs)->ToolResult",
+            },
+            fn=tool_validate_tool_recipe,
+        ),
+        ToolSpec(
+            name="repair_tool_candidate",
+            description="为已有工具登记一个候选修复版本，先校验后写入 state.meta['tool_repair_candidates']，不会立即覆盖正式工具",
+            args_schema={
+                "name": "要修复的已有工具名称",
+                "description": "修复后工具描述",
+                "args_schema": "修复后参数说明字典",
+                "python_code": "修复后的候选 Python 代码",
+            },
+            fn=tool_repair_tool_candidate,
+        ),
+        ToolSpec(
+            name="promote_tool_candidate",
+            description="将已通过校验的候选修复版本晋升为正式工具，原地更新 state.tools 和 state.meta['evolved_tools']",
+            args_schema={
+                "name": "要晋升的工具名称",
+            },
+            fn=tool_promote_tool_candidate,
         ),
         ToolSpec(
             name="register_tool",

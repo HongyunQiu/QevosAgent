@@ -5,6 +5,7 @@ LOOP: 感知 → 思考 → 行动 → 反思 → 重复
 """
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Optional, Callable
 
@@ -36,6 +37,105 @@ def _trim_short_term(state: AgentState, keep_last: int = 8):
     tail = state.short_term[-keep_last:] if len(state.short_term) > 1 else []
     state.short_term = head + tail
     _compact_short_term_messages(state, per_message_chars=2000)
+
+
+def _extract_claimed_artifact_paths(text: str, run_dir: Optional[str] = None) -> list[str]:
+    """Extract artifact-like paths from acceptance text without splitting human prose."""
+    if not text:
+        return []
+
+    def _clean_path(value: str) -> str:
+        s = value.strip().strip("`\"'")
+        s = s.rstrip("`.,;:!?)\"'】）》》，。；：！？’”）")
+        if s.startswith("./"):
+            s = s[2:]
+        if s.startswith("/runs/") or s.startswith("/artifacts/"):
+            s = s[1:]
+        return s
+
+    def _append_unique(out: list[str], seen: set[str], candidate: str):
+        cleaned = _clean_path(candidate)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+
+    def _extract_from_blob(blob: str, out: list[str], seen: set[str]):
+        if not blob:
+            return
+
+        for match in re.findall(
+            r"((?:\./)?(?:runs/\d{8}-\d{6}|artifacts)/[^\s`\)\]\}<>\"'，。；：！？]+)",
+            blob,
+        ):
+            _append_unique(out, seen, match)
+
+        for match in re.findall(
+            r"(?:(?<=^)|(?<=[\s`\"'\(\[\{<]))((?:/[^\s`<>\"]+)*?/runs/\d{8}-\d{6}/[^\s`<>\"]+|(?:/[^\s`<>\"]+)*?/artifacts/[^\s`<>\"]+)",
+            blob,
+        ):
+            _append_unique(out, seen, match)
+
+        if run_dir:
+            for match in re.findall(r"\$RUN_DIR/([^\s`\)\]\}<>\"'，。；：！？]+)", blob):
+                _append_unique(out, seen, f"{run_dir.rstrip('/')}/{match}")
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    for line in text.splitlines():
+        match = re.search(r"\bevidence\s*:\s*(.+)$", line, flags=re.IGNORECASE)
+        if not match:
+            continue
+        rhs = match.group(1).strip()
+
+        if rhs.startswith("[") and rhs.endswith("]"):
+            try:
+                payload = json.loads(rhs)
+            except Exception:
+                payload = None
+            if isinstance(payload, list):
+                for item in payload:
+                    if isinstance(item, str):
+                        _append_unique(ordered, seen, item)
+                continue
+
+        _extract_from_blob(rhs, ordered, seen)
+
+    _extract_from_blob(text, ordered, seen)
+    return ordered
+
+
+def _parse_acceptance_evidence(text: str, run_dir: Optional[str] = None) -> dict:
+    """Parse acceptance evidence metadata and decide whether artifact checks apply."""
+    evidence_type = "artifact"
+    evidence_values: list[str] = []
+
+    for line in text.splitlines():
+        match_type = re.search(r"\bevidence_type\s*:\s*(.+)$", line, flags=re.IGNORECASE)
+        if match_type:
+            evidence_type = (match_type.group(1).strip().lower() or "artifact")
+            continue
+
+        match_evidence = re.search(r"\bevidence\s*:\s*(.+)$", line, flags=re.IGNORECASE)
+        if match_evidence:
+            evidence_values.append(match_evidence.group(1).strip())
+
+    if evidence_type not in {"artifact", "tool_result", "observation", "none"}:
+        evidence_type = "artifact"
+
+    if evidence_type != "artifact":
+        return {
+            "evidence_type": evidence_type,
+            "evidence_values": evidence_values,
+            "paths": [],
+        }
+
+    artifact_text = "\n".join(f"evidence: {value}" for value in evidence_values) if evidence_values else text
+    return {
+        "evidence_type": evidence_type,
+        "evidence_values": evidence_values,
+        "paths": _extract_claimed_artifact_paths(artifact_text, run_dir=run_dir),
+    }
 
 
 def _maybe_compress_for_context(state: AgentState, llm: LLMBackend, system: str, messages: list[dict]) -> dict:
@@ -326,7 +426,7 @@ def run(
             # gate fails, we DO NOT exit; we append a system feedback and keep looping.
             from typing import Optional
             def _acceptance_gate(state: AgentState, final_answer: Optional[str]):
-                import os, re
+                import os
                 from pathlib import Path
 
                 sp = state.meta.get("scratchpad", "")
@@ -347,12 +447,12 @@ def run(
                         }
                     ]
 
-                # Minimal hard checks: any claimed artifact paths in scratchpad/final_answer must exist.
+                # Minimal hard checks: only artifact-type evidence must map to existing files.
                 #
                 # NOTE: The model often appends punctuation/CJK text right after a path (e.g. "...json。草稿本...")
                 # which breaks naive regex extraction. We therefore:
-                #   1) Prefer parsing evidence lines ("evidence: ...") and splitting tokens.
-                #   2) Fall back to conservative path regex.
+                #   1) Parse evidence_type first.
+                #   2) Only artifact evidence participates in path checks.
                 #   3) Normalize relative paths against repo_root (derived from $RUN_DIR when available).
 
                 text = (sp or "") + "\n" + (final_answer or "")
@@ -365,39 +465,8 @@ def run(
                 else:
                     repo_root = Path.cwd().resolve()
 
-                raw_paths: set[str] = set()
-
-                # (1) Evidence-line parsing (most reliable)
-                for line in text.splitlines():
-                    m = re.search(r"\bevidence\s*:\s*(.+)$", line, flags=re.IGNORECASE)
-                    if not m:
-                        continue
-                    rhs = m.group(1).strip()
-                    # split by common separators, keep non-empty tokens
-                    for tok in re.split(r"[\s,;]+", rhs):
-                        if tok:
-                            raw_paths.add(tok)
-
-                # (2) Fallback: match common relative artifact paths.
-                # Exclude typical punctuation (English + CJK) from the tail.
-                raw_paths |= set(
-                    re.findall(
-                        r"((?:runs/\d{8}-\d{6}|artifacts)/[^\s`\)\]\}<>\"'，。；：！？]+)",
-                        text,
-                    )
-                )
-
-                # (3) Also allow $RUN_DIR placeholder
-                if run_dir:
-                    for m in re.findall(r"\$RUN_DIR/([^\s`\)\]\}<>\"'，。；：！？]+)", text):
-                        raw_paths.add(str(Path(run_dir) / m))
-
-                # Strip common wrapping/trailing punctuation (English + CJK)
-                def _clean_path(s: str) -> str:
-                    s2 = s.strip().strip("`\"'")
-                    return s2.rstrip("`.,;:!?)\"'】）》》，。；：！？’”）")
-
-                paths = [_clean_path(p) for p in raw_paths if p]
+                acceptance_evidence = _parse_acceptance_evidence(text, run_dir=run_dir)
+                paths = acceptance_evidence["paths"]
 
                 # Normalize to absolute paths for existence checks.
                 norm_paths: list[Path] = []

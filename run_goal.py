@@ -11,19 +11,44 @@ DEFAULT_RUNS_DIR = "./runs"
 
 def ensure_env_defaults():
     # Model profile switch (optional):
-    #   OPENAI_PROFILE=oss120b      -> 172.24.168.225:8389 / openai/gpt-oss-120b
-    #   OPENAI_PROFILE=qwen3527dgx  -> 172.24.217.40:8000 / qwen3527dgx
+    #   OPENAI_PROFILE=oss120b      -> env OPENAI_PROFILE_OSS120B_BASE_URL / openai/gpt-oss-120b
+    #   OPENAI_PROFILE=qwen3527dgx  -> env OPENAI_PROFILE_QWEN3527DGX_BASE_URL / qwen3527dgx
     profile = (os.environ.get("OPENAI_PROFILE") or "oss120b").strip().lower()
 
+    profile_defaults = {
+        "oss120b": {
+            "base_url_env": "OPENAI_PROFILE_OSS120B_BASE_URL",
+            "model": "openai/gpt-oss-120b",
+        },
+        "qwen3527dgx": {
+            "base_url_env": "OPENAI_PROFILE_QWEN3527DGX_BASE_URL",
+            "model": "qwen3527dgx",
+        },
+    }
+    profile_config = profile_defaults.get(profile)
+    if profile_config is None:
+        raise ValueError(f"未知 OPENAI_PROFILE: {profile}")
+
+    if "OPENAI_BASE_URL" not in os.environ:
+        profile_base_url = os.environ.get(profile_config["base_url_env"])
+        if profile_base_url:
+            os.environ["OPENAI_BASE_URL"] = profile_base_url
+        else:
+            raise ValueError(
+                f"缺少 OPENAI_BASE_URL。当前 profile={profile}，"
+                f"请设置 OPENAI_BASE_URL 或 {profile_config['base_url_env']}。"
+            )
+
     if profile == "qwen3527dgx":
-        os.environ.setdefault("OPENAI_BASE_URL", "http://172.24.217.40:8000/v1")
         os.environ.setdefault("OPENAI_API_KEY", "local")
-        os.environ.setdefault("OPENAI_MODEL", "qwen3527dgx")
+        os.environ.setdefault("OPENAI_MODEL", profile_config["model"])
     else:
-        # Defaults for your local OpenAI-compatible vLLM (gpt-oss-120b)
-        os.environ.setdefault("OPENAI_BASE_URL", "http://172.24.168.225:8389/v1")
         os.environ.setdefault("OPENAI_API_KEY", "local")
-        os.environ.setdefault("OPENAI_MODEL", "openai/gpt-oss-120b")
+        os.environ.setdefault("OPENAI_MODEL", profile_config["model"])
+
+    # Persist useful experience by default unless the caller explicitly disables it.
+    os.environ.setdefault("AUTO_REMEMBER_ON_DONE", "1")
+    os.environ.setdefault("AUTO_SAVE_SNAPSHOT_ON_EXIT", "1")
 
 
 def main():
