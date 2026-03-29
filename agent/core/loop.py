@@ -12,6 +12,7 @@ from typing import Optional, Callable
 from .types import Action, ActionType, AgentState, ToolSpec, ToolResult
 from .llm import LLMBackend, build_system_prompt, build_context_messages, parse_response
 from .executor import execute
+from ..runtime.persistence import RunPersistence
 
 
 def _compact_short_term_messages(state: AgentState, per_message_chars: int = 2000):
@@ -24,6 +25,36 @@ def _compact_short_term_messages(state: AgentState, per_message_chars: int = 200
             continue
         if len(c) > per_message_chars:
             m["content"] = _summarize_large_text(c, per_message_chars)
+
+
+def _get_persistence(state: AgentState) -> Optional[RunPersistence]:
+    persistence = getattr(state, "persistence", None)
+    if persistence is not None:
+        return persistence
+    try:
+        import os
+
+        run_dir = os.environ.get("RUN_DIR")
+        if not run_dir:
+            return None
+        persistence = RunPersistence(run_dir)
+        state.persistence = persistence
+        return persistence
+    except Exception:
+        return None
+
+
+def _append_short_term(state: AgentState, record: dict) -> None:
+    state.short_term.append(record)
+    persistence = _get_persistence(state)
+    if persistence is not None:
+        persistence.append_short_term(record)
+
+
+def _checkpoint_state(state: AgentState, status: str = "running", error: Optional[str] = None) -> None:
+    persistence = _get_persistence(state)
+    if persistence is not None:
+        persistence.checkpoint(state, status=status, error=error)
 
 
 def _trim_short_term(state: AgentState, keep_last: int = 8):
@@ -275,372 +306,335 @@ def run(
             tools=dict(tools),  # 复制一份，允许运行时修改（进化）
             long_term=list(long_term or []),
         )
-        # Seed scratchpad with the *raw user goal* (during-run visibility).
-        # Avoid including injected prefixes/policies (kept elsewhere in prompt).
         try:
             import os
+
             raw_goal = (os.environ.get("USER_GOAL") or goal).strip()
         except Exception:
             raw_goal = goal.strip()
-        # Keep task description separately so scratchpad_set won't accidentally wipe it.
         state.meta["_task_desc"] = raw_goal
-
-        # The model may overwrite/extend it via scratchpad_set/append.
         state.meta["scratchpad"] = f"任务描述:\n{raw_goal}\n"
-        try:
-            import os
-            from pathlib import Path
-            run_dir = os.environ.get("RUN_DIR")
-            if run_dir:
-                p = Path(run_dir) / "scratchpad.md"
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(state.meta["scratchpad"], encoding="utf-8")
-        except Exception:
-            pass
-
-        # 初始用户消息
-        state.short_term.append({
-            "role": "user",
-            "content": f"请完成以下目标：\n\n{goal}"
-        })
+        _append_short_term(
+            state,
+            {
+                "role": "user",
+                "content": f"请完成以下目标：\n\n{goal}",
+            },
+        )
+        persistence = _get_persistence(state)
+        if persistence is not None:
+            persistence.start(state)
     else:
-        # Resume: update goal + merge tools (keep evolved state.tools by default)
         state.goal = goal
-        # If caller provides tools, merge any missing ones.
         for k, v in tools.items():
             state.tools.setdefault(k, v)
-        # Allow caller to inject long_term additions.
         if long_term:
             for item in long_term:
                 if item not in state.long_term:
                     state.long_term.append(item)
         state.meta.pop("paused", None)
         state.meta.pop("awaiting_input", None)
+        _checkpoint_state(state)
 
-    # ── LOOP ─────────────────────────────────────────────────────────────────
-    while state.iteration < max_iterations:
+    try:
+        while state.iteration < max_iterations:
+            if hooks.on_iteration_start:
+                hooks.on_iteration_start(state.iteration, state)
 
-        # 回调：迭代开始
-        if hooks.on_iteration_start:
-            hooks.on_iteration_start(state.iteration, state)
+            system = build_system_prompt(state.tools, state.long_term, scratchpad=state.meta.get("scratchpad", ""))
+            messages = build_context_messages(state)
 
-        # 1. 构建当前 system prompt（工具集可能已进化，每次重新生成）
-        system = build_system_prompt(state.tools, state.long_term, scratchpad=state.meta.get('scratchpad',''))
+            pack = _maybe_compress_for_context(state, llm, system, messages)
+            system = pack["system"]
+            messages = pack["messages"]
+            if hooks.on_thought and state.meta.get("prompt_tokens_est"):
+                est = state.meta.get("prompt_tokens_est")
+                ctx = state.meta.get("context_window")
+                hooks.on_thought(
+                    f"[token] prompt≈{est} / context={ctx} (est), max_tokens={getattr(llm, 'max_tokens', 'n/a')}"
+                )
 
-        # 2. 构建消息上下文
-        messages = build_context_messages(state)
+            import os
 
-        # 2.5 估算 token 并在接近最大上下文时自动压缩（裁剪历史）
-        pack = _maybe_compress_for_context(state, llm, system, messages)
-        system = pack["system"]
-        messages = pack["messages"]
-        if hooks.on_thought and state.meta.get("prompt_tokens_est"):
-            est = state.meta.get("prompt_tokens_est")
-            ctx = state.meta.get("context_window")
-            hooks.on_thought(f"[token] prompt≈{est} / context={ctx} (est), max_tokens={getattr(llm, 'max_tokens', 'n/a')}")
+            if os.environ.get("DEBUG_LLM_IO", "0") == "1":
+                DEEP_GREEN = "\033[32m"
+                DARK_RED = "\033[31m"
+                RESET = "\033[0m"
+                max_chars = int(os.environ.get("DEBUG_LLM_IO_MAX_CHARS", "200000"))
 
-        # 3. 调用 LLM
-        # Optional debug: dump what we send to the LLM and what we got back.
-        # Enable via: DEBUG_LLM_IO=1
-        import os
-        if os.environ.get("DEBUG_LLM_IO", "0") == "1":
-            DEEP_GREEN = "\033[32m"  # deep green
-            DARK_RED = "\033[31m"    # dark red
-            RESET = "\033[0m"
-            max_chars = int(os.environ.get("DEBUG_LLM_IO_MAX_CHARS", "200000"))
+                try:
+                    payload = {
+                        "system": system,
+                        "messages": messages,
+                        "max_tokens": getattr(llm, "max_tokens", None),
+                    }
+                    s = json.dumps(payload, ensure_ascii=False, indent=2)
+                except Exception:
+                    s = f"(failed to serialize payload) system_len={len(system)} messages={len(messages)}"
+
+                if len(s) > max_chars:
+                    s = s[:max_chars] + "\n...[TRUNCATED]"
+                print(f"{DEEP_GREEN}\n[DEBUG_LLM_IO] >>> request{RESET}\n{s}\n")
 
             try:
-                payload = {
-                    "system": system,
-                    "messages": messages,
-                    "max_tokens": getattr(llm, "max_tokens", None),
-                }
-                s = json.dumps(payload, ensure_ascii=False, indent=2)
-            except Exception:
-                s = f"(failed to serialize payload) system_len={len(system)} messages={len(messages)}"
-
-            if len(s) > max_chars:
-                s = s[:max_chars] + "\n...[TRUNCATED]"
-
-            print(f"{DEEP_GREEN}\n[DEBUG_LLM_IO] >>> request{RESET}\n{s}\n")
-
-        try:
-            raw_response = llm.complete(messages, system)
-        except Exception as e:
-            error_msg = f"LLM 调用失败: {e}"
-            if hooks.on_error:
-                hooks.on_error(error_msg)
-
-            # Self-heal: if prompt is too large (vLLM may compute negative max_tokens)
-            # or context is exceeded, trim history to shrink the next prompt.
-            es = str(e)
-            if (
-                "max_tokens must be at least 1" in es
-                or "context_length" in es
-                or "context length" in es
-                or "maximum context" in es
-            ):
-                _trim_short_term(state, keep_last=6)
-                _compact_short_term_messages(state, per_message_chars=1200)
-                state.long_term.append("[自我修复] 遇到上下文/输出长度错误，已自动裁剪+压缩 short_term 以缩短 prompt。")
-
-            # 写入错误历史，让 LLM 下次知情
-            state.short_term.append({
-                "role": "user",
-                "content": f"[系统] LLM调用异常: {e}，请重试或换一种方式。"
-            })
-            state.iteration += 1
-            continue
-
-        if os.environ.get("DEBUG_LLM_IO", "0") == "1":
-            DARK_RED = "\033[31m"    # dark red
-            RESET = "\033[0m"
-            max_chars = int(os.environ.get("DEBUG_LLM_IO_MAX_CHARS", "200000"))
-            s2 = raw_response if isinstance(raw_response, str) else str(raw_response)
-            if len(s2) > max_chars:
-                s2 = s2[:max_chars] + "\n...[TRUNCATED]"
-            print(f"{DARK_RED}[DEBUG_LLM_IO] <<< response{RESET}\n{s2}\n")
-
-        # 4. 解析动作
-        action = parse_response(raw_response)
-
-        # Reset JSON-parse retry counter on successful parsing.
-        if action.type != ActionType.ERROR:
-            state.meta.pop("json_parse_retry", None)
-
-        # 回调：输出思考
-        if hooks.on_thought and action.thought:
-            hooks.on_thought(action.thought)
-
-        # 5. 把 LLM 响应加入短期记忆
-        state.short_term.append({
-            "role": "assistant",
-            "content": raw_response,
-        })
-
-        # 6. 根据动作类型分支处理
-        if action.type == ActionType.DONE:
-            # ── Acceptance gate ─────────────────────────────────────────────
-            # The model must self-define acceptance criteria + evidence, then we
-            # do minimal hard checks (e.g. claimed artifact paths exist). If the
-            # gate fails, we DO NOT exit; we append a system feedback and keep looping.
-            from typing import Optional
-            def _acceptance_gate(state: AgentState, final_answer: Optional[str]):
-                import os
-                from pathlib import Path
-
-                sp = state.meta.get("scratchpad", "")
-                if not isinstance(sp, str):
-                    sp = ""
-
-                # Require a self-check block in scratchpad.
-                # Format (recommended):
-                #   ACCEPTANCE:
-                #   - criteria: ...
-                #   - evidence: runs/.../artifacts/xxx.md
-                #   - verdict: PASS
-                if "ACCEPTANCE" not in sp.upper():
-                    return False, [
-                        {
-                            "code": "acceptance_missing",
-                            "message": "缺少验收自评。请在草稿本追加一个 ACCEPTANCE 区块：包含验收标准(criteria)、证据(evidence 路径/片段)与结论(verdict)。",
-                        }
-                    ]
-
-                # Minimal hard checks: only artifact-type evidence must map to existing files.
-                #
-                # NOTE: The model often appends punctuation/CJK text right after a path (e.g. "...json。草稿本...")
-                # which breaks naive regex extraction. We therefore:
-                #   1) Parse evidence_type first.
-                #   2) Only artifact evidence participates in path checks.
-                #   3) Normalize relative paths against repo_root (derived from $RUN_DIR when available).
-
-                text = (sp or "") + "\n" + (final_answer or "")
-
-                run_dir = os.environ.get("RUN_DIR")
-                repo_root: Path
-                if run_dir:
-                    # RUN_DIR = <repo>/runs/<run_id>
-                    repo_root = Path(run_dir).resolve().parent.parent
-                else:
-                    repo_root = Path.cwd().resolve()
-
-                acceptance_evidence = _parse_acceptance_evidence(text, run_dir=run_dir)
-                paths = acceptance_evidence["paths"]
-
-                # Normalize to absolute paths for existence checks.
-                norm_paths: list[Path] = []
-                for p in paths:
-                    pp = Path(p)
-                    if not pp.is_absolute():
-                        pp = (repo_root / pp)
-                    norm_paths.append(pp)
-
-                failures = []
-                for pp in sorted({p.resolve() for p in norm_paths}):
-                    if not pp.exists():
-                        failures.append({
-                            "code": "artifact_missing",
-                            "message": f"宣称/引用的产物不存在: {pp}。若应生成该文件，请先 write_file 落盘后再 done。",
-                        })
-
-                if failures:
-                    return False, failures
-
-                return True, []
-
-            passed, failures = _acceptance_gate(state, action.final_answer)
-            if not passed:
-                state.meta.setdefault("acceptance_failures", []).append({
-                    "iteration": state.iteration,
-                    "failures": failures,
-                })
+                raw_response = llm.complete(messages, system)
+            except Exception as e:
+                error_msg = f"LLM 调用失败: {e}"
                 if hooks.on_error:
-                    hooks.on_error("[验收失败] 未通过验收，继续 loop 进行补救")
-                    try:
-                        hooks.on_error("[验收失败详情] " + json.dumps(failures, ensure_ascii=False))
-                    except Exception:
-                        pass
+                    hooks.on_error(error_msg)
 
-                # Feed back to the model with concrete failures.
-                state.short_term.append({
-                    "role": "user",
-                    "content": (
-                        "[系统][验收失败] 你刚才尝试 done，但未通过验收，因此不会退出。\n"
-                        "你必须先补救并满足验收，再次 done。\n\n"
-                        f"失败原因: {json.dumps(failures, ensure_ascii=False, indent=2)}\n\n"
-                        "补救建议: 若缺少产物文件，请调用 write_file 生成；若缺少验收自评，请用 scratchpad_append 追加 ACCEPTANCE 区块(标准+证据+结论)。"
-                    ),
-                })
+                es = str(e)
+                if (
+                    "max_tokens must be at least 1" in es
+                    or "context_length" in es
+                    or "context length" in es
+                    or "maximum context" in es
+                ):
+                    _trim_short_term(state, keep_last=6)
+                    _compact_short_term_messages(state, per_message_chars=1200)
+                    state.long_term.append("[自我修复] 遇到上下文/输出长度错误，已自动裁剪+压缩 short_term 以缩短 prompt。")
+
+                _append_short_term(
+                    state,
+                    {
+                        "role": "user",
+                        "content": f"[系统] LLM调用异常: {e}，请重试或换一种方式。",
+                    },
+                )
+                _checkpoint_state(state)
                 state.iteration += 1
                 continue
 
-            # Gate passed: finalize
-            if hooks.on_done:
-                hooks.on_done(action.final_answer or "（无最终输出）")
-            state.meta["final_answer"] = action.final_answer
+            if os.environ.get("DEBUG_LLM_IO", "0") == "1":
+                DARK_RED = "\033[31m"
+                RESET = "\033[0m"
+                max_chars = int(os.environ.get("DEBUG_LLM_IO_MAX_CHARS", "200000"))
+                s2 = raw_response if isinstance(raw_response, str) else str(raw_response)
+                if len(s2) > max_chars:
+                    s2 = s2[:max_chars] + "\n...[TRUNCATED]"
+                print(f"{DARK_RED}[DEBUG_LLM_IO] <<< response{RESET}\n{s2}\n")
 
-            # Auto-remember on success (opt-in)
-            import os
-            if os.environ.get("AUTO_REMEMBER_ON_DONE", "0") == "1":
-                try:
-                    used_tools = []
-                    for m in state.short_term:
-                        if m.get("role") != "assistant":
-                            continue
-                        # best-effort: tool name appears as JSON field "tool"
-                        c = m.get("content", "")
-                        if isinstance(c, str) and '"tool"' in c:
-                            # naive parse: avoid json errors
-                            import re
-                            mt = re.search(r'"tool"\s*:\s*"([^"]+)"', c)
-                            if mt:
-                                used_tools.append(mt.group(1))
-                    used_tools = list(dict.fromkeys(used_tools))
+            action = parse_response(raw_response)
+            if action.type != ActionType.ERROR:
+                state.meta.pop("json_parse_retry", None)
 
-                    est = state.meta.get("prompt_tokens_est")
-                    ctx = state.meta.get("context_window")
-                    summary = (
-                        f"[RUN_OK] goal={state.goal[:120]!r} tools={used_tools} "
-                        f"prompt_est={est}/{ctx} final={str(action.final_answer)[:200]!r}"
-                    )
-                    state.long_term.append(summary)
-                except Exception:
-                    pass
+            if hooks.on_thought and action.thought:
+                hooks.on_thought(action.thought)
 
-            break
+            _append_short_term(
+                state,
+                {
+                    "role": "assistant",
+                    "content": raw_response,
+                },
+            )
 
-        elif action.type == ActionType.ERROR:
-            error_msg = action.thought
-            if hooks.on_error:
-                hooks.on_error(error_msg)
+            if action.type == ActionType.DONE:
+                def _acceptance_gate(state: AgentState, final_answer: Optional[str]):
+                    import os
+                    from pathlib import Path
 
-            # Self-heal: JSON parse errors are often caused by truncated output when
-            # tool_call args contain long strings (e.g. Python code). In that case,
-            # automatically increase max_tokens and retry.
-            import os
-            if (
-                isinstance(error_msg, str)
-                and "JSON 解析失败" in error_msg
-                and hasattr(llm, "max_tokens")
-            ):
-                retry_n = int(state.meta.get("json_parse_retry", 0))
-                retry_max = int(os.environ.get("JSON_PARSE_RETRY_MAX", "3"))
-                cap = int(os.environ.get("LLM_MAX_TOKENS_CAP", "8192"))
-                old = int(getattr(llm, "max_tokens", 0) or 0)
-                if retry_n < retry_max and old > 0 and old < cap:
-                    new = min(cap, max(old + 1, old * 2))
-                    try:
-                        setattr(llm, "max_tokens", new)
-                    except Exception:
-                        pass
-                    state.meta["json_parse_retry"] = retry_n + 1
-                    state.long_term.append(
-                        f"[自我修复] JSON 解析失败，疑似输出被截断：max_tokens {old}→{new} 后重试。"
+                    sp = state.meta.get("scratchpad", "")
+                    if not isinstance(sp, str):
+                        sp = ""
+
+                    if "ACCEPTANCE" not in sp.upper():
+                        return False, [
+                            {
+                                "code": "acceptance_missing",
+                                "message": "缺少验收自评。请在草稿本追加一个 ACCEPTANCE 区块：包含验收标准(criteria)、证据(evidence 路径/片段)与结论(verdict)。",
+                            }
+                        ]
+
+                    text = (sp or "") + "\n" + (final_answer or "")
+                    run_dir = os.environ.get("RUN_DIR")
+                    if run_dir:
+                        repo_root = Path(run_dir).resolve().parent.parent
+                    else:
+                        repo_root = Path.cwd().resolve()
+
+                    acceptance_evidence = _parse_acceptance_evidence(text, run_dir=run_dir)
+                    paths = acceptance_evidence["paths"]
+
+                    norm_paths: list[Path] = []
+                    for p in paths:
+                        pp = Path(p)
+                        if not pp.is_absolute():
+                            pp = repo_root / pp
+                        norm_paths.append(pp)
+
+                    failures = []
+                    for pp in sorted({p.resolve() for p in norm_paths}):
+                        if not pp.exists():
+                            failures.append(
+                                {
+                                    "code": "artifact_missing",
+                                    "message": f"宣称/引用的产物不存在: {pp}。若应生成该文件，请先 write_file 落盘后再 done。",
+                                }
+                            )
+
+                    if failures:
+                        return False, failures
+                    return True, []
+
+                passed, failures = _acceptance_gate(state, action.final_answer)
+                if not passed:
+                    state.meta.setdefault("acceptance_failures", []).append(
+                        {
+                            "iteration": state.iteration,
+                            "failures": failures,
+                        }
                     )
                     if hooks.on_error:
-                        hooks.on_error(f"[自我修复] 提升 max_tokens {old}→{new} 并重试")
+                        hooks.on_error("[验收失败] 未通过验收，继续 loop 进行补救")
+                        try:
+                            hooks.on_error("[验收失败详情] " + json.dumps(failures, ensure_ascii=False))
+                        except Exception:
+                            pass
 
-            # 把错误反馈给 LLM，让它自我修正
-            state.short_term.append({
-                "role": "user",
-                "content": (
-                    "[系统] 输出格式错误，请严格按照 JSON 格式重新回复。"
-                    "只输出 JSON，不要额外文本；如需调用工具，请尽量让 args 简短（例如把长代码放在多行字符串中或拆步）。"
-                    f"错误详情: {error_msg}"
-                )
-            })
-            state.iteration += 1
-            continue
+                    _append_short_term(
+                        state,
+                        {
+                            "role": "user",
+                            "content": (
+                                "[系统][验收失败] 你刚才尝试 done，但未通过验收，因此不会退出。\n"
+                                "你必须先补救并满足验收，再次 done。\n\n"
+                                f"失败原因: {json.dumps(failures, ensure_ascii=False, indent=2)}\n\n"
+                                "补救建议: 若缺少产物文件，请调用 write_file 生成；若缺少验收自评，请用 scratchpad_append 追加 ACCEPTANCE 区块(标准+证据+结论)。"
+                            ),
+                        },
+                    )
+                    _checkpoint_state(state)
+                    state.iteration += 1
+                    continue
 
-        elif action.type == ActionType.TOOL_CALL:
-            if hooks.on_tool_call:
-                hooks.on_tool_call(action.tool, action.args)
+                if hooks.on_done:
+                    hooks.on_done(action.final_answer or "（无最终输出）")
+                state.meta["final_answer"] = action.final_answer
+                persistence = _get_persistence(state)
+                if persistence is not None:
+                    persistence.save_final_answer(action.final_answer or "")
+                _checkpoint_state(state)
 
-            # 执行工具
-            result = execute(action, state)
-
-            if hooks.on_tool_result:
-                hooks.on_tool_result(result)
-
-            # Special: pause-for-input tool
-            if action.tool == "ask_user":
-                # Expect args: {question: str}
-                q = action.args.get("question") or (result.output or {}).get("question")
-                state.meta["awaiting_input"] = q or "(no question provided)"
-                state.meta["paused"] = True
-                if hooks.on_error:
-                    hooks.on_error(f"暂停等待用户输入: {state.meta['awaiting_input']}")
+                if os.environ.get("AUTO_REMEMBER_ON_DONE", "0") == "1":
+                    try:
+                        used_tools = []
+                        for m in state.short_term:
+                            if m.get("role") != "assistant":
+                                continue
+                            c = m.get("content", "")
+                            if isinstance(c, str) and '"tool"' in c:
+                                mt = re.search(r'"tool"\s*:\s*"([^"]+)"', c)
+                                if mt:
+                                    used_tools.append(mt.group(1))
+                        used_tools = list(dict.fromkeys(used_tools))
+                        est = state.meta.get("prompt_tokens_est")
+                        ctx = state.meta.get("context_window")
+                        summary = (
+                            f"[RUN_OK] goal={state.goal[:120]!r} tools={used_tools} "
+                            f"prompt_est={est}/{ctx} final={str(action.final_answer)[:200]!r}"
+                        )
+                        state.long_term.append(summary)
+                    except Exception:
+                        pass
                 break
 
-            # 把执行结果反馈给 LLM（作为下一轮的 user 消息）
-            feedback = _build_feedback(action, result)
-            state.short_term.append({
-                "role": "user",
-                "content": feedback,
-            })
+            if action.type == ActionType.ERROR:
+                error_msg = action.thought
+                if hooks.on_error:
+                    hooks.on_error(error_msg)
 
-            # Optional: auto-append raw memory log (full transcript fragments)
-            import os
-            if os.environ.get("AUTO_RAW_LOG", "0") == "1":
-                try:
-                    path = os.environ.get("RAW_MEMORY_PATH", "./raw_memory.ndjson")
-                    # record minimal structured info
-                    state.tools.get("raw_append").fn(
-                        state=state,
-                        content=f"ITER={state.iteration} TOOL={action.tool} ARGS={action.args} RESULT={result.to_str()}",
-                        path=path,
-                    )
-                except Exception:
-                    pass
+                if (
+                    isinstance(error_msg, str)
+                    and "JSON 解析失败" in error_msg
+                    and hasattr(llm, "max_tokens")
+                ):
+                    retry_n = int(state.meta.get("json_parse_retry", 0))
+                    retry_max = int(os.environ.get("JSON_PARSE_RETRY_MAX", "3"))
+                    cap = int(os.environ.get("LLM_MAX_TOKENS_CAP", "8192"))
+                    old = int(getattr(llm, "max_tokens", 0) or 0)
+                    if retry_n < retry_max and old > 0 and old < cap:
+                        new = min(cap, max(old + 1, old * 2))
+                        try:
+                            setattr(llm, "max_tokens", new)
+                        except Exception:
+                            pass
+                        state.meta["json_parse_retry"] = retry_n + 1
+                        state.long_term.append(
+                            f"[自我修复] JSON 解析失败，疑似输出被截断：max_tokens {old}→{new} 后重试。"
+                        )
+                        if hooks.on_error:
+                            hooks.on_error(f"[自我修复] 提升 max_tokens {old}→{new} 并重试")
 
-        state.iteration += 1
+                _append_short_term(
+                    state,
+                    {
+                        "role": "user",
+                        "content": (
+                            "[系统] 输出格式错误，请严格按照 JSON 格式重新回复。"
+                            "只输出 JSON，不要额外文本；如需调用工具，请尽量让 args 简短（例如把长代码放在多行字符串中或拆步）。"
+                            f"错误详情: {error_msg}"
+                        ),
+                    },
+                )
+                _checkpoint_state(state)
+                state.iteration += 1
+                continue
 
+            if action.type == ActionType.TOOL_CALL:
+                if hooks.on_tool_call:
+                    hooks.on_tool_call(action.tool, action.args)
+
+                result = execute(action, state)
+
+                if hooks.on_tool_result:
+                    hooks.on_tool_result(result)
+
+                if action.tool == "ask_user":
+                    q = action.args.get("question") or (result.output or {}).get("question")
+                    state.meta["awaiting_input"] = q or "(no question provided)"
+                    state.meta["paused"] = True
+                    if hooks.on_error:
+                        hooks.on_error(f"暂停等待用户输入: {state.meta['awaiting_input']}")
+                    _checkpoint_state(state, status="paused")
+                    break
+
+                feedback = _build_feedback(action, result)
+                _append_short_term(
+                    state,
+                    {
+                        "role": "user",
+                        "content": feedback,
+                    },
+                )
+
+                if os.environ.get("AUTO_RAW_LOG", "0") == "1":
+                    try:
+                        path = os.environ.get("RAW_MEMORY_PATH", "./raw_memory.ndjson")
+                        state.tools.get("raw_append").fn(
+                            state=state,
+                            content=f"ITER={state.iteration} TOOL={action.tool} ARGS={action.args} RESULT={result.to_str()}",
+                            path=path,
+                        )
+                    except Exception:
+                        pass
+
+                _checkpoint_state(state)
+                state.iteration += 1
+                continue
+
+            state.iteration += 1
+    except Exception as e:
+        persistence = _get_persistence(state)
+        if persistence is not None:
+            persistence.finish(state, outcome="failed", error=f"{type(e).__name__}: {e}")
+        raise
     else:
-        # 超出最大迭代次数
-        if hooks.on_error:
-            hooks.on_error(f"达到最大迭代次数 {max_iterations}，强制退出。")
-        state.meta["timeout"] = True
+        if state.iteration >= max_iterations and not state.meta.get("paused") and "final_answer" not in state.meta:
+            if hooks.on_error:
+                hooks.on_error(f"达到最大迭代次数 {max_iterations}，强制退出。")
+            state.meta["timeout"] = True
+            _checkpoint_state(state)
 
     return state
 

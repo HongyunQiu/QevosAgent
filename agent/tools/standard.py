@@ -144,6 +144,10 @@ def _scratchpad_persist_to_disk(state: AgentState) -> None:
     This enables *during-run* visibility and recovery.
     """
     try:
+        persistence = getattr(state, "persistence", None)
+        if persistence is not None:
+            persistence.save_scratchpad(state.meta.get("scratchpad", "") or "")
+            return
         run_dir = os.environ.get("RUN_DIR")
         if not run_dir:
             return

@@ -6,13 +6,18 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from agent.core.llm import LLMBackend
+from agent.core.loop import run
 from agent.core.executor import execute
 from agent.core.loop import _extract_claimed_artifact_paths, _parse_acceptance_evidence
 from agent.core.types import Action, ActionType, AgentState, ToolResult, ToolSpec
+from agent.runtime.persistence import RunPersistence
 from agent.tools.standard import (
+    get_standard_tools,
     tool_load_snapshot_meta,
     tool_promote_tool_candidate,
     tool_repair_tool_candidate,
+    tool_scratchpad_set,
     tool_save_snapshot_meta,
     tool_validate_tool_recipe,
 )
@@ -533,6 +538,118 @@ class EnvDefaultTests(unittest.TestCase):
         self.assertIn("configured='qwen3527dgx'", summary)
         self.assertIn("resolved='/models/only-one'", summary)
         self.assertIn("auto-selected", summary)
+
+
+class _SequenceLLM(LLMBackend):
+    def __init__(self, responses):
+        self._responses = list(responses)
+
+    def complete(self, messages: list[dict], system: str) -> str:
+        if not self._responses:
+            raise AssertionError("No more fake LLM responses available")
+        return self._responses.pop(0)
+
+
+class RunPersistenceTests(unittest.TestCase):
+    def test_run_streams_short_term_and_final_answer_during_execution(self):
+        keys = ("RUN_DIR", "USER_GOAL")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ["RUN_DIR"] = tmpdir
+                os.environ["USER_GOAL"] = "测试持久化"
+
+                llm = _SequenceLLM(
+                    [
+                        json.dumps(
+                            {
+                                "thought": "先补验收块",
+                                "action": "tool_call",
+                                "tool": "scratchpad_append",
+                                "args": {
+                                    "content": (
+                                        "ACCEPTANCE:\n"
+                                        "- criteria: 返回最终答案\n"
+                                        "- evidence_type: none\n"
+                                        "- verdict: PASS"
+                                    )
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "thought": "完成任务",
+                                "action": "done",
+                                "final_answer": "持久化完成",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ]
+                )
+
+                state = run(
+                    goal="测试持久化",
+                    llm=llm,
+                    tools=get_standard_tools(),
+                    max_iterations=4,
+                )
+                state.persistence.finish(state, outcome="done")
+
+                short_term_path = Path(tmpdir) / "short_term.jsonl"
+                self.assertTrue(short_term_path.exists())
+                short_term_lines = short_term_path.read_text(encoding="utf-8").splitlines()
+                self.assertGreaterEqual(len(short_term_lines), 4)
+                self.assertIn("请完成以下目标", short_term_lines[0])
+
+                final_answer_path = Path(tmpdir) / "final_answer.md"
+                self.assertTrue(final_answer_path.exists())
+                self.assertEqual(final_answer_path.read_text(encoding="utf-8"), "持久化完成")
+
+                status = json.loads((Path(tmpdir) / "status.json").read_text(encoding="utf-8"))
+                self.assertEqual(status["status"], "done")
+                self.assertTrue(status["final_answer_written"])
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_scratchpad_tool_persists_via_run_persistence(self):
+        state = AgentState(goal="test")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            persistence = RunPersistence(tmpdir)
+            state.persistence = persistence
+            state.meta["_task_desc"] = "test"
+
+            result = tool_scratchpad_set(state=state, content="计划:\n- 第一步")
+
+            self.assertTrue(result.success)
+            scratchpad_path = Path(tmpdir) / "scratchpad.md"
+            self.assertTrue(scratchpad_path.exists())
+            content = scratchpad_path.read_text(encoding="utf-8")
+            self.assertIn("任务描述", content)
+            self.assertIn("第一步", content)
+
+    def test_finish_failed_writes_failure_status_and_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            persistence = RunPersistence(tmpdir)
+            state = AgentState(goal="failing run")
+            state.persistence = persistence
+            state.short_term.append({"role": "user", "content": "hello"})
+            persistence.start(state)
+            persistence.append_short_term(state.short_term[-1])
+            persistence.finish(state, outcome="failed", error="boom")
+
+            status = json.loads((Path(tmpdir) / "status.json").read_text(encoding="utf-8"))
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(status["error"], "boom")
+
+            issues = json.loads((Path(tmpdir) / "issues.json").read_text(encoding="utf-8"))
+            self.assertIn("goal", issues)
+            self.assertTrue((Path(tmpdir) / "execution_summary.md").exists())
+            self.assertTrue((Path(tmpdir) / "reflection.md").exists())
 
 
 if __name__ == "__main__":

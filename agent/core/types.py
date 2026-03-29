@@ -71,3 +71,6 @@ class AgentState:
 
     # 元数据：可存任意键值，供工具和进化机制使用
     meta: dict = field(default_factory=dict)
+
+    # 运行期持久化器（可选），用于把 short_term/meta/final_answer 等实时落盘
+    persistence: Any = None
