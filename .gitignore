@@ -5,6 +5,7 @@ __pycache__/
 *.pyd
 .Python
 .venv/
+.env
 
 # Local experiment outputs / snapshots
 agent_memory.json

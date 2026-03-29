@@ -9,7 +9,39 @@ DEFAULT_SNAPSHOT = "./agent_snapshot_meta.json"
 DEFAULT_RUNS_DIR = "./runs"
 
 
+def load_dotenv_if_present(path: str = ".env"):
+    """Load simple KEY=VALUE pairs from a .env file into os.environ.
+
+    Existing environment variables win over .env values.
+    This keeps the runtime lightweight and avoids an extra dependency.
+    """
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
 def ensure_env_defaults():
+    load_dotenv_if_present()
+
     # Model profile switch (optional):
     #   OPENAI_PROFILE=oss120b      -> env OPENAI_PROFILE_OSS120B_BASE_URL / openai/gpt-oss-120b
     #   OPENAI_PROFILE=qwen3527dgx  -> env OPENAI_PROFILE_QWEN3527DGX_BASE_URL / qwen3527dgx

@@ -339,15 +339,96 @@ class EnvDefaultTests(unittest.TestCase):
             "OPENAI_MODEL",
         )
         old = {k: os.environ.get(k) for k in keys}
+        old_cwd = os.getcwd()
         try:
             for key in keys:
                 os.environ.pop(key, None)
 
-            os.environ["OPENAI_PROFILE"] = "qwen3527dgx"
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.chdir(tmpdir)
+                os.environ["OPENAI_PROFILE"] = "qwen3527dgx"
 
-            with self.assertRaises(ValueError):
-                ensure_env_defaults()
+                with self.assertRaises(ValueError):
+                    ensure_env_defaults()
         finally:
+            os.chdir(old_cwd)
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_ensure_env_defaults_auto_loads_dotenv_file(self):
+        keys = (
+            "OPENAI_PROFILE",
+            "OPENAI_BASE_URL",
+            "OPENAI_PROFILE_OSS120B_BASE_URL",
+            "OPENAI_API_KEY",
+            "OPENAI_MODEL",
+        )
+        old = {k: os.environ.get(k) for k in keys}
+        old_cwd = os.getcwd()
+        try:
+            for key in keys:
+                os.environ.pop(key, None)
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                env_path = Path(tmpdir) / ".env"
+                env_path.write_text(
+                    "OPENAI_PROFILE=oss120b\n"
+                    "OPENAI_PROFILE_OSS120B_BASE_URL=http://from-dotenv.example/v1\n"
+                    "OPENAI_API_KEY=dotenv-key\n",
+                    encoding="utf-8",
+                )
+                os.chdir(tmpdir)
+
+                ensure_env_defaults()
+
+                self.assertEqual(os.environ["OPENAI_BASE_URL"], "http://from-dotenv.example/v1")
+                self.assertEqual(os.environ["OPENAI_API_KEY"], "dotenv-key")
+                self.assertEqual(os.environ["OPENAI_MODEL"], "openai/gpt-oss-120b")
+        finally:
+            os.chdir(old_cwd)
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_ensure_env_defaults_does_not_override_existing_env_with_dotenv(self):
+        keys = (
+            "OPENAI_PROFILE",
+            "OPENAI_BASE_URL",
+            "OPENAI_PROFILE_OSS120B_BASE_URL",
+            "OPENAI_API_KEY",
+            "OPENAI_MODEL",
+        )
+        old = {k: os.environ.get(k) for k in keys}
+        old_cwd = os.getcwd()
+        try:
+            for key in keys:
+                os.environ.pop(key, None)
+
+            os.environ["OPENAI_PROFILE"] = "oss120b"
+            os.environ["OPENAI_PROFILE_OSS120B_BASE_URL"] = "http://from-env.example/v1"
+            os.environ["OPENAI_API_KEY"] = "preexisting-key"
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                env_path = Path(tmpdir) / ".env"
+                env_path.write_text(
+                    "OPENAI_PROFILE=oss120b\n"
+                    "OPENAI_PROFILE_OSS120B_BASE_URL=http://from-dotenv.example/v1\n"
+                    "OPENAI_API_KEY=dotenv-key\n",
+                    encoding="utf-8",
+                )
+                os.chdir(tmpdir)
+
+                ensure_env_defaults()
+
+                self.assertEqual(os.environ["OPENAI_BASE_URL"], "http://from-env.example/v1")
+                self.assertEqual(os.environ["OPENAI_API_KEY"], "preexisting-key")
+        finally:
+            os.chdir(old_cwd)
             for key, value in old.items():
                 if value is None:
                     os.environ.pop(key, None)
