@@ -12,6 +12,10 @@
   - `path` 必须以 `runs/` 开头，或显式使用 `$RUN_DIR`（建议先把 `$RUN_DIR` 展开成具体路径再写）。
   - 大文件（HTML/JSON/XML）写入 `artifacts/`，文件名要有语义（如 `ddg_search_openclaw.html`）。
 
+## CLI命令优先
+- 能用CLI直接执行的单一指令，优先用CLI执行，不必再做成工具。多步CLI指令可以做成工具。
+- CLI
+
 ## 草稿本（scratchpad）
 - 草稿本用于“执行过程中的中间记录与分析”，不是最终答案。
 - 多步任务必须维护草稿本：

@@ -83,8 +83,89 @@ def ensure_env_defaults():
     os.environ.setdefault("AUTO_SAVE_SNAPSHOT_ON_EXIT", "1")
 
 
+def probe_openai_configuration(list_models=None):
+    """Verify the configured OpenAI-compatible endpoint before starting the agent.
+
+    Returns a small dict describing the resolved model. If the configured model
+    is missing but the server exposes exactly one model, auto-switch to it to
+    reduce manual config churn.
+    """
+    base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip()
+    api_key = os.environ.get("OPENAI_API_KEY")
+    model = (os.environ.get("OPENAI_MODEL") or "").strip()
+
+    if not base_url:
+        raise ValueError("LLM 服务探测失败: 缺少 OPENAI_BASE_URL。")
+    if not model:
+        raise ValueError("LLM 服务探测失败: 缺少 OPENAI_MODEL。")
+
+    if list_models is None:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        list_models = client.models.list
+
+    try:
+        resp = list_models()
+    except Exception as e:
+        raise RuntimeError(
+            f"LLM 服务探测失败: 无法连接 {base_url}。"
+            f"请检查 OPENAI_BASE_URL / 网络 / 服务状态。原始错误: {e}"
+        ) from e
+
+    model_ids = []
+    for item in getattr(resp, "data", []) or []:
+        model_id = getattr(item, "id", None)
+        if model_id:
+            model_ids.append(str(model_id))
+
+    if model in model_ids:
+        return {
+            "base_url": base_url,
+            "configured_model": model,
+            "resolved_model": model,
+            "available_models": model_ids,
+            "auto_selected": False,
+        }
+
+    if len(model_ids) == 1:
+        resolved = model_ids[0]
+        os.environ["OPENAI_MODEL"] = resolved
+        return {
+            "base_url": base_url,
+            "configured_model": model,
+            "resolved_model": resolved,
+            "available_models": model_ids,
+            "auto_selected": True,
+        }
+
+    shown = ", ".join(model_ids[:5]) if model_ids else "(空列表)"
+    raise ValueError(
+        f"LLM 服务探测失败: 配置的模型 `{model}` 不在 {base_url} 返回的模型列表中。"
+        f"可用模型: {shown}"
+    )
+
+
+def format_probe_summary(probe: dict) -> str:
+    base_url = probe["base_url"]
+    configured = probe["configured_model"]
+    resolved = probe["resolved_model"]
+    if probe.get("auto_selected"):
+        return (
+            "[run_goal] probe: endpoint ok; "
+            f"configured={configured!r}; resolved={resolved!r}; "
+            f"auto-selected the only available model from {base_url}"
+        )
+    return (
+        "[run_goal] probe: endpoint ok; "
+        f"model={resolved!r}; base_url={base_url}"
+    )
+
+
 def main():
     ensure_env_defaults()
+    probe = probe_openai_configuration()
+    print(format_probe_summary(probe))
 
     # Per-run workspace (raw memory, scratchpad copies, etc.)
     from datetime import datetime

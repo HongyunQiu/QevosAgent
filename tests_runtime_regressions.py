@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent.core.executor import execute
 from agent.core.loop import _extract_claimed_artifact_paths, _parse_acceptance_evidence
@@ -15,7 +16,7 @@ from agent.tools.standard import (
     tool_save_snapshot_meta,
     tool_validate_tool_recipe,
 )
-from run_goal import ensure_env_defaults
+from run_goal import ensure_env_defaults, format_probe_summary, probe_openai_configuration
 
 
 class ExecuteArgFilteringTests(unittest.TestCase):
@@ -434,6 +435,104 @@ class EnvDefaultTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_probe_openai_configuration_auto_switches_to_only_available_model(self):
+        keys = ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            os.environ["OPENAI_BASE_URL"] = "http://model-host.example/v1"
+            os.environ["OPENAI_API_KEY"] = "local"
+            os.environ["OPENAI_MODEL"] = "qwen3527dgx"
+
+            result = probe_openai_configuration(
+                list_models=lambda: SimpleNamespace(
+                    data=[SimpleNamespace(id="/models/only-one")]
+                )
+            )
+
+            self.assertTrue(result["auto_selected"])
+            self.assertEqual(result["resolved_model"], "/models/only-one")
+            self.assertEqual(os.environ["OPENAI_MODEL"], "/models/only-one")
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_probe_openai_configuration_raises_when_model_missing_from_multi_model_server(self):
+        keys = ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            os.environ["OPENAI_BASE_URL"] = "http://model-host.example/v1"
+            os.environ["OPENAI_API_KEY"] = "local"
+            os.environ["OPENAI_MODEL"] = "qwen3527dgx"
+
+            with self.assertRaisesRegex(ValueError, "qwen3527dgx"):
+                probe_openai_configuration(
+                    list_models=lambda: SimpleNamespace(
+                        data=[
+                            SimpleNamespace(id="model-a"),
+                            SimpleNamespace(id="model-b"),
+                        ]
+                    )
+                )
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_probe_openai_configuration_wraps_connection_errors(self):
+        keys = ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")
+        old = {k: os.environ.get(k) for k in keys}
+        try:
+            os.environ["OPENAI_BASE_URL"] = "http://bad-host.example/v1"
+            os.environ["OPENAI_API_KEY"] = "local"
+            os.environ["OPENAI_MODEL"] = "qwen3527dgx"
+
+            def boom():
+                raise RuntimeError("Connection error")
+
+            with self.assertRaisesRegex(RuntimeError, "LLM 服务探测失败"):
+                probe_openai_configuration(list_models=boom)
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_format_probe_summary_for_matched_model(self):
+        summary = format_probe_summary(
+            {
+                "base_url": "http://host.example/v1",
+                "configured_model": "qwen3527dgx",
+                "resolved_model": "qwen3527dgx",
+                "available_models": ["qwen3527dgx"],
+                "auto_selected": False,
+            }
+        )
+
+        self.assertIn("probe: endpoint ok", summary)
+        self.assertIn("model='qwen3527dgx'", summary)
+        self.assertNotIn("auto-selected", summary)
+
+    def test_format_probe_summary_for_auto_selected_model(self):
+        summary = format_probe_summary(
+            {
+                "base_url": "http://host.example/v1",
+                "configured_model": "qwen3527dgx",
+                "resolved_model": "/models/only-one",
+                "available_models": ["/models/only-one"],
+                "auto_selected": True,
+            }
+        )
+
+        self.assertIn("configured='qwen3527dgx'", summary)
+        self.assertIn("resolved='/models/only-one'", summary)
+        self.assertIn("auto-selected", summary)
 
 
 if __name__ == "__main__":
