@@ -715,6 +715,8 @@ def _auto_scratchpad_note(action: "Action", result: "ToolResult", state: "AgentS
     - 超限时从头部裁剪（保留任务描述行），优先保留最新记录
     - 任何异常静默跳过，不影响主流程
     """
+    import os
+
     if not result.success:
         return
     if action.tool in _ACK_ONLY_TOOLS:
