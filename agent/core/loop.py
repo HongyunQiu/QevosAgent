@@ -599,7 +599,7 @@ def run(
                     _checkpoint_state(state, status="paused")
                     break
 
-                feedback = _build_feedback(action, result)
+                feedback = _build_feedback(action, result, state=state)
                 _append_short_term(
                     state,
                     {
@@ -676,14 +676,48 @@ def _summarize_large_text(text: str, limit: int) -> str:
     return f"[TRUNCATED] len={len(s)}\n{head}\n...\n{tail}"
 
 
-def _build_feedback(action: Action, result: ToolResult) -> str:
+def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentState"] = None) -> str:
     """构建工具执行结果的反馈消息。
 
     Important: never stuff huge tool outputs into the LLM context.
     """
     import os
+    import json as _json
+    import hashlib
 
     max_chars = int(os.environ.get("MAX_TOOL_FEEDBACK_CHARS", "4000"))
+
+    # ── 重复调用检测 ──────────────────────────────────────────────────────────
+    repeat_warning = ""
+    if state is not None and action.type == ActionType.TOOL_CALL:
+        try:
+            call_sig = hashlib.md5(
+                _json.dumps(
+                    {"tool": action.tool, "args": action.args},
+                    sort_keys=True,
+                    ensure_ascii=False,
+                ).encode()
+            ).hexdigest()
+
+            history = state.meta.setdefault("_call_sig_history", [])
+            consecutive = 0
+            for prev in reversed(history[-5:]):
+                if prev == call_sig:
+                    consecutive += 1
+                else:
+                    break
+            history.append(call_sig)
+
+            if consecutive >= 2:
+                args_preview = _json.dumps(action.args, ensure_ascii=False)[:300]
+                repeat_warning = (
+                    f"\n\n⛔ 循环检测：你已连续 {consecutive + 1} 次以完全相同的参数调用 `{action.tool}`，"
+                    f"继续重试无意义。请立刻换用其他工具（如 run_python）或直接 done 给出已知结论。"
+                    f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
+                )
+        except Exception:
+            pass
+    # ─────────────────────────────────────────────────────────────────────────
 
     if result.success:
         out = result.to_str()
@@ -697,4 +731,5 @@ def _build_feedback(action: Action, result: ToolResult) -> str:
             f"[工具: {action.tool}] 执行失败\n"
             f"错误: {result.error}\n"
             f"请分析原因，调整策略后重试（可换用其他工具或修改参数）。"
+            + repeat_warning
         )
