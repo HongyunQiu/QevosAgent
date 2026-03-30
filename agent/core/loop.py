@@ -702,6 +702,35 @@ def _summarize_large_text(text: str, limit: int) -> str:
 _ACK_ONLY_TOOLS = frozenset({"scratchpad_set", "scratchpad_append", "raw_append"})
 
 
+def _spill_large_output_to_disk(tool_name: str, content: str, state: "AgentState") -> Optional[str]:
+    """将超限的工具输出完整写入 artifacts 目录，返回可用的相对路径；失败返回 None。
+
+    保证大型工具输出在被截断送入上下文之前先落盘，避免信息永久丢失。
+    模型可凭路径用 shell / run_python 分段读取完整内容。
+    """
+    from pathlib import Path
+
+    persistence = _get_persistence(state)
+    if persistence is not None:
+        run_dir = Path(persistence.run_dir)
+    else:
+        rd = os.environ.get("RUN_DIR")
+        if not rd:
+            return None
+        run_dir = Path(rd)
+
+    try:
+        artifacts_dir = run_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        iter_n = getattr(state, "iteration", 0)
+        safe_name = tool_name.replace("/", "_").replace("\\", "_")
+        filepath = artifacts_dir / f"tool_raw_{safe_name}_iter{iter_n}.txt"
+        filepath.write_text(content, encoding="utf-8")
+        return str(filepath)
+    except Exception:
+        return None
+
+
 def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentState"] = None) -> Optional[str]:
     """构建工具执行结果的反馈消息。
 
@@ -750,10 +779,28 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
         if action.tool in _ACK_ONLY_TOOLS:
             return None
         out = result.to_str()
-        out2 = _summarize_large_text(out, max_chars)
+
+        if len(out) > max_chars:
+            # 输出超限：先完整落盘，再给模型路径 + 预览，确保数据不因截断而丢失
+            spill_path = _spill_large_output_to_disk(action.tool, out, state) if state is not None else None
+            if spill_path:
+                preview = _summarize_large_text(out, 800)
+                return (
+                    f"[工具: {action.tool}] 执行成功\n"
+                    f"输出较大（{len(out)} 字符），已完整保存至：{spill_path}\n"
+                    f"如需读取完整内容，请使用 shell 或 run_python 分段读取该文件。\n"
+                    f"内容预览：\n{preview}"
+                )
+            # RUN_DIR 不可用时降级为截断（保持原有行为）
+            out2 = _summarize_large_text(out, max_chars)
+            return (
+                f"[工具: {action.tool}] 执行成功\n"
+                f"输出(可能已截断):\n{out2}"
+            )
+
         return (
             f"[工具: {action.tool}] 执行成功\n"
-            f"输出(可能已截断):\n{out2}"
+            f"输出:\n{out}"
         )
     else:
         return (
