@@ -544,13 +544,11 @@ def run(
                 if hooks.on_error:
                     hooks.on_error(error_msg)
 
-                if (
-                    isinstance(error_msg, str)
-                    and "JSON 解析失败" in error_msg
-                    and hasattr(llm, "max_tokens")
-                ):
+                is_json_parse_error = isinstance(error_msg, str) and "JSON 解析失败" in error_msg
+                retry_max = int(os.environ.get("JSON_PARSE_RETRY_MAX", "3"))
+
+                if is_json_parse_error and hasattr(llm, "max_tokens"):
                     retry_n = int(state.meta.get("json_parse_retry", 0))
-                    retry_max = int(os.environ.get("JSON_PARSE_RETRY_MAX", "3"))
                     cap = int(os.environ.get("LLM_MAX_TOKENS_CAP", "8192"))
                     old = int(getattr(llm, "max_tokens", 0) or 0)
                     if retry_n < retry_max and old > 0 and old < cap:
@@ -566,6 +564,25 @@ def run(
                         if hooks.on_error:
                             hooks.on_error(f"[自我修复] 提升 max_tokens {old}→{new} 并重试")
 
+                # 连续 JSON 解析失败计数（独立于 json_parse_retry）
+                if is_json_parse_error:
+                    streak = int(state.meta.get("_json_fail_streak", 0)) + 1
+                    state.meta["_json_fail_streak"] = streak
+                else:
+                    streak = 0
+                    state.meta["_json_fail_streak"] = 0
+
+                # 超出重试上限后注入强提示，打破截断死循环
+                if is_json_parse_error and streak > retry_max:
+                    overload_hint = (
+                        f"\n\n⛔ 循环检测：JSON 解析已连续失败 {streak} 次，输出持续被截断。"
+                        "根本原因极可能是 args（尤其是 content/code 字段）过长，超出模型单次输出上限。"
+                        "请立刻改变策略：① 用 run_python 分块写入文件；② 或大幅缩短内容后重试。"
+                        "禁止继续原样重试相同的长内容。"
+                    )
+                else:
+                    overload_hint = ""
+
                 _append_short_term(
                     state,
                     {
@@ -574,6 +591,7 @@ def run(
                             "[系统] 输出格式错误，请严格按照 JSON 格式重新回复。"
                             "只输出 JSON，不要额外文本；如需调用工具，请尽量让 args 简短（例如把长代码放在多行字符串中或拆步）。"
                             f"错误详情: {error_msg}"
+                            + overload_hint
                         ),
                     },
                 )
@@ -582,6 +600,9 @@ def run(
                 continue
 
             if action.type == ActionType.TOOL_CALL:
+                # 成功解析说明 JSON 截断已恢复，重置连续失败计数
+                state.meta["_json_fail_streak"] = 0
+
                 if hooks.on_tool_call:
                     hooks.on_tool_call(action.tool, action.args)
 
@@ -600,13 +621,14 @@ def run(
                     break
 
                 feedback = _build_feedback(action, result, state=state)
-                _append_short_term(
-                    state,
-                    {
-                        "role": "user",
-                        "content": feedback,
-                    },
-                )
+                if feedback is not None:
+                    _append_short_term(
+                        state,
+                        {
+                            "role": "user",
+                            "content": feedback,
+                        },
+                    )
 
                 if os.environ.get("AUTO_RAW_LOG", "0") == "1":
                     try:
@@ -676,7 +698,11 @@ def _summarize_large_text(text: str, limit: int) -> str:
     return f"[TRUNCATED] len={len(s)}\n{head}\n...\n{tail}"
 
 
-def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentState"] = None) -> str:
+# 这些工具的成功 ACK 对模型无信息价值（结果已通过 system prompt 中的 scratchpad 反映）
+_ACK_ONLY_TOOLS = frozenset({"scratchpad_set", "scratchpad_append", "raw_append"})
+
+
+def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentState"] = None) -> Optional[str]:
     """构建工具执行结果的反馈消息。
 
     Important: never stuff huge tool outputs into the LLM context.
@@ -720,6 +746,9 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
     # ─────────────────────────────────────────────────────────────────────────
 
     if result.success:
+        # 纯 ACK 工具：成功时不写入 short_term，避免无意义消息占用上下文
+        if action.tool in _ACK_ONLY_TOOLS:
+            return None
         out = result.to_str()
         out2 = _summarize_large_text(out, max_chars)
         return (
