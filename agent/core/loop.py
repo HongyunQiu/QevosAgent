@@ -611,6 +611,10 @@ def run(
                 if hooks.on_tool_result:
                     hooks.on_tool_result(result)
 
+                # 自动提取关键发现追加草稿本（目标感知的 mini LLM call）
+                if os.environ.get("AUTO_SCRATCHPAD_NOTE", "1") != "0":
+                    _auto_scratchpad_note(action, result, state, llm)
+
                 if action.tool == "ask_user":
                     q = action.args.get("question") or (result.output or {}).get("question")
                     state.meta["awaiting_input"] = q or "(no question provided)"
@@ -700,6 +704,85 @@ def _summarize_large_text(text: str, limit: int) -> str:
 
 # 这些工具的成功 ACK 对模型无信息价值（结果已通过 system prompt 中的 scratchpad 反映）
 _ACK_ONLY_TOOLS = frozenset({"scratchpad_set", "scratchpad_append", "raw_append"})
+
+
+def _auto_scratchpad_note(action: "Action", result: "ToolResult", state: "AgentState", llm: "LLMBackend") -> None:
+    """在工具执行成功后，用超短 LLM 对话自动提取关键发现并追加到草稿本。
+
+    设计原则：
+    - mini call 携带 goal + 当前草稿摘要 + 工具结果，做到目标感知而不只是局部摘要
+    - 直接写 state.meta["scratchpad"]，绕过工具系统，不产生 ACK 噪声
+    - 超限时从头部裁剪（保留任务描述行），优先保留最新记录
+    - 任何异常静默跳过，不影响主流程
+    """
+    if not result.success:
+        return
+    if action.tool in _ACK_ONLY_TOOLS:
+        return
+
+    # 短输出已足够简洁，不需要再提炼
+    out = result.to_str()
+    min_chars = int(os.environ.get("AUTO_NOTE_MIN_CHARS", "200"))
+    if len(out) < min_chars:
+        return
+
+    # 处于 JSON 截断循环中时跳过，避免雪上加霜
+    if int(state.meta.get("_json_fail_streak", 0)) > 0:
+        return
+
+    try:
+        goal_text   = (getattr(state, "goal", "") or "")[:300]
+        sp_text     = (state.meta.get("scratchpad") or "")[:300]
+        args_text   = json.dumps(action.args, ensure_ascii=False)[:120]
+        result_text = out[:1000]
+
+        mini_system = (
+            "你是一个简洁的信息提取助手。"
+            "根据任务目标，从工具结果中提取1-2条最关键的新发现。"
+            "要求：每条一行，不超过40字，直接输出文字，不要JSON，不要编号，不要重复草稿中已有的内容。"
+        )
+        mini_user = (
+            f"任务目标: {goal_text}\n"
+            f"当前草稿摘要: {sp_text}\n"
+            f"工具: {action.tool}  参数: {args_text}\n"
+            f"工具结果:\n{result_text}"
+        )
+
+        note = llm.complete_text(
+            messages=[{"role": "user", "content": mini_user}],
+            system=mini_system,
+            max_tokens=120,
+        ).strip()
+
+        if not note:
+            return
+
+        note = note[:200]   # 防止模型输出过长
+        iter_n = getattr(state, "iteration", 0)
+        entry = f"\n[iter{iter_n}|{action.tool}] {note}"
+
+        cur = state.meta.get("scratchpad", "")
+        max_chars = int(os.environ.get("SCRATCHPAD_MAX_CHARS", "2000"))
+        new_sp = cur + entry
+
+        # 超限时从头部裁剪，保留任务描述（前3行）+ 最新内容
+        if len(new_sp) > max_chars:
+            lines = new_sp.splitlines(keepends=True)
+            head = "".join(lines[:3])
+            body = new_sp[len(head):]
+            overflow = len(head) + len(body) - max_chars
+            body = body[overflow:]
+            new_sp = head + body
+
+        state.meta["scratchpad"] = new_sp
+
+        # 立即落盘
+        persistence = _get_persistence(state)
+        if persistence is not None:
+            persistence.save_scratchpad(new_sp)
+
+    except Exception:
+        pass  # 自动追加失败不影响主流程
 
 
 def _spill_large_output_to_disk(tool_name: str, content: str, state: "AgentState") -> Optional[str]:

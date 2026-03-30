@@ -55,6 +55,10 @@ class LLMBackend(ABC):
         # Default: heuristic; subclasses can override.
         return _estimate_tokens_heuristic([system] + [m.get("content", "") for m in messages])
 
+    def complete_text(self, messages: list[dict], system: str, max_tokens: int = 200) -> str:
+        """Plain-text lightweight call. Default falls back to complete(); subclasses may override."""
+        return self.complete(messages, system)
+
 
 # ── OpenAI 后端实现 ────────────────────────────────────────────────────────────
 
@@ -96,24 +100,21 @@ class OpenAIBackend(LLMBackend):
             max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
         self.max_tokens = max(1, int(max_tokens))
 
-    def complete(self, messages: list[dict], system: str) -> str:
+    def _call_api(self, messages: list[dict], system: str, max_tokens: int, use_json_format: bool) -> str:
+        """Internal helper: raw API call with explicit format and token controls."""
         full_messages = [{"role": "system", "content": system}] + messages
         kwargs = {
             "model": self.model,
             "messages": full_messages,
             "temperature": 0.3,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens,
         }
-        # Some OpenAI-compatible servers (e.g. certain vLLM builds) may not fully
-        # support `response_format`. When using a custom base_url, rely on the
-        # system prompt's strict-JSON instruction instead.
-        if self._use_response_format:
+        if use_json_format and self._use_response_format:
             kwargs["response_format"] = {"type": "json_object"}
+        elif not use_json_format and self._use_response_format:
+            kwargs["response_format"] = {"type": "text"}
 
-        # For vLLM reasoning-enabled builds: disable thinking so answers land in
-        # message.content (instead of only in reasoning fields).
         if not self._use_response_format:
-            # OpenAI Python SDK doesn't accept arbitrary kwargs; vLLM supports this via extra_body.
             kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
 
         resp = self.client.chat.completions.create(**kwargs)
@@ -121,14 +122,24 @@ class OpenAIBackend(LLMBackend):
         content = getattr(msg, "content", None)
         if content is None:
             content = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
-
-        # Some OpenAI-compatible servers / SDK versions may return non-str content.
         if isinstance(content, str):
             return content
         try:
             return json.dumps(content, ensure_ascii=False)
         except Exception:
             return str(content)
+
+    def complete(self, messages: list[dict], system: str) -> str:
+        """Main agent loop call: JSON-formatted, full max_tokens."""
+        return self._call_api(messages, system, max_tokens=self.max_tokens, use_json_format=True)
+
+    def complete_text(self, messages: list[dict], system: str, max_tokens: int = 200) -> str:
+        """Lightweight plain-text call for summarisation / note extraction.
+
+        Bypasses JSON response_format so the model can output free-form text.
+        Uses a small max_tokens cap to keep latency low.
+        """
+        return self._call_api(messages, system, max_tokens=max_tokens, use_json_format=False)
 
 
 # ── Anthropic 后端实现 ─────────────────────────────────────────────────────────
@@ -147,6 +158,16 @@ class AnthropicBackend(LLMBackend):
         resp = self.client.messages.create(
             model=self.model,
             max_tokens=2048,
+            system=system,
+            messages=messages,
+        )
+        return resp.content[0].text
+
+    def complete_text(self, messages: list[dict], system: str, max_tokens: int = 200) -> str:
+        """Lightweight plain-text call for summarisation / note extraction."""
+        resp = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
             system=system,
             messages=messages,
         )
