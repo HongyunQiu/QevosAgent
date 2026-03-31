@@ -28,6 +28,8 @@
 
 ### CLI 使用指南
 
+**明确当前操作系统是WINDOWS还是LINUX，以确定使用POWERSHEEL还是BASH指令**
+
 **简单场景 - 直接使用 shell 工具：**
 示例：简单查询
 shell(command='ls -la /tmp')

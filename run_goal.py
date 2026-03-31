@@ -235,7 +235,7 @@ def main():
     agent = Agent(
         backend="openai",
         api_key=os.environ.get("OPENAI_API_KEY"),
-        max_iterations=int(os.environ.get("MAX_ITERS", "40")),
+        max_iterations=int(os.environ.get("MAX_ITERS", "100")),
         verbose=True,
     )
     persistence = RunPersistence(run_dir)
