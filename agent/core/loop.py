@@ -631,10 +631,39 @@ def run(
                 # 成功解析说明 JSON 截断已恢复，重置连续失败计数
                 state.meta["_json_fail_streak"] = 0
 
+                # ── 硬封锁检查 ────────────────────────────────────────────────
+                # 若该工具已被加入 _hard_blocked_tools，拒绝执行并强制要求改变策略
+                hard_blocked = state.meta.get("_hard_blocked_tools", set())
+                if action.tool in hard_blocked:
+                    warn_count = state.meta.get("_loop_warn_counts", {}).get(action.tool, 0)
+                    blocked_feedback = (
+                        f"[系统][硬封锁] `{action.tool}` 工具已被临时封锁，本次调用被拒绝执行。\n"
+                        f"原因：你已连续 {warn_count} 次忽略循环警告后仍重复调用此工具。\n"
+                        f"你必须在下一步中选择以下行动之一：\n"
+                        f"  1. action=done：如实报告已尝试的方法、失败原因和当前状态（这是可接受的完成）\n"
+                        f"  2. tool=ask_user：向用户提问，请求具体指导或新方案\n"
+                        f"  3. 调用与 `{action.tool}` 完全不同类型的工具（如从 shell 改用 web_search/write_file 等），展现真正的策略转变\n"
+                        f"调用参数（已拒绝执行）：{json.dumps(action.args, ensure_ascii=False)[:200]}"
+                    )
+                    if hooks.on_error:
+                        hooks.on_error(f"[硬封锁] {action.tool} 被拒绝执行（已忽略 {warn_count} 次循环警告）")
+                    _append_short_term(state, {"role": "user", "content": blocked_feedback})
+                    _checkpoint_state(state)
+                    state.iteration += 1
+                    continue
+
                 if hooks.on_tool_call:
                     hooks.on_tool_call(action.tool, action.args)
 
                 result = execute(action, state)
+
+                # ── 成功执行非封锁工具后解除封锁 ────────────────────────────
+                # 当模型真正换用了其他工具且执行成功，解除所有封锁（策略转变已发生）
+                if result.success:
+                    hard_blocked = state.meta.get("_hard_blocked_tools", set())
+                    if hard_blocked and action.tool not in hard_blocked:
+                        state.meta["_hard_blocked_tools"] = set()
+                        state.meta["_loop_warn_counts"] = {}
 
                 if hooks.on_tool_result:
                     hooks.on_tool_result(result)
@@ -890,13 +919,17 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             history.append(call_sig)
 
             args_preview = _json.dumps(action.args, ensure_ascii=False)[:300]
+
+            loop_triggered = False
             if consecutive >= 2:
+                loop_triggered = True
                 repeat_warning = (
                     f"\n\n⛔ 循环检测（连续）：你已连续 {consecutive + 1} 次以完全相同的参数调用 `{action.tool}`，"
                     f"继续重试无意义。请立刻换用其他工具或直接 done 给出已知结论。"
                     f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
                 )
             elif freq_in_window >= win_thresh:
+                loop_triggered = True
                 repeat_warning = (
                     f"\n\n⛔ 循环检测（振荡）：在最近 {len(window)} 次工具调用中，"
                     f"你以完全相同的参数调用 `{action.tool}` 已达 {freq_in_window} 次，"
@@ -904,6 +937,35 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                     f"该查询已无法提供新信息，请立刻换用不同工具或策略，或直接 done 给出已知结论。"
                     f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
                 )
+
+            # ── C：循环警告升级（硬封锁） ───────────────────────────────────
+            # 当某工具连续触发循环警告 LOOP_HARD_BLOCK_AFTER 次仍不改变策略，
+            # 将该工具加入 _hard_blocked_tools，主循环将拒绝实际执行，
+            # 强制模型选择 done 或 ask_user。
+            hard_block_after = int(os.environ.get("LOOP_HARD_BLOCK_AFTER", "3"))
+            if loop_triggered:
+                warn_counts = state.meta.setdefault("_loop_warn_counts", {})
+                warn_counts[action.tool] = warn_counts.get(action.tool, 0) + 1
+                if warn_counts[action.tool] >= hard_block_after:
+                    blocked = state.meta.setdefault("_hard_blocked_tools", set())
+                    blocked.add(action.tool)
+                    repeat_warning += (
+                        f"\n\n⛔⛔ 硬封锁触发：你已经收到 {warn_counts[action.tool]} 次循环警告但仍重复调用 `{action.tool}`。"
+                        f"\n系统将在下次调用时拒绝执行 `{action.tool}`，直到你选择以下行动之一："
+                        f"\n  1. action=done：如实报告已尝试方法、失败原因和当前状态（这是可接受的完成）"
+                        f"\n  2. tool=ask_user：向用户提问，请求具体指导或新方案"
+                        f"\n  3. 调用与 `{action.tool}` 完全不同类型的工具，展现真正的策略转变"
+                    )
+            else:
+                # 非循环调用：重置该工具的警告计数
+                warn_counts = state.meta.get("_loop_warn_counts", {})
+                if action.tool in warn_counts:
+                    warn_counts[action.tool] = 0
+                # 调用了不同的非封锁工具 → 解除该工具的封锁
+                blocked = state.meta.get("_hard_blocked_tools", set())
+                if blocked and action.tool not in blocked:
+                    blocked.discard(action.tool)  # 仅解除当前工具（如果它曾被封）
+
         except Exception:
             pass
     # ─────────────────────────────────────────────────────────────────────────
