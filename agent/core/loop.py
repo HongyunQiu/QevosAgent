@@ -60,13 +60,41 @@ def _checkpoint_state(state: AgentState, status: str = "running", error: Optiona
 def _trim_short_term(state: AgentState, keep_last: int = 8):
     """Trim short_term history to reduce prompt size.
 
-    Keep the initial user goal message (index 0) plus the last `keep_last` messages.
+    Strategy:
+    - Always keep short_term[0] (the original user goal — must never be lost).
+    - Always keep the last `keep_last` messages (recent execution context).
+    - Replace the dropped middle with a single bridge message that explicitly
+      points the model to the scratchpad, which already contains the distilled
+      summary of earlier work.  This turns scratchpad into the primary carrier
+      of compressed history rather than silently discarding it.
     """
     if not state.short_term:
         return
-    head = state.short_term[:1]
-    tail = state.short_term[-keep_last:] if len(state.short_term) > 1 else []
-    state.short_term = head + tail
+
+    # Nothing to drop: head + tail already covers everything.
+    if len(state.short_term) <= keep_last + 1:
+        _compact_short_term_messages(state, per_message_chars=2000)
+        return
+
+    head = state.short_term[:1]                                         # goal — never drop
+    tail = state.short_term[-keep_last:]                                # recent context
+    dropped = len(state.short_term) - 1 - keep_last
+
+    scratchpad = (state.meta.get("scratchpad") or "").strip()
+    if scratchpad:
+        bridge_content = (
+            f"[系统] 早期对话记录（共 {dropped} 条）已压缩以节省上下文空间。"
+            f"执行过程的关键发现与进度已归纳在 system prompt 的草稿本中，请以草稿本内容作为早期历史的参考依据。"
+            f"以下为最近 {keep_last} 条执行记录。"
+        )
+    else:
+        bridge_content = (
+            f"[系统] 早期对话记录（共 {dropped} 条）已压缩以节省上下文空间。"
+            f"以下为最近 {keep_last} 条执行记录。"
+        )
+
+    bridge = {"role": "user", "content": bridge_content}
+    state.short_term = head + [bridge] + tail
     _compact_short_term_messages(state, per_message_chars=2000)
 
 
