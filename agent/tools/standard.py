@@ -339,9 +339,15 @@ def tool_read_file(state: AgentState, path: str) -> ToolResult:
         return ToolResult(success=False, output=None, error=str(e))
 
 
-def tool_shell(state: AgentState, command: str) -> ToolResult:
-    """执行 shell 命令并返回输出（危险工具，生产环境应加白名单）。"""
-    timeout = int(os.environ.get("SHELL_TIMEOUT", "30"))
+def tool_shell(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
+    """执行 shell 命令并返回输出（危险工具，生产环境应加白名单）。
+
+    timeout 参数（秒）：
+      - 0 或不传：使用环境变量 SHELL_TIMEOUT（默认 30s）
+      - 正整数：使用指定超时，允许模型为耗时操作（下载、编译等）显式延长
+    """
+    default_timeout = int(os.environ.get("SHELL_TIMEOUT", "30"))
+    timeout = int(timeout) if timeout and int(timeout) > 0 else default_timeout
 
     # Use Popen directly so we can kill the full process tree on timeout without
     # blocking on pipe-drain.  subprocess.run(timeout=...) internally calls
@@ -802,8 +808,15 @@ def get_standard_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="shell",
-            description="执行 shell 命令，适合文件操作、系统查询、调用外部程序等",
-            args_schema={"command": "shell 命令字符串"},
+            description=(
+                "执行 shell 命令，适合文件操作、系统查询、调用外部程序等。"
+                "对于耗时操作（大文件下载、编译、解压等），可通过 timeout 参数显式延长超时时间（单位：秒）。"
+                "示例：下载大文件时传 timeout=300，编译大型项目时传 timeout=600。"
+            ),
+            args_schema={
+                "command": "shell 命令字符串",
+                "timeout": "（可选）超时秒数，默认 30s；耗时操作（下载/编译/解压）请显式设置，如 300 或 600",
+            },
             fn=tool_shell,
         ),
         ToolSpec(
