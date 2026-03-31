@@ -632,22 +632,14 @@ def run(
                 state.meta["_json_fail_streak"] = 0
 
                 # ── 硬封锁检查 ────────────────────────────────────────────────
-                # 若该工具已被加入 _hard_blocked_tools，拒绝执行并强制要求改变策略
+                # 若该工具已被加入 _hard_blocked_tools，拒绝执行 + 重建上下文
                 hard_blocked = state.meta.get("_hard_blocked_tools", set())
                 if action.tool in hard_blocked:
                     warn_count = state.meta.get("_loop_warn_counts", {}).get(action.tool, 0)
-                    blocked_feedback = (
-                        f"[系统][硬封锁] `{action.tool}` 工具已被临时封锁，本次调用被拒绝执行。\n"
-                        f"原因：你已连续 {warn_count} 次忽略循环警告后仍重复调用此工具。\n"
-                        f"你必须在下一步中选择以下行动之一：\n"
-                        f"  1. action=done：如实报告已尝试的方法、失败原因和当前状态（这是可接受的完成）\n"
-                        f"  2. tool=ask_user：向用户提问，请求具体指导或新方案\n"
-                        f"  3. 调用与 `{action.tool}` 完全不同类型的工具（如从 shell 改用 web_search/write_file 等），展现真正的策略转变\n"
-                        f"调用参数（已拒绝执行）：{json.dumps(action.args, ensure_ascii=False)[:200]}"
-                    )
                     if hooks.on_error:
-                        hooks.on_error(f"[硬封锁] {action.tool} 被拒绝执行（已忽略 {warn_count} 次循环警告）")
-                    _append_short_term(state, {"role": "user", "content": blocked_feedback})
+                        hooks.on_error(f"[硬封锁+上下文重建] {action.tool} 被拒绝执行（已忽略 {warn_count} 次循环警告），重建 short_term")
+                    # 重建 short_term：清除吸引子上下文，注入干净起点
+                    _rebuild_context_on_hard_block(action.tool, state)
                     _checkpoint_state(state)
                     state.iteration += 1
                     continue
@@ -842,6 +834,107 @@ def _auto_scratchpad_note(action: "Action", result: "ToolResult", state: "AgentS
 
     except Exception:
         pass  # 自动追加失败不影响主流程
+
+
+def _rebuild_context_on_hard_block(blocked_tool: str, state: "AgentState") -> None:
+    """硬封锁触发时，重建 short_term 上下文以打破吸引子效应。
+
+    上下文充满了反复失败的同类工具调用时，模型会被强烈吸引继续重复。
+    重建策略：
+      1. 保留原始目标（short_term[0]）
+      2. 从草稿本引入历史路线（已知信息 + 已完成步骤）
+      3. 将最近 N 次失败的该工具调用整理为反例，明确标注"禁止重复"
+      4. 注入新起点指令：先做方法研究（web_search），再制定新方案
+    """
+    import re as _re
+
+    try:
+        # ── 1. 提取原始目标 ────────────────────────────────────────────────
+        goal_msg = state.short_term[0] if state.short_term else None
+        raw_goal = (state.meta.get("_task_desc") or getattr(state, "goal", "")) or ""
+
+        # ── 2. 草稿本历史 ─────────────────────────────────────────────────
+        scratchpad = (state.meta.get("scratchpad") or "").strip()
+        sp_section = ""
+        if scratchpad:
+            sp_section = f"\n\n## 已记录的执行历史（草稿本）\n{scratchpad[:1500]}"
+
+        # ── 3. 提取最近失败的该工具调用作为反例 ──────────────────────────
+        failed_examples: list[str] = []
+        for m in state.short_term:
+            if m.get("role") != "assistant":
+                continue
+            content = m.get("content", "")
+            # 尝试解析 JSON（支持 fenced 和 raw）
+            text = content
+            fence = _re.search(r"```(?:json)?\s*(.*?)```", content, _re.DOTALL | _re.IGNORECASE)
+            if fence:
+                text = fence.group(1).strip()
+            try:
+                import json as _json2
+                data = _json2.loads(text)
+            except Exception:
+                try:
+                    start = text.find("{")
+                    if start >= 0:
+                        import json as _json2
+                        dec = _json2.JSONDecoder()
+                        data, _ = dec.raw_decode(text[start:])
+                    else:
+                        continue
+                except Exception:
+                    continue
+            if data.get("tool") == blocked_tool and data.get("action") == "tool_call":
+                args = data.get("args", {})
+                import json as _json2
+                args_str = _json2.dumps(args, ensure_ascii=False)
+                example = f"  - {blocked_tool}({args_str[:120]})"
+                if example not in failed_examples:
+                    failed_examples.append(example)
+        # 最多展示8条，避免反例列表过长
+        failed_examples = failed_examples[-8:]
+        if failed_examples:
+            examples_text = "\n".join(failed_examples)
+            fail_section = (
+                f"\n\n## 已证明无效的方法（反例，禁止重复）\n"
+                f"以下 `{blocked_tool}` 调用均以失败或无进展告终，**不要再尝试任何类似变体**：\n"
+                f"{examples_text}"
+            )
+        else:
+            fail_section = (
+                f"\n\n## 注意\n`{blocked_tool}` 工具在本任务中已多次失败，请不要再依赖它。"
+            )
+
+        # ── 4. 新起点指令 ──────────────────────────────────────────────────
+        # 从 goal 中提取关键词，给 web_search 一个启发性提示
+        kw_hint = raw_goal[:80].replace("\n", " ")
+        new_directive = (
+            f"\n\n## 下一步：先做方法研究，再行动\n"
+            f"当前策略已陷入死局。请按以下顺序重新出发：\n"
+            f"  1. **web_search**：先搜索解决方案，例如 \"{kw_hint}\" 或官方文档/社区方案\n"
+            f"  2. 根据搜索结果制定全新的执行路径（可能与之前完全不同）\n"
+            f"  3. 若确实无法完成，使用 **ask_user** 向用户报告具体障碍并请求指导\n"
+            f"  4. 或使用 **done** 诚实报告当前状态、已尝试方法和失败原因\n"
+            f"\n`{blocked_tool}` 工具在你找到新的可行方案之前**保持封锁**，调用会被系统拒绝。"
+        )
+
+        # ── 5. 重建 short_term ────────────────────────────────────────────
+        rebuild_content = (
+            f"[系统][上下文重建] 检测到你陷入对 `{blocked_tool}` 的重复调用循环，\n"
+            f"系统已清除重复历史并重建上下文，帮助你从新视角突破困境。\n"
+            f"\n## 原始目标\n{raw_goal[:400]}"
+            + sp_section
+            + fail_section
+            + new_directive
+        )
+
+        rebuild_msg = {"role": "user", "content": rebuild_content}
+
+        # 用 [goal] + [rebuild] 替换整个 short_term（清除所有吸引子上下文）
+        state.short_term = ([goal_msg] if goal_msg else []) + [rebuild_msg]
+
+    except Exception:
+        pass  # 重建失败不影响主流程
 
 
 def _spill_large_output_to_disk(tool_name: str, content: str, state: "AgentState") -> Optional[str]:
