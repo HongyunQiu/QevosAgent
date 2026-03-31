@@ -246,18 +246,25 @@ class AgentHooks:
     on_tool_result:     Optional[Callable[[ToolResult], None]] = None
     on_done:            Optional[Callable[[str], None]] = None
     on_error:           Optional[Callable[[str], None]] = None
+    # 草稿本自动笔记（tool 名、提炼出的笔记文字）
+    on_note:            Optional[Callable[[str, str], None]] = None
+    # 上下文重建（被封锁的工具名、重建后的消息数量）
+    on_rebuild:         Optional[Callable[[str, int], None]] = None
 
 
 # ── 默认钩子：打印到控制台 ────────────────────────────────────────────────────
 
 def console_hooks() -> AgentHooks:
     """开箱即用的控制台输出钩子，开发调试用。"""
-    CYAN   = "\033[96m"
-    YELLOW = "\033[93m"
-    GREEN  = "\033[92m"
-    RED    = "\033[91m"
-    GRAY   = "\033[90m"
-    RESET  = "\033[0m"
+    CYAN    = "\033[96m"
+    YELLOW  = "\033[93m"
+    GREEN   = "\033[92m"
+    RED     = "\033[91m"
+    GRAY    = "\033[90m"
+    MAGENTA = "\033[95m"   # 草稿本自动笔记
+    ORANGE  = "\033[38;5;214m"  # 上下文重建（亮橙色）
+    BOLD    = "\033[1m"
+    RESET   = "\033[0m"
 
     def on_iter(i, state):
         print(f"\n{GRAY}{'─'*60}{RESET}")
@@ -287,7 +294,19 @@ def console_hooks() -> AgentHooks:
         print(f"{GREEN}{'='*60}{RESET}")
 
     def on_error(msg):
-        print(f"{RED}⚠️  错误: {msg}{RED}")
+        print(f"{RED}⚠️  错误: {msg}{RESET}")
+
+    def on_note(tool_name: str, note: str):
+        """草稿本自动笔记提炼成功时的提示（品红色）。"""
+        print(f"{MAGENTA}📓 草稿本笔记 [{tool_name}]: {note}{RESET}")
+
+    def on_rebuild(blocked_tool: str, msg_count: int):
+        """上下文重建时的醒目提示（橙色 + 边框）。"""
+        bar = "═" * 60
+        print(f"\n{ORANGE}{BOLD}{bar}{RESET}")
+        print(f"{ORANGE}{BOLD}🔄 上下文重建  ·  封锁工具: {blocked_tool}  ·  重建后消息数: {msg_count}{RESET}")
+        print(f"{ORANGE}   原因: 反复忽略循环警告，已清除污染上下文并注入新起点{RESET}")
+        print(f"{ORANGE}{BOLD}{bar}{RESET}\n")
 
     return AgentHooks(
         on_iteration_start=on_iter,
@@ -296,6 +315,8 @@ def console_hooks() -> AgentHooks:
         on_tool_result=on_result,
         on_done=on_done,
         on_error=on_error,
+        on_note=on_note,
+        on_rebuild=on_rebuild,
     )
 
 
@@ -639,7 +660,7 @@ def run(
                     if hooks.on_error:
                         hooks.on_error(f"[硬封锁+上下文重建] {action.tool} 被拒绝执行（已忽略 {warn_count} 次循环警告），重建 short_term")
                     # 重建 short_term：清除吸引子上下文，注入干净起点
-                    _rebuild_context_on_hard_block(action.tool, state)
+                    _rebuild_context_on_hard_block(action.tool, state, hooks=hooks)
                     _checkpoint_state(state)
                     state.iteration += 1
                     continue
@@ -662,7 +683,7 @@ def run(
 
                 # 自动提取关键发现追加草稿本（目标感知的 mini LLM call）
                 if os.environ.get("AUTO_SCRATCHPAD_NOTE", "1") != "0":
-                    _auto_scratchpad_note(action, result, state, llm)
+                    _auto_scratchpad_note(action, result, state, llm, hooks=hooks)
 
                 if action.tool == "ask_user":
                     q = action.args.get("question") or (result.output or {}).get("question")
@@ -755,7 +776,13 @@ def _summarize_large_text(text: str, limit: int) -> str:
 _ACK_ONLY_TOOLS = frozenset({"scratchpad_set", "scratchpad_append", "raw_append"})
 
 
-def _auto_scratchpad_note(action: "Action", result: "ToolResult", state: "AgentState", llm: "LLMBackend") -> None:
+def _auto_scratchpad_note(
+    action: "Action",
+    result: "ToolResult",
+    state: "AgentState",
+    llm: "LLMBackend",
+    hooks: Optional["AgentHooks"] = None,
+) -> None:
     """在工具执行成功后，用超短 LLM 对话自动提取关键发现并追加到草稿本。
 
     设计原则：
@@ -812,6 +839,10 @@ def _auto_scratchpad_note(action: "Action", result: "ToolResult", state: "AgentS
         iter_n = getattr(state, "iteration", 0)
         entry = f"\n[iter{iter_n}|{action.tool}] {note}"
 
+        # 触发控制台钩子（品红色笔记提示）
+        if hooks is not None and hooks.on_note:
+            hooks.on_note(action.tool, note)
+
         cur = state.meta.get("scratchpad", "")
         max_chars = int(os.environ.get("SCRATCHPAD_MAX_CHARS", "2000"))
         new_sp = cur + entry
@@ -836,7 +867,11 @@ def _auto_scratchpad_note(action: "Action", result: "ToolResult", state: "AgentS
         pass  # 自动追加失败不影响主流程
 
 
-def _rebuild_context_on_hard_block(blocked_tool: str, state: "AgentState") -> None:
+def _rebuild_context_on_hard_block(
+    blocked_tool: str,
+    state: "AgentState",
+    hooks: Optional["AgentHooks"] = None,
+) -> None:
     """硬封锁触发时，重建 short_term 上下文以打破吸引子效应。
 
     上下文充满了反复失败的同类工具调用时，模型会被强烈吸引继续重复。
@@ -932,6 +967,10 @@ def _rebuild_context_on_hard_block(blocked_tool: str, state: "AgentState") -> No
 
         # 用 [goal] + [rebuild] 替换整个 short_term（清除所有吸引子上下文）
         state.short_term = ([goal_msg] if goal_msg else []) + [rebuild_msg]
+
+        # 触发控制台钩子（橙色醒目边框提示）
+        if hooks is not None and hooks.on_rebuild:
+            hooks.on_rebuild(blocked_tool, len(state.short_term))
 
     except Exception:
         pass  # 重建失败不影响主流程
