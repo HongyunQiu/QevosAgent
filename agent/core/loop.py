@@ -855,7 +855,11 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
 
     max_chars = int(os.environ.get("MAX_TOOL_FEEDBACK_CHARS", "4000"))
 
-    # ── 重复调用检测 ──────────────────────────────────────────────────────────
+    # ── 重复调用检测（连续 + 滑动窗口频率）────────────────────────────────────
+    # 两种循环模式：
+    #   A. 严格连续：A A A A  → consecutive >= 2 触发
+    #   B. 振荡型：  A A B A A A B A  → 偶发的 B 打断连续计数，但 A 仍主导
+    #      → 滑动窗口内 A 出现频率过高时触发
     repeat_warning = ""
     if state is not None and action.type == ActionType.TOOL_CALL:
         try:
@@ -868,19 +872,36 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             ).hexdigest()
 
             history = state.meta.setdefault("_call_sig_history", [])
+
+            # ── A：连续重复检测 ──────────────────────────────────────────────
             consecutive = 0
             for prev in reversed(history[-5:]):
                 if prev == call_sig:
                     consecutive += 1
                 else:
                     break
+
+            # ── B：滑动窗口频率检测 ─────────────────────────────────────────
+            win_size  = int(os.environ.get("LOOP_WINDOW_SIZE", "12"))
+            win_thresh = int(os.environ.get("LOOP_WINDOW_THRESH", "5"))
+            window = history[-win_size:]
+            freq_in_window = sum(1 for h in window if h == call_sig)
+
             history.append(call_sig)
 
+            args_preview = _json.dumps(action.args, ensure_ascii=False)[:300]
             if consecutive >= 2:
-                args_preview = _json.dumps(action.args, ensure_ascii=False)[:300]
                 repeat_warning = (
-                    f"\n\n⛔ 循环检测：你已连续 {consecutive + 1} 次以完全相同的参数调用 `{action.tool}`，"
-                    f"继续重试无意义。请立刻换用其他工具（如 run_python）或直接 done 给出已知结论。"
+                    f"\n\n⛔ 循环检测（连续）：你已连续 {consecutive + 1} 次以完全相同的参数调用 `{action.tool}`，"
+                    f"继续重试无意义。请立刻换用其他工具或直接 done 给出已知结论。"
+                    f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
+                )
+            elif freq_in_window >= win_thresh:
+                repeat_warning = (
+                    f"\n\n⛔ 循环检测（振荡）：在最近 {len(window)} 次工具调用中，"
+                    f"你以完全相同的参数调用 `{action.tool}` 已达 {freq_in_window} 次，"
+                    f"偶尔换词后又反复回到同一查询，说明你陷入了振荡循环。"
+                    f"该查询已无法提供新信息，请立刻换用不同工具或策略，或直接 done 给出已知结论。"
                     f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
                 )
         except Exception:
@@ -903,17 +924,20 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                     f"输出较大（{len(out)} 字符），已完整保存至：{spill_path}\n"
                     f"如需读取完整内容，请使用 shell 或 run_python 分段读取该文件。\n"
                     f"内容预览：\n{preview}"
+                    + repeat_warning
                 )
             # RUN_DIR 不可用时降级为截断（保持原有行为）
             out2 = _summarize_large_text(out, max_chars)
             return (
                 f"[工具: {action.tool}] 执行成功\n"
                 f"输出(可能已截断):\n{out2}"
+                + repeat_warning
             )
 
         return (
             f"[工具: {action.tool}] 执行成功\n"
             f"输出:\n{out}"
+            + repeat_warning
         )
     else:
         return (
