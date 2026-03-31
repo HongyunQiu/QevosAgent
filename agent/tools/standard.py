@@ -294,28 +294,66 @@ def tool_read_file(state: AgentState, path: str) -> ToolResult:
 
 def tool_shell(state: AgentState, command: str) -> ToolResult:
     """执行 shell 命令并返回输出（危险工具，生产环境应加白名单）。"""
+    timeout = int(os.environ.get("SHELL_TIMEOUT", "30"))
+
+    # Use Popen directly so we can kill the full process tree on timeout without
+    # blocking on pipe-drain.  subprocess.run(timeout=...) internally calls
+    # communicate() *after* kill(), which hangs on Windows when shell=True spawns
+    # child processes (e.g. winget) that survive the parent cmd.exe kill and keep
+    # the stdout/stderr pipe open indefinitely.
+    kwargs: dict = {
+        "shell": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "nt":
+        # Give the shell its own process group so taskkill /T can reach all children.
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        output = result.stdout.strip()
-        stderr = result.stderr.strip()
-        combined = output
-        if stderr:
-            combined += f"\n[STDERR]: {stderr}"
-        return ToolResult(
-            success=(result.returncode == 0),
-            output=combined or "（无输出）",
-            error=stderr if result.returncode != 0 else None,
-        )
-    except subprocess.TimeoutExpired:
-        return ToolResult(success=False, output=None, error="命令超时（>30s）")
+        proc = subprocess.Popen(command, **kwargs)
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Kill the entire process tree before touching pipes.
+        if os.name == "nt":
+            subprocess.run(
+                f"taskkill /F /T /PID {proc.pid}",
+                shell=True, capture_output=True,
+            )
+        else:
+            try:
+                import signal
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        proc.kill()
+        # Close pipes explicitly — do NOT call communicate() again.
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                if pipe:
+                    pipe.close()
+            except Exception:
+                pass
+        return ToolResult(success=False, output=None, error=f"命令超时（>{timeout}s）")
+    except Exception as e:
+        proc.kill()
+        return ToolResult(success=False, output=None, error=str(e))
+
+    output = (stdout or "").strip()
+    stderr_text = (stderr or "").strip()
+    combined = output
+    if stderr_text:
+        combined += f"\n[STDERR]: {stderr_text}"
+    return ToolResult(
+        success=(proc.returncode == 0),
+        output=combined or "（无输出）",
+        error=stderr_text if proc.returncode != 0 else None,
+    )
 
 
 def tool_think(state: AgentState, thought: str) -> ToolResult:
