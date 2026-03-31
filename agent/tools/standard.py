@@ -227,14 +227,61 @@ def tool_scratchpad_append(state: AgentState, content: str) -> ToolResult:
     return ToolResult(success=True, output=f"scratchpad appended ({len(cur)} chars)")
 
 
+def _find_python_executable() -> str:
+    """找到当前可用的 Python 解释器路径。
+
+    优先级：
+    1. 运行本框架的解释器（sys.executable）— 最可靠
+    2. 环境变量 PYTHON_EXEC（用户显式指定）
+    3. 常见 Windows 路径（Anaconda、py launcher、python）
+    4. 系统 PATH 上的 python / python3
+    """
+    import sys as _sys
+    import shutil as _shutil
+
+    # 1. 当前框架自身的解释器
+    if _sys.executable:
+        return _sys.executable
+
+    # 2. 用户显式指定
+    import os as _os
+    env_exec = _os.environ.get("PYTHON_EXEC")
+    if env_exec and _os.path.isfile(env_exec):
+        return env_exec
+
+    # 3. Windows 常见路径（按优先级）
+    candidates = [
+        r"C:\Users\92680\Anaconda3\envs\nanoGPT\python.exe",
+        r"C:\Users\92680\Anaconda3\python.exe",
+        r"C:\Python311\python.exe",
+        r"C:\Python310\python.exe",
+    ]
+    for c in candidates:
+        if _os.path.isfile(c):
+            return c
+
+    # 4. PATH 中查找
+    for name in ("python", "python3"):
+        found = _shutil.which(name)
+        if found:
+            return found
+
+    return "python"   # 最后兜底，让调用失败时有清晰报错
+
+
 def tool_run_python(state: AgentState, code: str) -> ToolResult:
     """在隔离子进程中执行 Python 代码并返回输出。"""
+    import os as _os
+    timeout = int(_os.environ.get("PYTHON_TIMEOUT", "30"))
+    python_exec = _find_python_executable()
     try:
         result = subprocess.run(
-            ["python3", "-c", code],
+            [python_exec, "-c", code],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
         )
         output = result.stdout.strip()
         stderr = result.stderr.strip()
@@ -251,7 +298,7 @@ def tool_run_python(state: AgentState, code: str) -> ToolResult:
             output=output or "（代码执行完毕，无输出）"
         )
     except subprocess.TimeoutExpired:
-        return ToolResult(success=False, output=None, error="执行超时（>15s）")
+        return ToolResult(success=False, output=None, error=f"执行超时（>{timeout}s）")
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
