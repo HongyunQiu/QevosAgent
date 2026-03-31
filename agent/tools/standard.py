@@ -133,6 +133,29 @@ def tool_raw_append(state: AgentState, content: str, path: str = "") -> ToolResu
         return ToolResult(success=False, output=None, error=str(e))
 
 
+def _scratchpad_trim(text: str, max_chars: int, task_desc: str = "") -> str:
+    """裁剪草稿本到 max_chars 以内。
+
+    策略：保留任务描述头（前3行）+ 最新内容，从中部裁掉最老的记录。
+    这与 _auto_scratchpad_note 的溢出策略保持一致，确保新追加的内容不被丢弃。
+    """
+    if len(text) <= max_chars:
+        return text
+
+    lines = text.splitlines(keepends=True)
+    # 保留任务描述头（前3行，通常是 "任务描述:\n{desc}\n"）
+    head_lines = lines[:3]
+    head = "".join(head_lines)
+    body = text[len(head):]
+
+    overflow = len(head) + len(body) - max_chars
+    if overflow >= len(body):
+        # 极端情况：head 本身就超了，直接硬截取
+        return text[:max_chars]
+    body = body[overflow:]
+    return head + body
+
+
 def tool_scratchpad_get(state: AgentState) -> ToolResult:
     """Get current scratchpad."""
     return ToolResult(success=True, output=state.meta.get("scratchpad", ""))
@@ -174,8 +197,7 @@ def tool_scratchpad_set(state: AgentState, content: str) -> ToolResult:
         if "任务描述" not in text:
             text = f"任务描述:\n{task_desc.strip()}\n\n" + text
 
-    if len(text) > max_chars:
-        text = text[:max_chars] + "\n...[SCRATCHPAD_TRUNCATED]"
+    text = _scratchpad_trim(text, max_chars)
     state.meta["scratchpad"] = text
 
     # Persist immediately (during-run)
@@ -196,8 +218,7 @@ def tool_scratchpad_append(state: AgentState, content: str) -> ToolResult:
         cur = cur.rstrip() + "\n" + add
     else:
         cur = add
-    if len(cur) > max_chars:
-        cur = cur[:max_chars] + "\n...[SCRATCHPAD_TRUNCATED]"
+    cur = _scratchpad_trim(cur, max_chars)
     state.meta["scratchpad"] = cur
 
     # Persist immediately (during-run)
