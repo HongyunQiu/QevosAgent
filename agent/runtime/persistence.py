@@ -149,6 +149,10 @@ class RunPersistence:
     def checkpoint(self, state, status: str = "running", error: Optional[str] = None) -> None:
         if state is not None:
             meta = dict(getattr(state, "meta", {}) or {})
+            # 移除不可 JSON 序列化的内部对象（如 AsyncJobManager 实例）
+            _NON_SERIALIZABLE_KEYS = ("_async_manager",)
+            for _k in _NON_SERIALIZABLE_KEYS:
+                meta.pop(_k, None)
             meta["_persistence"] = {
                 "updated_at": _utc_now(),
                 "iteration": int(getattr(state, "iteration", 0) or 0),

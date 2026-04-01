@@ -758,6 +758,89 @@ def tool_load_snapshot_meta(state: AgentState, path: str, overwrite: bool = Fals
         return ToolResult(success=False, output=None, error=str(e))
 
 
+# ── 异步后台任务工具 ──────────────────────────────────────────────────────────
+
+
+def _get_async_manager(state: AgentState):
+    """懒加载 AsyncJobManager 单例（绑定在 state.meta["_async_manager"]）。"""
+    from ..core.async_manager import AsyncJobManager
+    mgr = state.meta.get("_async_manager")
+    if mgr is None:
+        mgr = AsyncJobManager()
+        state.meta["_async_manager"] = mgr
+    return mgr
+
+
+def tool_shell_bg(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
+    """在后台线程启动 shell 命令，立即返回 job_id（不阻塞主循环）。
+
+    适用场景：
+      - 耗时命令（下载、编译、测试套件）不想卡住 agent
+      - 需要并发启动多条命令再统一收集结果
+      - 需要实时观察部分输出（边跑边 job_wait）
+
+    后续用 job_wait 轮询结果，job_cancel 终止进程。
+    timeout: 最长运行秒数（0 = 不限制）。
+    """
+    mgr = _get_async_manager(state)
+    t = int(timeout) if timeout and int(timeout) > 0 else None
+    job_id = mgr.start_shell(command, timeout=t)
+    return ToolResult(
+        success=True,
+        output={
+            "job_id": job_id,
+            "tip": "命令已在后台启动。用 job_wait 查看/等待结果，job_cancel 取消。",
+        },
+    )
+
+
+def tool_job_wait(state: AgentState, job_id: str, wait: int = 10) -> ToolResult:
+    """查询后台任务状态，并最多等待 wait 秒让其完成。
+
+    - 若任务已完成：立即返回完整输出。
+    - 若仍在运行：等待最多 wait 秒后返回截至目前的部分输出。
+      可多次调用以持续轮询（每次都能拿到最新累积输出）。
+
+    返回字段：
+      job_id, status (running/done/failed/cancelled),
+      output (当前已捕获的全部输出), returncode, elapsed_s, command
+    """
+    mgr = _get_async_manager(state)
+    info = mgr.peek(job_id, wait_secs=float(max(0, int(wait))))
+    if "error" in info:
+        return ToolResult(success=False, output=None, error=info["error"])
+
+    status = info["status"]
+    rc = info.get("returncode")
+    if status == "running":
+        succeeded = True          # 仍在跑，拿到部分输出，不算失败
+    elif status == "done":
+        succeeded = (rc == 0)
+    else:                         # failed / cancelled
+        succeeded = False
+
+    return ToolResult(success=succeeded, output=info)
+
+
+def tool_job_cancel(state: AgentState, job_id: str) -> ToolResult:
+    """强制终止一个仍在运行的后台任务（进程树全部杀掉）。"""
+    mgr = _get_async_manager(state)
+    result = mgr.cancel(job_id)
+    if "error" in result:
+        return ToolResult(success=False, output=None, error=result["error"])
+    return ToolResult(success=True, output=result)
+
+
+def tool_jobs_list(state: AgentState) -> ToolResult:
+    """列出所有后台任务及其当前状态（同时清理 5 分钟前结束的旧任务）。"""
+    mgr = _get_async_manager(state)
+    jobs = mgr.list_jobs()
+    mgr.cleanup()
+    if not jobs:
+        return ToolResult(success=True, output="（无后台任务）")
+    return ToolResult(success=True, output=jobs)
+
+
 def get_standard_tools() -> dict[str, ToolSpec]:
     """返回标准工具集（直接传给 agent.run()）。"""
     specs = [
@@ -905,6 +988,47 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             },
             fn=tool_register_tool,
             is_evolve_tool=True,
+        ),
+        # ── 异步后台任务 ──────────────────────────────────────────────────────
+        ToolSpec(
+            name="shell_bg",
+            description=(
+                "【异步】在后台线程启动 shell 命令，立即返回 job_id，不阻塞主循环。"
+                "适合耗时操作（下载、编译、长时间测试）或需要并发执行多条命令的场景。"
+                "后续用 job_wait 查看/等待结果，job_cancel 终止进程。"
+            ),
+            args_schema={
+                "command": "要执行的 shell 命令",
+                "timeout": "（可选）最长运行秒数，0 = 不限制。超时后进程树自动终止",
+            },
+            fn=tool_shell_bg,
+        ),
+        ToolSpec(
+            name="job_wait",
+            description=(
+                "查询后台任务状态，并最多等待 wait 秒让其完成。"
+                "任务完成时返回完整输出；仍在运行时返回当前已捕获的部分输出（可多次轮询）。"
+                "返回字段：job_id, status, output, returncode, elapsed_s, command。"
+            ),
+            args_schema={
+                "job_id": "由 shell_bg 返回的任务 ID",
+                "wait":   "（可选）最多等待秒数，默认 10。设为 0 则立即返回当前快照",
+            },
+            fn=tool_job_wait,
+        ),
+        ToolSpec(
+            name="job_cancel",
+            description="强制终止一个仍在运行的后台任务（杀掉整个进程树）",
+            args_schema={
+                "job_id": "由 shell_bg 返回的任务 ID",
+            },
+            fn=tool_job_cancel,
+        ),
+        ToolSpec(
+            name="jobs_list",
+            description="列出所有后台任务及其状态（running/done/failed/cancelled）",
+            args_schema={},
+            fn=tool_jobs_list,
         ),
     ]
     return {s.name: s for s in specs}
