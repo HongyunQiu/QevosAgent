@@ -5,23 +5,39 @@
  * ─────────────────────────────
  * - Polls the runs/ directory every POLL_MS milliseconds
  * - Streams state updates to all WebSocket clients
- * - Accepts POST /api/inject to write web_cmd.txt for agent pickup
+ * - Accepts POST /api/inject  — inject a slash command into running agent
+ * - Accepts POST /api/launch  — spawn a new agent process with a goal
+ * - Accepts POST /api/kill    — terminate the running agent process
  * - Serves static files from ./public/
+ *
+ * Auto-launch prerequisite:
+ *   Start this server from within the correct conda/venv environment so that
+ *   `python` resolves to the right interpreter.  Override with PYTHON_CMD env var.
+ *   Example:
+ *     conda activate myenv && node dashboard/server.js
  */
 
-const http = require('http');
-const fs   = require('fs');
-const path = require('path');
-const WebSocket = require('ws');
+const http         = require('http');
+const fs           = require('fs');
+const path         = require('path');
+const { spawn }    = require('child_process');
+const WebSocket    = require('ws');
 
-const PORT     = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
-const RUNS_DIR = path.resolve(process.env.RUNS_DIR || path.join(__dirname, '..', 'runs'));
-const PUBLIC   = path.join(__dirname, 'public');
-const POLL_MS  = parseInt(process.env.POLL_MS || '500', 10);
+const PORT       = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
+const RUNS_DIR   = path.resolve(process.env.RUNS_DIR || path.join(__dirname, '..', 'runs'));
+const AGENT_DIR  = path.resolve(process.env.AGENT_DIR || path.join(__dirname, '..'));
+const PUBLIC     = path.join(__dirname, 'public');
+const POLL_MS    = parseInt(process.env.POLL_MS || '500', 10);
+// Python command — default to 'python' so the calling conda env is used
+const PYTHON_CMD = process.env.PYTHON_CMD || 'python';
 
-// ── State ──────────────────────────────────────────────────────────────────
+// ── Agent process state ────────────────────────────────────────────────────
 
-/** Shared state broadcast to all clients */
+let agentProc    = null;   // child_process handle
+let isLaunching  = false;  // true from spawn() until first stdout or error
+
+// ── Shared state (broadcast to all WS clients) ────────────────────────────
+
 let state = {
   runs:        [],
   activeRunId: null,
@@ -29,11 +45,13 @@ let state = {
   scratchpad:  '',
   events:      [],
   meta:        {},
+  launching:   false,   // agent is being spawned, not yet writing runs/
+  agentPid:    null,
 };
 
-let _linesProcessed = 0;   // lines of short_term.jsonl already parsed
-let _mtimes = {};           // { filepath: mtimeMs }
-let _iterCounter = 0;       // virtual iteration counter derived from events
+let _linesProcessed = 0;
+let _mtimes         = {};
+let _iterCounter    = 0;
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -52,11 +70,16 @@ function mtime(fp) {
   catch { return 0; }
 }
 
-/** Returns true if file mtime changed (and updates cache). */
 function changed(fp) {
   const m = mtime(fp);
   if (_mtimes[fp] !== m) { _mtimes[fp] = m; return true; }
   return false;
+}
+
+/** Strip ANSI escape codes from a string. */
+function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').replace(/\x1B\][^\x07]*\x07/g, '');
 }
 
 function findRuns() {
@@ -70,10 +93,6 @@ function findRuns() {
 
 // ── short_term.jsonl parser ────────────────────────────────────────────────
 
-/**
- * Parse one line from short_term.jsonl into a dashboard event.
- * Returns null if the line should be skipped.
- */
 function parseLine(raw, lineIdx) {
   let rec;
   try { rec = JSON.parse(raw); } catch { return null; }
@@ -82,13 +101,10 @@ function parseLine(raw, lineIdx) {
 
   const base = { idx: lineIdx };
 
-  // ── Assistant message: JSON action ──────────────────────────────────────
   if (role === 'assistant') {
     let action;
     try { action = JSON.parse(content); } catch { return null; }
-
     const thought = action.thought || null;
-
     if (action.action === 'tool_call') {
       return { ...base, type: 'tool_call', tool: action.tool, args: action.args || {}, thought };
     }
@@ -98,68 +114,50 @@ function parseLine(raw, lineIdx) {
     if (action.action === 'error') {
       return { ...base, type: 'error', text: thought || content, thought: null };
     }
-    // Thought-only (rare)
-    if (thought) {
-      return { ...base, type: 'thought', thought };
-    }
+    if (thought) return { ...base, type: 'thought', thought };
     return null;
   }
 
-  // ── User message ─────────────────────────────────────────────────────────
   if (role === 'user') {
-    // Tool result: "[工具: toolname] 执行成功/失败\n输出..."
     const toolMatch = content.match(/^\[工具:\s*([^\]]+)\]\s*(执行成功|执行失败)\s*\n?([\s\S]*)/);
     if (toolMatch) {
       const success = toolMatch[2] === '执行成功';
-      const raw_out = toolMatch[3].replace(/^输出\(可能已截断\):\n?/, '').replace(/^错误:\n?/, '').trim();
+      const raw_out = toolMatch[3]
+        .replace(/^输出\(可能已截断\):\n?/, '')
+        .replace(/^错误:\n?/, '')
+        .trim();
       return { ...base, type: 'tool_result', tool: toolMatch[1].trim(), success, output: raw_out };
     }
-
-    // Injected message: "[用户干预注入]\n..."  or "[Web看板] ..."
     if (content.startsWith('[用户干预注入]') || content.startsWith('[Web看板]')) {
-      const text = content.replace(/^\[[^\]]+\]\s*\n?/, '').trim();
-      return { ...base, type: 'injected', text };
+      return { ...base, type: 'injected', text: content.replace(/^\[[^\]]+\]\s*\n?/, '').trim() };
     }
-
-    // First user message = goal
     if (lineIdx === 0) {
-      // Strip AGENTS.md preamble to get just the user goal portion
       const goalMarker = content.match(/请完成以下目标：\s*\n([\s\S]*)/);
-      const text = goalMarker ? goalMarker[1].trim() : content.trim();
-      // Extract just the actual goal (last non-empty block after last \n\n chain)
-      return { ...base, type: 'goal', text };
+      return { ...base, type: 'goal', text: goalMarker ? goalMarker[1].trim() : content.trim() };
     }
-
-    // Other user messages (e.g. after /inject or ask_user)
     return { ...base, type: 'user_msg', text: content.trim() };
   }
-
   return null;
 }
 
-/** Incrementally parse new lines from short_term.jsonl. Returns true if new events added. */
 function updateShortTerm(runDir) {
   const fp = path.join(runDir, 'short_term.jsonl');
   if (!changed(fp)) return false;
-
   const raw = readText(fp);
   if (!raw) return false;
-
   const allLines = raw.split('\n').filter(l => l.trim());
   const newLines = allLines.slice(_linesProcessed);
   if (!newLines.length) return false;
-
   let iter = _iterCounter;
   for (let i = 0; i < newLines.length; i++) {
     const ev = parseLine(newLines[i], _linesProcessed + i);
     if (!ev) continue;
-    // Assign iteration: each tool_call starts a new iteration
     if (ev.type === 'tool_call' || ev.type === 'done' || ev.type === 'error') iter++;
     ev.iter = iter;
     state.events.push(ev);
   }
   _linesProcessed = allLines.length;
-  _iterCounter = iter;
+  _iterCounter    = iter;
   return true;
 }
 
@@ -167,7 +165,7 @@ function updateShortTerm(runDir) {
 
 function poll() {
   const runs = findRuns();
-  let dirty = false;
+  let dirty   = false;
 
   if (JSON.stringify(runs) !== JSON.stringify(state.runs)) {
     state.runs = runs;
@@ -176,7 +174,6 @@ function poll() {
 
   const latest = runs[runs.length - 1] || null;
 
-  // New run started → reset all per-run state
   if (latest !== state.activeRunId) {
     state.activeRunId = latest;
     state.status      = null;
@@ -187,36 +184,43 @@ function poll() {
     _iterCounter      = 0;
     _mtimes           = {};
     dirty = true;
+    // Once a new run directory appears, launching phase is over
+    if (isLaunching) {
+      isLaunching      = false;
+      state.launching  = false;
+    }
   }
 
-  if (!state.activeRunId) {
-    if (dirty) broadcast();
-    return;
+  if (state.activeRunId) {
+    const dir = path.join(RUNS_DIR, state.activeRunId);
+    if (changed(path.join(dir, 'status.json'))) {
+      const s = readJSON(path.join(dir, 'status.json'));
+      if (s) { state.status = s; dirty = true; }
+    }
+    if (changed(path.join(dir, 'scratchpad.md'))) {
+      const s = readText(path.join(dir, 'scratchpad.md'));
+      if (s !== null) { state.scratchpad = s; dirty = true; }
+    }
+    if (changed(path.join(dir, 'meta.json'))) {
+      const m = readJSON(path.join(dir, 'meta.json'));
+      if (m) { state.meta = m; dirty = true; }
+    }
+    if (updateShortTerm(dir)) dirty = true;
   }
 
-  const dir = path.join(RUNS_DIR, state.activeRunId);
-
-  if (changed(path.join(dir, 'status.json'))) {
-    const s = readJSON(path.join(dir, 'status.json'));
-    if (s) { state.status = s; dirty = true; }
+  // Keep launching / agentPid in sync
+  const newLaunching = isLaunching;
+  const newPid       = agentProc && !agentProc.killed ? agentProc.pid : null;
+  if (state.launching !== newLaunching || state.agentPid !== newPid) {
+    state.launching = newLaunching;
+    state.agentPid  = newPid;
+    dirty = true;
   }
-
-  if (changed(path.join(dir, 'scratchpad.md'))) {
-    const s = readText(path.join(dir, 'scratchpad.md'));
-    if (s !== null) { state.scratchpad = s; dirty = true; }
-  }
-
-  if (changed(path.join(dir, 'meta.json'))) {
-    const m = readJSON(path.join(dir, 'meta.json'));
-    if (m) { state.meta = m; dirty = true; }
-  }
-
-  if (updateShortTerm(dir)) dirty = true;
 
   if (dirty) broadcast();
 }
 
-// ── WebSocket ──────────────────────────────────────────────────────────────
+// ── WebSocket broadcast ────────────────────────────────────────────────────
 
 const clients = new Set();
 
@@ -227,18 +231,118 @@ function broadcast() {
   }
 }
 
-// ── Load a historical run (no live updates) ────────────────────────────────
+/** Push a console line to all clients (stdout/stderr/system from agent process). */
+function broadcastConsole(stream, text) {
+  const clean = stripAnsi(text);
+  if (!clean.trim()) return;
+  const msg = JSON.stringify({ type: 'console', stream, text: clean, ts: Date.now() });
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  }
+}
+
+// ── Agent process management ───────────────────────────────────────────────
+
+function isAgentRunning() {
+  return agentProc !== null && !agentProc.killed;
+}
+
+/**
+ * Spawn a new agent process with the given goal string.
+ * Returns { ok, error? }.
+ */
+function launchAgent(goal) {
+  if (isAgentRunning()) {
+    return { ok: false, error: 'An agent process is already running.' };
+  }
+  if (isLaunching) {
+    return { ok: false, error: 'Agent is already being started.' };
+  }
+
+  isLaunching     = true;
+  state.launching = true;
+  broadcast();
+
+  broadcastConsole('system', `▶ Launching: ${PYTHON_CMD} run_goal.py "${goal.slice(0, 80)}${goal.length > 80 ? '…' : ''}"`);
+  broadcastConsole('system', `  Working dir: ${AGENT_DIR}`);
+
+  // On Windows, PYTHON_CMD may be a multi-word string like "conda run -n myenv python".
+  // Split into command + args so spawn works correctly on all platforms.
+  const parts    = PYTHON_CMD.trim().split(/\s+/);
+  const cmd      = parts[0];
+  const cmdArgs  = [...parts.slice(1), 'run_goal.py', goal];
+
+  agentProc = spawn(cmd, cmdArgs, {
+    cwd:         AGENT_DIR,
+    env:         { ...process.env },
+    windowsHide: false,           // show window on Windows if needed for debugging
+  });
+
+  agentProc.stdout.setEncoding('utf8');
+  agentProc.stderr.setEncoding('utf8');
+
+  agentProc.stdout.on('data', chunk => {
+    // Once we see any output, we're past the "launching" phase
+    if (isLaunching) {
+      isLaunching      = false;
+      state.launching  = false;
+    }
+    broadcastConsole('stdout', chunk);
+  });
+
+  agentProc.stderr.on('data', chunk => {
+    if (isLaunching) {
+      isLaunching      = false;
+      state.launching  = false;
+    }
+    broadcastConsole('stderr', chunk);
+  });
+
+  agentProc.on('error', err => {
+    isLaunching      = false;
+    state.launching  = false;
+    state.agentPid   = null;
+    agentProc        = null;
+    broadcastConsole('system', `✗ Failed to start agent: ${err.message}`);
+    broadcastConsole('system', `  Hint: make sure "${cmd}" is on PATH (activate your conda env first).`);
+    broadcast();
+  });
+
+  agentProc.on('close', code => {
+    broadcastConsole('system', `■ Agent process exited (code ${code ?? '?'})`);
+    isLaunching     = false;
+    state.launching = false;
+    state.agentPid  = null;
+    agentProc       = null;
+    poll(); // force state refresh
+  });
+
+  state.agentPid = agentProc.pid || null;
+  broadcast();
+  return { ok: true, pid: agentProc.pid };
+}
+
+/** Kill the running agent process (SIGTERM, then SIGKILL after 3 s). */
+function killAgent() {
+  if (!isAgentRunning()) return { ok: false, error: 'No agent process running.' };
+  broadcastConsole('system', `⏹ Killing agent process (PID ${agentProc.pid})…`);
+  agentProc.kill('SIGTERM');
+  setTimeout(() => {
+    if (agentProc && !agentProc.killed) agentProc.kill('SIGKILL');
+  }, 3000);
+  return { ok: true };
+}
+
+// ── Load a historical run ──────────────────────────────────────────────────
 
 function loadRun(runId) {
   const dir = path.join(RUNS_DIR, runId);
   if (!fs.existsSync(dir)) return null;
-
-  const status    = readJSON(path.join(dir, 'status.json'));
+  const status     = readJSON(path.join(dir, 'status.json'));
   const scratchpad = readText(path.join(dir, 'scratchpad.md')) || '';
-  const meta      = readJSON(path.join(dir, 'meta.json')) || {};
-
-  const raw    = readText(path.join(dir, 'short_term.jsonl')) || '';
-  const lines  = raw.split('\n').filter(l => l.trim());
+  const meta       = readJSON(path.join(dir, 'meta.json')) || {};
+  const raw        = readText(path.join(dir, 'short_term.jsonl')) || '';
+  const lines      = raw.split('\n').filter(l => l.trim());
   let iter = 0;
   const events = [];
   for (let i = 0; i < lines.length; i++) {
@@ -248,7 +352,6 @@ function loadRun(runId) {
     ev.iter = iter;
     events.push(ev);
   }
-
   return { runId, status, scratchpad, meta, events };
 }
 
@@ -264,9 +367,18 @@ const MIME = {
   '.svg':  'image/svg+xml',
 };
 
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', c => (body += c));
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
 function serveStatic(req, res) {
   const urlPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
-  const fp = path.join(PUBLIC, urlPath);
+  const fp  = path.join(PUBLIC, urlPath);
   const ext = path.extname(fp).toLowerCase();
   try {
     const content = fs.readFileSync(fp);
@@ -278,71 +390,75 @@ function serveStatic(req, res) {
   }
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  // POST /api/inject  — write web_cmd.txt for agent pickup
+  const json = (code, obj) => {
+    res.writeHead(code, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(obj));
+  };
+
+  // ── POST /api/launch  ─────────────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/api/launch') {
+    try {
+      const { goal } = JSON.parse(await readBody(req));
+      if (!goal || !goal.trim()) { json(400, { error: 'goal is required' }); return; }
+      const result = launchAgent(goal.trim());
+      json(result.ok ? 200 : 409, result);
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── POST /api/kill  ───────────────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/api/kill') {
+    json(200, killAgent());
+    return;
+  }
+
+  // ── POST /api/inject  ─────────────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/api/inject') {
-    let body = '';
-    req.on('data', c => (body += c));
-    req.on('end', () => {
-      try {
-        const { command, runId } = JSON.parse(body);
-        const target = runId || state.activeRunId;
-        if (!target || !command) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ error: 'missing command or active run' }));
-          return;
-        }
-        const cmdFile = path.join(RUNS_DIR, target, 'web_cmd.txt');
-        fs.writeFileSync(cmdFile, command.trim() + '\n', 'utf8');
-
-        // Echo into live event log immediately
-        state.events.push({ type: 'injected', text: command.trim(), iter: _iterCounter, idx: -1 });
-        broadcast();
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (e) {
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: String(e) }));
-      }
-    });
+    try {
+      const { command, runId } = JSON.parse(await readBody(req));
+      const target = runId || state.activeRunId;
+      if (!target || !command) { json(400, { error: 'missing command or active run' }); return; }
+      const cmdFile = path.join(RUNS_DIR, target, 'web_cmd.txt');
+      fs.writeFileSync(cmdFile, command.trim() + '\n', 'utf8');
+      state.events.push({ type: 'injected', text: command.trim(), iter: _iterCounter, idx: -1 });
+      broadcast();
+      json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
     return;
   }
 
-  // GET /api/state  — full current state (REST fallback)
+  // ── GET /api/state  ───────────────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/state') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ type: 'state', ...state }));
+    json(200, { type: 'state', ...state });
     return;
   }
 
-  // GET /api/run/:runId  — historical run data
+  // ── GET /api/run/:runId  ──────────────────────────────────────────────────
   const runMatch = req.url.match(/^\/api\/run\/([^/?]+)/);
   if (req.method === 'GET' && runMatch) {
     const data = loadRun(runMatch[1]);
     if (!data) { res.writeHead(404); res.end('{}'); return; }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ type: 'historical', ...data }));
+    json(200, { type: 'historical', ...data });
     return;
   }
 
-  // Static files
   serveStatic(req, res);
 });
 
-// ── WebSocket upgrade ──────────────────────────────────────────────────────
+// ── WebSocket ──────────────────────────────────────────────────────────────
 
 const wss = new WebSocket.Server({ server });
 
-wss.on('connection', (ws) => {
+wss.on('connection', ws => {
   clients.add(ws);
-  // Send current state immediately on connect
   ws.send(JSON.stringify({ type: 'state', ...state }));
 
-  ws.on('message', (raw) => {
+  ws.on('message', raw => {
     try {
       const msg = JSON.parse(raw);
       if (msg.type === 'select_run') {
@@ -356,18 +472,35 @@ wss.on('connection', (ws) => {
   ws.on('error', () => clients.delete(ws));
 });
 
+// ── Cleanup on server exit ─────────────────────────────────────────────────
+
+function cleanup() {
+  if (isAgentRunning()) {
+    console.log('\n  Terminating agent process…');
+    agentProc.kill('SIGTERM');
+  }
+}
+process.on('SIGINT',  () => { cleanup(); process.exit(0); });
+process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+process.on('exit',    cleanup);
+
 // ── Start ──────────────────────────────────────────────────────────────────
 
 setInterval(poll, POLL_MS);
-poll(); // initial load
+poll();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('  ⚡ simpleAgent Dashboard');
   console.log('  ─────────────────────────────────────');
-  console.log(`  URL  : http://localhost:${PORT}`);
-  console.log(`  Runs : ${RUNS_DIR}`);
-  console.log(`  Poll : every ${POLL_MS}ms`);
+  console.log(`  URL      : http://localhost:${PORT}`);
+  console.log(`  Runs     : ${RUNS_DIR}`);
+  console.log(`  Agent    : ${AGENT_DIR}`);
+  console.log(`  Python   : ${PYTHON_CMD}`);
+  console.log(`  Poll     : every ${POLL_MS}ms`);
+  console.log('');
+  console.log('  Tip: activate your conda env before running this server');
+  console.log('       so that the correct python is used when launching agents.');
   console.log('');
   console.log('  Press Ctrl+C to stop.');
   console.log('');
