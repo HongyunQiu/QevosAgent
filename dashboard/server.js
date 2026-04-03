@@ -285,39 +285,34 @@ function launchAgent(goal) {
   agentProc.stderr.setEncoding('utf8');
 
   agentProc.stdout.on('data', chunk => {
-    // Once we see any output, we're past the "launching" phase
-    if (isLaunching) {
-      isLaunching      = false;
-      state.launching  = false;
-    }
+    // Once we see any output the spawn succeeded; clear the launching flag.
+    // poll() will detect the state change and broadcast on next tick.
+    if (isLaunching) isLaunching = false;
     broadcastConsole('stdout', chunk);
   });
 
   agentProc.stderr.on('data', chunk => {
-    if (isLaunching) {
-      isLaunching      = false;
-      state.launching  = false;
-    }
+    if (isLaunching) isLaunching = false;
     broadcastConsole('stderr', chunk);
   });
 
   agentProc.on('error', err => {
-    isLaunching      = false;
-    state.launching  = false;
-    state.agentPid   = null;
-    agentProc        = null;
+    // Only reset the internal tracking vars; DO NOT touch state.* directly.
+    // poll() will diff state.agentPid vs the new null value and broadcast.
+    isLaunching = false;
+    agentProc   = null;
     broadcastConsole('system', `✗ Failed to start agent: ${err.message}`);
     broadcastConsole('system', `  Hint: make sure "${cmd}" is on PATH (activate your conda env first).`);
-    broadcast();
+    poll(); // detects agentPid/launching changed → sets dirty → broadcasts
   });
 
   agentProc.on('close', code => {
     broadcastConsole('system', `■ Agent process exited (code ${code ?? '?'})`);
-    isLaunching     = false;
-    state.launching = false;
-    state.agentPid  = null;
-    agentProc       = null;
-    poll(); // force state refresh
+    // Only reset the internal tracking vars; DO NOT touch state.* directly.
+    // poll() will diff state.agentPid (old PID) vs newPid (null) → dirty → broadcast.
+    isLaunching = false;
+    agentProc   = null;
+    poll(); // detects agentPid/launching changed → sets dirty → broadcasts
   });
 
   state.agentPid = agentProc.pid || null;
