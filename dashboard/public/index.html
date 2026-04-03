@@ -780,15 +780,14 @@ document.addEventListener('keydown', e => {
 function renderMainArea(data) {
   const evs     = data.events || [];
   const hasEvts = evs.length > 0;
-  const empty   = document.getElementById('eventsEmpty');
 
-  // Events log is always visible; toggle the empty state placeholder
-  if (hasEvts) {
-    empty.style.display = 'none';
-    renderEvents(evs);
-  } else {
-    empty.style.display = '';   // flex via CSS
-  }
+  // Always update the events log first, then control the empty-state visibility.
+  // NOTE: renderEvents replaces eventsLog.innerHTML which would destroy eventsEmpty
+  // (a child node) — renderEvents now detaches/reattaches it to keep it alive.
+  renderEvents(evs);
+
+  const empty = document.getElementById('eventsEmpty');
+  if (empty) empty.style.display = hasEvts ? 'none' : '';
 
   // "▶ New Run" button: visible when agent is idle and there are events to show
   const idle     = !isAgentActive(data);
@@ -878,20 +877,30 @@ function renderEvents(events) {
   const badge = document.getElementById('evCount');
   badge.textContent = events.length;
 
-  if (!events.length) { log.innerHTML = ''; return; }
+  // Detach eventsEmpty BEFORE replacing innerHTML so it isn't destroyed.
+  // We re-append it at the end; renderMainArea controls its display property.
+  const empty = document.getElementById('eventsEmpty');
+  if (empty && empty.parentNode === log) log.removeChild(empty);
 
-  let html = '';
-  let lastIter = -1;
-  for (const ev of events) {
-    const iterNum = ev.iter || 0;
-    if (iterNum !== lastIter && ev.type === 'tool_call') {
-      if (lastIter >= 0) html += `<div class="iter-sep"><span>Iteration ${iterNum}</span></div>`;
-      lastIter = iterNum;
+  if (!events.length) {
+    log.innerHTML = '';
+  } else {
+    let html = '';
+    let lastIter = -1;
+    for (const ev of events) {
+      const iterNum = ev.iter || 0;
+      if (iterNum !== lastIter && ev.type === 'tool_call') {
+        if (lastIter >= 0) html += `<div class="iter-sep"><span>Iteration ${iterNum}</span></div>`;
+        lastIter = iterNum;
+      }
+      html += renderEvent(ev);
     }
-    html += renderEvent(ev);
+    log.innerHTML = html;
+    if (gAutoScroll) log.scrollTop = log.scrollHeight;
   }
-  log.innerHTML = html;
-  if (gAutoScroll) log.scrollTop = log.scrollHeight;
+
+  // Always put eventsEmpty back so getElementById never returns null
+  if (empty) log.appendChild(empty);
 }
 
 function renderEvent(ev) {
