@@ -447,6 +447,56 @@ input, textarea { font-family: inherit; font-size: inherit; }
 .cmd-send:active { transform:scale(0.96); }
 .cmd-send:disabled { opacity:0.35; cursor:not-allowed; }
 
+/* ── Ask-user awaiting state ─────────────────────────────────────────── */
+.cmdbar { position: relative; }   /* anchor for the floating question banner */
+
+/* Question banner floats above the cmdbar */
+.ask-banner {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 0; right: 0;
+  background: rgba(30, 25, 5, 0.97);
+  border: 1px solid rgba(227,179,65,0.45);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  padding: 9px 16px;
+  font-size: 12px;
+  color: var(--yellow);
+  line-height: 1.5;
+  backdrop-filter: blur(2px);
+}
+.ask-banner.visible { display: flex; align-items: flex-start; gap: 8px; }
+.ask-banner-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+.ask-banner-body { flex: 1; min-width: 0; }
+.ask-banner-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.6px;
+  text-transform: uppercase; opacity: 0.65; display: block; margin-bottom: 2px;
+}
+.ask-banner-q { word-break: break-word; }
+
+/* Cmdbar highlight when awaiting input */
+.cmdbar.awaiting {
+  border-top-color: rgba(227,179,65,0.55);
+  animation: cmdbar-ask-pulse 2.5s ease-in-out infinite;
+}
+@keyframes cmdbar-ask-pulse {
+  0%,100% { border-top-color: rgba(227,179,65,0.35); }
+  50%      { border-top-color: rgba(227,179,65,0.75); }
+}
+.cmd-input.awaiting {
+  border-color: var(--yellow);
+}
+.cmd-input.awaiting:focus {
+  border-color: var(--yellow);
+  box-shadow: 0 0 0 3px rgba(227,179,65,0.2);
+}
+.cmd-send.awaiting {
+  background: linear-gradient(135deg, #a07800, #e3b341);
+  box-shadow: 0 1px 4px rgba(227,179,65,0.35);
+}
+.cmd-send.awaiting:hover { background: linear-gradient(135deg, #b88a00, #f0c040); }
+
 /* ── Toast ───────────────────────────────────────────────────────────── */
 #toast {
   position:fixed; bottom:64px; right:20px;
@@ -598,8 +648,16 @@ input, textarea { font-family: inherit; font-size: inherit; }
   </aside>
 
   <!-- ── Command Bar ────────────────────────────────────────────── -->
-  <div class="cmdbar">
-    <span class="cmd-prompt">›</span>
+  <div class="cmdbar" id="cmdbar">
+    <!-- Floating banner shown when agent is paused waiting for ask_user answer -->
+    <div class="ask-banner" id="askBanner">
+      <span class="ask-banner-icon">💬</span>
+      <div class="ask-banner-body">
+        <span class="ask-banner-label">Agent is asking you</span>
+        <span class="ask-banner-q" id="askBannerQ"></span>
+      </div>
+    </div>
+    <span class="cmd-prompt" id="cmdPrompt">›</span>
     <input class="cmd-input" id="cmdInput"
            placeholder="/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20"
            onkeydown="onCmdKey(event)">
@@ -681,6 +739,12 @@ function isAgentActive(data) {
   if (data.launching || data.agentPid) return true;
   const s = data.status && data.status.status;
   return s === 'running' || s === 'paused';
+}
+
+/** True when the agent is paused mid-run waiting for an ask_user answer. */
+function isAwaitingInput(data) {
+  return !!(data && data.status && data.status.status === 'paused'
+            && data.meta && data.meta.awaiting_input);
 }
 
 function renderTopBar(data, rid) {
@@ -864,11 +928,36 @@ function setLaunchBtnState(spinning) {
 }
 
 function updateCmdBarMode(data) {
-  const active = isAgentActive(data);
-  const input  = document.getElementById('cmdInput');
-  input.placeholder = active
-    ? '/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20'
-    : 'No agent running — type a goal to start a new run, or use /command';
+  const active   = isAgentActive(data);
+  const awaiting = isAwaitingInput(data);
+  const input    = document.getElementById('cmdInput');
+  const sendBtn  = document.getElementById('cmdSendBtn');
+  const banner   = document.getElementById('askBanner');
+  const bannerQ  = document.getElementById('askBannerQ');
+  const cmdbar   = document.getElementById('cmdbar');
+
+  if (awaiting) {
+    // Paused: agent is waiting for ask_user answer
+    const q = data.meta.awaiting_input;
+    input.placeholder   = 'Type your answer here and press Enter…';
+    input.className     = 'cmd-input awaiting';
+    sendBtn.className   = 'cmd-send awaiting';
+    sendBtn.textContent = 'Answer';
+    cmdbar.classList.add('awaiting');
+    bannerQ.textContent = q;
+    banner.classList.add('visible');
+    // Auto-focus so user can type immediately
+    if (document.activeElement !== input) input.focus();
+  } else {
+    input.className     = 'cmd-input';
+    sendBtn.className   = 'cmd-send';
+    sendBtn.textContent = 'Send';
+    cmdbar.classList.remove('awaiting');
+    banner.classList.remove('visible');
+    input.placeholder = active
+      ? '/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20'
+      : 'No agent running — type a goal to start a new run, or use /command';
+  }
 }
 
 // ── Events rendering ──────────────────────────────────────────────────────
@@ -1093,8 +1182,17 @@ async function sendCmd() {
   const runId = (gState && gState.activeRunId) || gViewRunId;
   if (!runId) { toast('⚠ No active run'); return; }
 
-  // Auto-prepend /inject if not a slash command
-  const cmd = raw.startsWith('/') ? raw : `/inject ${raw}`;
+  // When agent is paused waiting for ask_user, send raw text so it routes to
+  // _input_queue (via _finish_line) and unblocks get_user_input().
+  // Adding "/inject " would make _finish_line treat it as a slash-command
+  // and route it to _cmd_queue instead — the agent would never receive it.
+  let cmd;
+  if (isAwaitingInput(gState) && !raw.startsWith('/')) {
+    cmd = raw;   // plain text → _input_queue → ask_user answer
+  } else {
+    // Auto-prepend /inject if not a slash command
+    cmd = raw.startsWith('/') ? raw : `/inject ${raw}`;
+  }
 
   try {
     const res = await fetch('/api/inject', {
@@ -1102,7 +1200,7 @@ async function sendCmd() {
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ command: cmd, runId }),
     });
-    if (res.ok) { input.value = ''; toast(`✓ Sent: ${cmd}`); }
+    if (res.ok) { input.value = ''; toast(`✓ Sent: ${raw}`); }
     else toast('✗ Server rejected the command');
   } catch { toast('✗ Network error'); }
 }
