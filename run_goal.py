@@ -238,23 +238,99 @@ def main():
         max_iterations=int(os.environ.get("MAX_ITERS", "100")),
         verbose=True,
     )
+
+    # ── 用户干预处理器：后台线程读取 stdin，"/" 开头为命令，其余为 ask_user 回答 ──
+    from agent.runtime.user_interrupt import UserInterruptHandler
+    interrupt_handler = UserInterruptHandler()
+    agent.hooks.interrupt_handler = interrupt_handler  # 挂载到 hooks，loop.py 会检查
+
+    BLUE  = "\033[94m"
+    RESET = "\033[0m"
+    print(
+        f"{BLUE}[提示] Agent 运行期间可随时输入干预命令（以 / 开头）：\n"
+        f"  /help   显示所有命令    /stop   停止当前工具\n"
+        f"  /exit   退出程序        /inject <消息>  注入上下文\n"
+        f"  /status 查看当前状态   /+N  增加 N 次迭代{RESET}"
+    )
+
     persistence = RunPersistence(run_dir)
     state = None
     run_error = None
 
+    interrupt_handler.start()
     try:
         state = agent.run(full_goal)
 
         # If the agent paused for input, prompt the user and resume.
         while state.meta.get("paused") and state.meta.get("awaiting_input"):
+
+            if state.meta.get("user_stopped"):
+                # /exit：不再询问，直接退出循环
+                break
+
+            if state.meta.get("user_typing_pause"):
+                # 用户按下 / 触发的暂停：等待完整命令或纯文本（自动包装为 /inject）
+                print(
+                    f"\n{BLUE}─── 干预模式 ────────────────────────────────────────{RESET}\n"
+                    f"{BLUE}输入 /命令（如 /stop /exit /inject <消息>）\n"
+                    f"或直接输入文字，将自动注入到 Agent 上下文（效果等同 /inject）：{RESET}"
+                )
+                cmd = None
+                import time as _time
+                _deadline = _time.time() + 120.0  # 最多等 2 分钟
+                while _time.time() < _deadline:
+                    # 优先检查命令队列（/ 开头）
+                    cmd = interrupt_handler.wait_command(timeout=0.2)
+                    if cmd is not None:
+                        # /__pause__ 是"用户按了/"的哨兵，干预模式下已无意义，丢弃继续等待
+                        if cmd == "/__pause__":
+                            cmd = None
+                            continue
+                        break
+                    # 再检查纯文本队列（用户直接输入文字，自动包装为 /inject）
+                    try:
+                        text = interrupt_handler._input_queue.get_nowait()
+                        if text is not None and text.strip():
+                            cmd = f"/inject {text.strip()}"
+                        break
+                    except Exception:
+                        pass
+
+                if cmd is None:
+                    # 超时，没有任何输入 → 恢复执行
+                    print(f"{BLUE}[干预] 未收到输入，恢复执行。{RESET}")
+                    state.meta.pop("paused", None)
+                    state.meta.pop("awaiting_input", None)
+                    state.meta.pop("user_typing_pause", None)
+                    state = agent.run(goal, state=state)
+                    continue
+
+                result = interrupt_handler.process_command(cmd, state)
+                if result == "pause":
+                    # 不应出现（/__pause__ 已过滤），若出现则继续等待
+                    continue
+                state.meta.pop("paused", None)
+                state.meta.pop("awaiting_input", None)
+                state.meta.pop("user_typing_pause", None)
+                if result == "stop":
+                    state.meta["user_stopped"] = True
+                    break
+                # /inject 已注入 or /status 已显示 → 恢复执行
+                if state.persistence is not None:
+                    state.persistence.checkpoint(state)
+                state = agent.run(goal, state=state)
+                continue
+
+            # 普通 ask_user 暂停：Agent 提问，等待用户文字回答
             q = state.meta.get("awaiting_input")
             print("\n=== NEED INPUT ===")
             print(q)
-            try:
-                user_input = input("\nYour answer> ").strip()
-            except EOFError:
+            # 通过 interrupt_handler 读取，与后台线程共享 stdin 不冲突
+            user_input = interrupt_handler.get_user_input("\nYour answer> ")
+            if user_input is None:  # EOF
                 print("\n[run_goal] No interactive stdin available (EOF). Please rerun in a real terminal to answer.")
                 break
+            user_input = user_input.strip()
             if not user_input:
                 print("No input provided; exiting.")
                 break
@@ -267,10 +343,13 @@ def main():
                 state.persistence.append_short_term(state.short_term[-1])
                 state.persistence.checkpoint(state)
             state = agent.run(goal, state=state)
+
     except Exception as e:
         run_error = e
         if state is not None and state.persistence is not None:
             state.persistence.finish(state, outcome="failed", error=f"{type(e).__name__}: {e}")
+    finally:
+        interrupt_handler.stop()
 
     if state is not None:
         if state.persistence is None:

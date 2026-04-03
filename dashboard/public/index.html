@@ -1,0 +1,1107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>simpleAgent Dashboard</title>
+<style>
+/* ── Variables ───────────────────────────────────────────────────────── */
+:root {
+  --bg:      #0d1117;
+  --bg2:     #161b22;
+  --bg3:     #21262d;
+  --bg4:     #2d333b;
+  --border:  #30363d;
+  --text:    #e6edf3;
+  --muted:   #7d8590;
+  --blue:    #58a6ff;
+  --green:   #3fb950;
+  --purple:  #d2a8ff;
+  --orange:  #ffa657;
+  --red:     #f85149;
+  --yellow:  #e3b341;
+  --cyan:    #79c0ff;
+  --pink:    #f778ba;
+  --mono: 'JetBrains Mono','Fira Code','Cascadia Code',Consolas,monospace;
+  --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px; }
+button { font-family: inherit; font-size: inherit; cursor: pointer; }
+input  { font-family: inherit; font-size: inherit; }
+
+/* ── Layout ──────────────────────────────────────────────────────────── */
+.app {
+  display: grid;
+  height: 100vh;
+  grid-template-rows: 48px 1fr 54px;
+  grid-template-columns: 230px 1fr 310px;
+  grid-template-areas:
+    "topbar topbar topbar"
+    "sidebar events right"
+    "cmdbar cmdbar cmdbar";
+}
+
+/* ── Topbar ──────────────────────────────────────────────────────────── */
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  z-index: 20;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.3px;
+  white-space: nowrap;
+}
+
+.logo-icon {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, #1f6feb 0%, #8b5cf6 100%);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  box-shadow: 0 0 10px rgba(31,111,235,0.4);
+}
+
+.topbar-sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
+.topbar-gap { flex: 1; }
+
+.run-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  transition: border-color 0.2s;
+}
+
+.run-pill.live { border-color: rgba(63,185,80,0.4); color: var(--text); }
+
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: background 0.3s, box-shadow 0.3s;
+}
+.status-dot.running { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s ease-in-out infinite; }
+.status-dot.done    { background: var(--blue); }
+.status-dot.error   { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.status-dot.paused  { background: var(--yellow); }
+
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.45} }
+
+.ws-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 3px 10px;
+}
+
+.ws-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
+.ws-dot.ok { background: var(--green); }
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+.sidebar {
+  grid-area: sidebar;
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.section-head {
+  padding: 10px 14px 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Stat grid */
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.stat-cell {
+  background: var(--bg2);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+.stat-val {
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+}
+
+.stat-val.blue   { color: var(--blue); }
+.stat-val.green  { color: var(--green); }
+.stat-val.orange { color: var(--orange); }
+.stat-val.muted  { color: var(--muted); font-size: 13px; font-weight: 400; }
+
+/* Goal box */
+.goal-box {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.goal-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 5px; }
+
+.goal-text {
+  font-size: 11.5px;
+  color: var(--cyan);
+  line-height: 1.55;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+}
+
+/* Runs list */
+.runs-scroller { flex: 1; overflow-y: auto; }
+
+.run-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid transparent;
+}
+
+.run-item:hover { background: var(--bg3); }
+.run-item.selected { background: rgba(88,166,255,0.08); }
+.run-item.selected .run-id { color: var(--blue); }
+
+.run-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
+.run-dot.active { background: var(--green); }
+
+.run-id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.run-tag { margin-left: auto; font-size: 10px; color: var(--muted); background: var(--bg4); border-radius: 3px; padding: 1px 5px; }
+
+/* ── Events panel ────────────────────────────────────────────────────── */
+.events-panel {
+  grid-area: events;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.events-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  height: 38px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.events-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+
+.count-badge {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.bar-gap { flex: 1; }
+
+.icon-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-size: 11px;
+  transition: all 0.15s;
+}
+.icon-btn:hover, .icon-btn.on { border-color: var(--blue); color: var(--blue); }
+
+.events-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px 20px;
+}
+
+/* ── Event items ─────────────────────────────────────────────────────── */
+.ev {
+  margin-bottom: 6px;
+  border-radius: 7px;
+  overflow: hidden;
+  animation: slideUp 0.18s ease;
+}
+
+@keyframes slideUp { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
+
+/* Iteration separator */
+.iter-sep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 8px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.iter-sep::before, .iter-sep::after { content:''; flex:1; height:1px; background:var(--border); }
+.iter-sep span {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 1px 8px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+/* Goal */
+.ev-goal {
+  background: rgba(88,166,255,0.06);
+  border: 1px solid rgba(88,166,255,0.15);
+  padding: 10px 13px;
+}
+.ev-goal .ev-label { font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--blue); margin-bottom: 5px; }
+.ev-goal .ev-body  { font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+/* Thought */
+.ev-thought {
+  background: rgba(210,168,255,0.05);
+  border-left: 3px solid rgba(210,168,255,0.4);
+  padding: 7px 12px;
+}
+.ev-thought .ev-body { color: #c5b3f0; font-size: 12px; font-style: italic; line-height: 1.6; }
+
+/* Tool call */
+.ev-tool-call {
+  background: rgba(63,185,80,0.05);
+  border-left: 3px solid rgba(63,185,80,0.5);
+}
+.ev-header { display: flex; align-items: center; gap: 8px; padding: 7px 12px 4px; flex-wrap: wrap; }
+.tool-name-badge {
+  background: rgba(63,185,80,0.15);
+  color: var(--green);
+  border: 1px solid rgba(63,185,80,0.3);
+  border-radius: 4px;
+  padding: 2px 9px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.ev-args {
+  padding: 2px 12px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--cyan);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ev-arrow { color: var(--muted); font-size: 12px; }
+.ev-meta  { color: var(--muted); font-size: 11px; }
+.ev-mini-thought { font-size: 11px; color: #a093cc; font-style: italic; padding: 0 12px 4px; }
+
+/* Tool result */
+.ev-tool-result {
+  background: rgba(88,166,255,0.04);
+  border-left: 3px solid rgba(88,166,255,0.3);
+}
+.ev-tool-result.fail-result { border-left-color: rgba(248,81,73,0.5); background: rgba(248,81,73,0.04); }
+.result-badge {
+  background: rgba(88,166,255,0.1);
+  color: var(--blue);
+  border: 1px solid rgba(88,166,255,0.2);
+  border-radius: 4px;
+  padding: 2px 9px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.result-badge.fail { background: rgba(248,81,73,0.1); color: var(--red); border-color: rgba(248,81,73,0.2); }
+.ev-output {
+  padding: 2px 12px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 100px;
+  overflow: hidden;
+  position: relative;
+}
+.ev-output.expanded { max-height: none; }
+.ev-output::after {
+  content:'';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 24px;
+  background: linear-gradient(transparent, rgba(88,166,255,0.07));
+  pointer-events: none;
+}
+.ev-output.expanded::after { display: none; }
+.expand-btn {
+  background: none;
+  border: none;
+  color: var(--blue);
+  font-size: 11px;
+  padding: 0 12px 7px;
+  display: block;
+  opacity: 0.8;
+}
+.expand-btn:hover { opacity: 1; }
+
+/* Done */
+.ev-done {
+  background: rgba(227,179,65,0.08);
+  border: 1px solid rgba(227,179,65,0.25);
+  border-radius: 7px;
+  padding: 11px 13px;
+}
+.ev-done .ev-label { font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--yellow); margin-bottom: 5px; }
+.ev-done .ev-body  { font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+/* Error */
+.ev-error {
+  background: rgba(248,81,73,0.07);
+  border-left: 3px solid rgba(248,81,73,0.6);
+  padding: 8px 12px;
+}
+.ev-error .ev-body { color: #f07070; font-size: 12px; font-style: italic; }
+
+/* Injected */
+.ev-injected {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(255,166,87,0.06);
+  border-left: 3px solid rgba(255,166,87,0.5);
+  padding: 8px 12px;
+}
+.ev-injected .arrow { color: var(--orange); font-size: 13px; flex-shrink: 0; margin-top: 1px; }
+.ev-injected .cmd { font-family: var(--mono); font-size: 12px; color: var(--orange); }
+
+/* User msg */
+.ev-user-msg {
+  padding: 7px 12px;
+  background: rgba(125,133,144,0.05);
+  border-left: 3px solid var(--border);
+}
+.ev-user-msg .ev-body { font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+
+/* Empty state */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 14px;
+  color: var(--muted);
+}
+.empty-icon { font-size: 48px; opacity: 0.25; }
+.empty-text { font-size: 13px; text-align: center; line-height: 1.6; }
+
+/* ── Right panel ─────────────────────────────────────────────────────── */
+.right-panel {
+  grid-area: right;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg2);
+  border-left: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.tab-strip {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.tab-btn {
+  flex: 1;
+  padding: 9px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+.tab-pane { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+.tab-pane.active { display: flex; }
+
+/* Scratchpad */
+.sp-hint {
+  padding: 7px 14px;
+  font-size: 10.5px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sp-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: #c5d0db;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.sp-empty { color: var(--muted); font-style: italic; }
+
+/* Jobs */
+.jobs-list { flex: 1; overflow-y: auto; padding: 10px 10px; }
+.job-card {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.job-top { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+.job-id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.job-badge {
+  font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 3px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.job-badge.RUNNING  { background: rgba(63,185,80,0.18); color: var(--green); }
+.job-badge.DONE     { background: rgba(88,166,255,0.18); color: var(--blue); }
+.job-badge.FAILED   { background: rgba(248,81,73,0.18); color: var(--red); }
+.job-badge.CANCELLED{ background: rgba(125,133,144,0.15); color: var(--muted); }
+.job-cmd { font-family: var(--mono); font-size: 11px; color: var(--cyan); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jobs-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 20px; }
+
+/* ── Command bar ─────────────────────────────────────────────────────── */
+.cmdbar {
+  grid-area: cmdbar;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+}
+
+.cmd-prompt { font-family: var(--mono); font-size: 15px; color: var(--green); font-weight: 700; flex-shrink: 0; }
+
+.cmd-input {
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 13px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  min-width: 0;
+}
+.cmd-input::placeholder { color: var(--muted); }
+.cmd-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,0.12); }
+
+.cmd-send {
+  background: linear-gradient(135deg, #1f6feb, #3b82f6);
+  border: none;
+  color: #fff;
+  padding: 8px 18px;
+  border-radius: 7px;
+  font-weight: 600;
+  font-size: 12px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  box-shadow: 0 1px 4px rgba(31,111,235,0.4);
+}
+.cmd-send:hover  { background: linear-gradient(135deg, #2d7ef7, #4f93ff); }
+.cmd-send:active { transform: scale(0.96); }
+.cmd-send:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+#toast {
+  position: fixed;
+  bottom: 64px;
+  right: 20px;
+  background: var(--bg4);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--text);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  z-index: 999;
+  display: none;
+  animation: toastIn 0.2s ease;
+  max-width: 320px;
+}
+@keyframes toastIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+/* ── Scrollbars ──────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Top Bar ─────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="logo">
+      <div class="logo-icon">⚡</div>
+      simpleAgent
+    </div>
+    <div class="topbar-sep"></div>
+    <div class="run-pill" id="runPill">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="runPillLabel">No run</span>
+    </div>
+    <div class="topbar-gap"></div>
+    <div class="ws-pill">
+      <div class="ws-dot" id="wsDot"></div>
+      <span id="wsLabel">Connecting…</span>
+    </div>
+  </header>
+
+  <!-- ── Sidebar ────────────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="section-head">Metrics</div>
+    <div class="stat-grid">
+      <div class="stat-cell">
+        <div class="stat-lbl">Iteration</div>
+        <div class="stat-val blue" id="sIter">—</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-lbl">Events</div>
+        <div class="stat-val green" id="sEvents">0</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-lbl">Status</div>
+        <div class="stat-val muted" id="sStatus">—</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-lbl">Tools Used</div>
+        <div class="stat-val orange" id="sTools">0</div>
+      </div>
+    </div>
+
+    <div class="goal-box">
+      <div class="goal-label">Current Goal</div>
+      <div class="goal-text" id="goalText">No active goal</div>
+    </div>
+
+    <div class="section-head">Runs</div>
+    <div class="runs-scroller" id="runsList"></div>
+  </aside>
+
+  <!-- ── Events Panel ───────────────────────────────────────────── -->
+  <main class="events-panel">
+    <div class="events-bar">
+      <span class="events-title">Event Log</span>
+      <span class="count-badge" id="evCount">0</span>
+      <div class="bar-gap"></div>
+      <button class="icon-btn on" id="autoScrollBtn" onclick="toggleAutoScroll()">↓ Auto-scroll</button>
+    </div>
+    <div class="events-log" id="eventsLog">
+      <div class="empty-state">
+        <div class="empty-icon">⚡</div>
+        <div class="empty-text">Waiting for the agent to start…<br><small style="opacity:.5">Run: <code>python run_goal.py "your goal"</code></small></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ── Right Panel ────────────────────────────────────────────── -->
+  <aside class="right-panel">
+    <div class="tab-strip">
+      <button class="tab-btn active" onclick="setTab('scratchpad')">Scratchpad</button>
+      <button class="tab-btn" onclick="setTab('jobs')">Jobs</button>
+    </div>
+
+    <div class="tab-pane active" id="pane-scratchpad">
+      <div class="sp-hint">Agent working memory — updated in real time</div>
+      <div class="sp-body" id="spBody"><span class="sp-empty">No content yet…</span></div>
+    </div>
+
+    <div class="tab-pane" id="pane-jobs">
+      <div class="sp-hint">Background shell jobs (shell_bg)</div>
+      <div class="jobs-list" id="jobsList">
+        <div class="jobs-empty">No background jobs detected</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Command Bar ────────────────────────────────────────────── -->
+  <div class="cmdbar">
+    <span class="cmd-prompt">›</span>
+    <input class="cmd-input" id="cmdInput"
+           placeholder="/inject Hello agent  |  /status  |  /stop  |  /exit  |  /compress  |  /+20"
+           onkeydown="onCmdKey(event)">
+    <button class="cmd-send" id="cmdSendBtn" onclick="sendCmd()">Send</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────
+let gState = null;       // last received full state
+let gViewRunId = null;   // which run is displayed
+let gAutoScroll = true;
+let gLastIterRendered = -1;
+let gWs = null;
+let gReconnTimer = null;
+
+// ── WebSocket ─────────────────────────────────────────────────────────────
+function connectWs() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  gWs = new WebSocket(`${proto}//${location.host}`);
+
+  gWs.onopen = () => {
+    setWsUI(true);
+    clearTimeout(gReconnTimer);
+  };
+  gWs.onclose = () => {
+    setWsUI(false);
+    gReconnTimer = setTimeout(connectWs, 3000);
+  };
+  gWs.onerror = () => setWsUI(false);
+  gWs.onmessage = e => {
+    try { handleMsg(JSON.parse(e.data)); } catch {}
+  };
+}
+
+function setWsUI(ok) {
+  document.getElementById('wsDot').className  = 'ws-dot' + (ok ? ' ok' : '');
+  document.getElementById('wsLabel').textContent = ok ? 'Live' : 'Reconnecting…';
+}
+
+function handleMsg(msg) {
+  if (msg.type === 'state') {
+    gState = msg;
+    // Auto-follow latest run unless user manually selected a different one
+    if (!gViewRunId || gViewRunId === msg.activeRunId) {
+      gViewRunId = msg.activeRunId;
+      renderAll(msg);
+    } else {
+      renderRunsList(msg.runs, gViewRunId);
+    }
+  } else if (msg.type === 'historical') {
+    renderAll(msg, msg.runId);
+  }
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+function renderAll(data, runId) {
+  const rid = runId || data.activeRunId;
+  renderTopBar(data, rid);
+  renderSidebar(data, rid);
+  renderEvents(data.events || []);
+  renderScratchpad(data.scratchpad || '');
+  renderJobs(data.events || []);
+}
+
+function renderTopBar(data, rid) {
+  const pill  = document.getElementById('runPill');
+  const dot   = document.getElementById('statusDot');
+  const label = document.getElementById('runPillLabel');
+
+  if (!rid) {
+    pill.className = 'run-pill';
+    dot.className  = 'status-dot';
+    label.textContent = 'No run';
+    return;
+  }
+
+  const s = (data.status && data.status.status) || 'unknown';
+  pill.className = 'run-pill' + (s === 'running' ? ' live' : '');
+  dot.className  = 'status-dot ' + s;
+  label.textContent = fmtRunId(rid);
+}
+
+function renderSidebar(data, rid) {
+  const st = data.status || {};
+  const evs = data.events || [];
+  const toolCalls = evs.filter(e => e.type === 'tool_call').length;
+
+  document.getElementById('sIter').textContent   = st.iteration ?? '—';
+  document.getElementById('sEvents').textContent = evs.length;
+  document.getElementById('sStatus').textContent = st.status || '—';
+  document.getElementById('sTools').textContent  = toolCalls;
+
+  // Goal: prefer status.goal (cleaner), fall back to first goal event
+  let goalText = '';
+  if (st.goal) {
+    // Extract actual user goal: after AGENTS.md preamble
+    const m = st.goal.match(/请完成以下目标：\s*\n([\s\S]*)/);
+    goalText = m ? m[1].replace(/^【总规范】[\s\S]*?\n\n/m, '').trim().slice(0, 300)
+                 : st.goal.slice(0, 300);
+  }
+  if (!goalText) {
+    const gev = evs.find(e => e.type === 'goal');
+    goalText = gev ? gev.text.slice(0, 300) : 'No active goal';
+  }
+  document.getElementById('goalText').textContent = goalText;
+
+  renderRunsList(data.runs || [], rid);
+}
+
+function renderRunsList(runs, activeId) {
+  const list = document.getElementById('runsList');
+  if (!runs.length) {
+    list.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 14px;">No runs yet</div>';
+    return;
+  }
+  list.innerHTML = [...runs].reverse().map(r => {
+    const isActive = r === (gState && gState.activeRunId);
+    const isSelected = r === activeId;
+    return `<div class="run-item ${isSelected ? 'selected' : ''}" onclick="selectRun('${r}')">
+      <div class="run-dot ${isActive ? 'active' : ''}"></div>
+      <span class="run-id">${fmtRunId(r)}</span>
+      ${isActive ? '<span class="run-tag">live</span>' : ''}
+    </div>`;
+  }).join('');
+}
+
+// ── Events rendering ──────────────────────────────────────────────────────
+function renderEvents(events) {
+  const log   = document.getElementById('eventsLog');
+  const badge = document.getElementById('evCount');
+  badge.textContent = events.length;
+
+  if (!events.length) {
+    log.innerHTML = `<div class="empty-state">
+      <div class="empty-icon">⚡</div>
+      <div class="empty-text">Waiting for the agent to start…<br>
+        <small style="opacity:.5">Run: <code>python run_goal.py "your goal"</code></small></div>
+    </div>`;
+    gLastIterRendered = -1;
+    return;
+  }
+
+  let html = '';
+  let lastIter = -1;
+
+  for (const ev of events) {
+    // Insert iteration separator before each new iteration's first non-result event
+    const iterNum = ev.iter || 0;
+    if (iterNum !== lastIter && ev.type === 'tool_call') {
+      if (lastIter >= 0) {
+        html += `<div class="iter-sep"><span>Iteration ${iterNum}</span></div>`;
+      }
+      lastIter = iterNum;
+    }
+    html += renderEvent(ev);
+  }
+
+  log.innerHTML = html;
+
+  if (gAutoScroll) log.scrollTop = log.scrollHeight;
+}
+
+function renderEvent(ev) {
+  switch (ev.type) {
+
+    case 'goal':
+      return `<div class="ev ev-goal">
+        <div class="ev-label">🎯 Goal</div>
+        <div class="ev-body">${esc(ev.text)}</div>
+      </div>`;
+
+    case 'thought':
+      if (!ev.thought) return '';
+      return `<div class="ev ev-thought">
+        <div class="ev-body">💭 ${esc(ev.thought)}</div>
+      </div>`;
+
+    case 'tool_call': {
+      const args = fmtArgs(ev.args || {});
+      const thought = ev.thought
+        ? `<div class="ev-mini-thought">💭 ${esc(ev.thought)}</div>` : '';
+      return `<div class="ev ev-tool-call">
+        ${thought}
+        <div class="ev-header">
+          <span class="ev-arrow">⚡</span>
+          <span class="tool-name-badge">${esc(ev.tool)}</span>
+        </div>
+        ${args ? `<div class="ev-args">${esc(args)}</div>` : ''}
+      </div>`;
+    }
+
+    case 'tool_result': {
+      const out = ev.output || '';
+      const big = out.length > 250;
+      const uid = 'r' + Math.random().toString(36).slice(2, 7);
+      const failCls = ev.success === false ? 'fail-result' : '';
+      const badgeCls = ev.success === false ? 'fail' : '';
+      return `<div class="ev ev-tool-result ${failCls}">
+        <div class="ev-header">
+          <span class="ev-arrow">←</span>
+          <span class="result-badge ${badgeCls}">${esc(ev.tool)}</span>
+          ${ev.success === false ? '<span class="ev-meta" style="color:var(--red)">failed</span>' : ''}
+        </div>
+        <div class="ev-output ${big ? '' : 'expanded'}" id="${uid}">${esc(trunc(out, big ? 250 : out.length))}</div>
+        ${big ? `<button class="expand-btn" onclick="toggleExpand('${uid}',this)">▼ show more (${out.length} chars)</button>` : ''}
+      </div>`;
+    }
+
+    case 'done':
+      return `<div class="ev ev-done">
+        <div class="ev-label">✓ Task complete</div>
+        <div class="ev-body">${esc(ev.answer || '')}</div>
+      </div>`;
+
+    case 'error':
+      return `<div class="ev ev-error">
+        <div class="ev-body">✗ ${esc(ev.text || 'Error occurred')}</div>
+      </div>`;
+
+    case 'injected':
+      return `<div class="ev ev-injected">
+        <span class="arrow">→</span>
+        <span class="cmd">${esc(ev.text)}</span>
+      </div>`;
+
+    case 'user_msg': {
+      const text = ev.text;
+      if (!text || text.length < 4) return '';
+      return `<div class="ev ev-user-msg">
+        <div class="ev-body">${esc(trunc(text, 300))}</div>
+      </div>`;
+    }
+
+    default: return '';
+  }
+}
+
+function renderScratchpad(content) {
+  const el = document.getElementById('spBody');
+  el.innerHTML = content && content.trim()
+    ? esc(content).replace(/\n/g, '<br>')
+    : '<span class="sp-empty">No scratchpad content yet…</span>';
+}
+
+function renderJobs(events) {
+  const jobs = {};
+
+  for (const ev of events) {
+    if (ev.type !== 'tool_result') continue;
+    const out = ev.output || '';
+
+    // Try JSON parse first
+    try {
+      const j = JSON.parse(out);
+      if (j && j.job_id) {
+        jobs[j.job_id] = { id: j.job_id, status: j.status || 'RUNNING', command: j.command || '' };
+        continue;
+      }
+      if (Array.isArray(j)) {
+        j.forEach(item => {
+          if (item && item.job_id) {
+            jobs[item.job_id] = { id: item.job_id, status: item.status || 'RUNNING', command: item.command || '' };
+          }
+        });
+        continue;
+      }
+    } catch {}
+
+    // Regex fallback: job_id: xxx or "job_id": "xxx"
+    const m = out.match(/["']?job[_-]id["']?\s*[:=]\s*["']?([^"',\s\n}]+)/i);
+    if (m) {
+      const jid = m[1];
+      if (!jobs[jid]) jobs[jid] = { id: jid, status: 'RUNNING', command: '' };
+    }
+
+    // Find status updates in job_wait / jobs_list results
+    const statusMatch = out.match(/["']?status["']?\s*[:=]\s*["']?(RUNNING|DONE|FAILED|CANCELLED)["']?/i);
+    const jidMatch    = out.match(/["']?job[_-]id["']?\s*[:=]\s*["']?([^"',\s\n}]+)/i);
+    if (statusMatch && jidMatch && jobs[jidMatch[1]]) {
+      jobs[jidMatch[1]].status = statusMatch[1].toUpperCase();
+    }
+  }
+
+  const list = document.getElementById('jobsList');
+  const items = Object.values(jobs);
+  if (!items.length) {
+    list.innerHTML = '<div class="jobs-empty">No background jobs detected</div>';
+    return;
+  }
+  list.innerHTML = items.map(j => `
+    <div class="job-card">
+      <div class="job-top">
+        <span class="job-id">${esc(j.id)}</span>
+        <span class="job-badge ${j.status}">${j.status}</span>
+      </div>
+      ${j.command ? `<div class="job-cmd" title="${esc(j.command)}">${esc(j.command)}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+// ── Run selection ─────────────────────────────────────────────────────────
+function selectRun(runId) {
+  gViewRunId = runId;
+  if (gState && runId === gState.activeRunId) {
+    renderAll(gState, runId);
+  } else {
+    // Request historical run data via WebSocket
+    if (gWs && gWs.readyState === WebSocket.OPEN) {
+      gWs.send(JSON.stringify({ type: 'select_run', runId }));
+    }
+  }
+}
+
+// ── Command injection ─────────────────────────────────────────────────────
+function onCmdKey(e) { if (e.key === 'Enter') sendCmd(); }
+
+async function sendCmd() {
+  const input = document.getElementById('cmdInput');
+  const raw   = input.value.trim();
+  if (!raw) return;
+
+  const runId = (gState && gState.activeRunId) || gViewRunId;
+  if (!runId) { toast('⚠ No active run to inject into'); return; }
+
+  try {
+    const res = await fetch('/api/inject', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ command: raw, runId }),
+    });
+    if (res.ok) {
+      input.value = '';
+      toast(`✓ Sent: ${raw}`);
+    } else {
+      toast('✗ Server rejected the command');
+    }
+  } catch {
+    toast('✗ Network error');
+  }
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────
+function toggleAutoScroll() {
+  gAutoScroll = !gAutoScroll;
+  const btn = document.getElementById('autoScrollBtn');
+  btn.className = 'icon-btn' + (gAutoScroll ? ' on' : '');
+  btn.textContent = gAutoScroll ? '↓ Auto-scroll' : '↓ Auto-scroll';
+  if (gAutoScroll) {
+    const log = document.getElementById('eventsLog');
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function setTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((btn, i) => {
+    const names = ['scratchpad', 'jobs'];
+    btn.className = 'tab-btn' + (names[i] === name ? ' active' : '');
+  });
+  document.querySelectorAll('.tab-pane').forEach(pane => {
+    pane.className = 'tab-pane' + (pane.id === 'pane-' + name ? ' active' : '');
+  });
+}
+
+function toggleExpand(id, btn) {
+  const el = document.getElementById(id);
+  el.classList.toggle('expanded');
+  btn.textContent = el.classList.contains('expanded') ? '▲ show less' : '▼ show more';
+}
+
+function fmtRunId(rid) {
+  // "20260403-123456" → "04/03 12:34:56"
+  if (/^\d{8}-\d{6}$/.test(rid)) {
+    return rid.slice(4,6) + '/' + rid.slice(6,8) + ' ' +
+           rid.slice(9,11) + ':' + rid.slice(11,13) + ':' + rid.slice(13,15);
+  }
+  return rid;
+}
+
+function fmtArgs(args) {
+  if (!args || Object.keys(args).length === 0) return '';
+  try {
+    const s = JSON.stringify(args, null, 2);
+    return s.length > 400 ? s.slice(0, 400) + '\n…' : s;
+  } catch { return String(args); }
+}
+
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+function trunc(str, max) {
+  if (str.length <= max) return str;
+  return str.slice(0, max) + `\n… [${str.length - max} more chars]`;
+}
+
+let _toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+connectWs();
+</script>
+</body>
+</html>
