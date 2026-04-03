@@ -243,6 +243,24 @@ input, textarea { font-family: inherit; font-size: inherit; }
   border-color: var(--blue);
   box-shadow: 0 0 0 3px rgba(88,166,255,0.12);
 }
+/* Last-run result banner inside the launch card */
+.last-run-banner {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  border-radius: 7px;
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+.last-run-banner.visible { display: flex; }
+.last-run-banner.done  { background: rgba(63,185,80,0.1);  border: 1px solid rgba(63,185,80,0.25);  color: var(--green); }
+.last-run-banner.error { background: rgba(248,81,73,0.1);  border: 1px solid rgba(248,81,73,0.25);  color: var(--red); }
+.last-run-banner .lrb-icon  { font-size: 15px; flex-shrink: 0; }
+.last-run-banner .lrb-text  { flex: 1; line-height: 1.4; }
+.last-run-banner .lrb-link  { background: none; border: none; font-size: 11px; font-weight: 600; text-decoration: underline; cursor: pointer; color: inherit; opacity: 0.8; white-space: nowrap; }
+.last-run-banner .lrb-link:hover { opacity: 1; }
+
 .launch-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; gap: 10px; }
 .launch-hint { font-size: 11px; color: var(--muted); }
 .launch-btn {
@@ -472,6 +490,12 @@ input, textarea { font-family: inherit; font-size: inherit; }
     <!-- Launch overlay: shown when no agent is running -->
     <div class="launch-overlay" id="launchOverlay">
       <div class="launch-card">
+        <!-- Populated by updateLastRunBanner() after a run finishes -->
+        <div class="last-run-banner" id="lastRunBanner">
+          <span class="lrb-icon" id="lrbIcon"></span>
+          <span class="lrb-text" id="lrbText"></span>
+          <button class="lrb-link" id="lrbLink" onclick="viewLastRun()">View results →</button>
+        </div>
         <div class="launch-card-title">
           <span>⚡</span> Start a new agent run
         </div>
@@ -670,27 +694,72 @@ function renderRunsList(runs, activeId) {
 
 // ── Main area: launch overlay vs event log ────────────────────────────────
 function renderMainArea(data) {
-  const active  = isAgentActive(data);
-  const hasEvts = (data.events || []).length > 0;
   const overlay = document.getElementById('launchOverlay');
   const log     = document.getElementById('eventsLog');
 
-  if (!active && !hasEvts) {
-    // Nothing running and no events to show → show launch card
+  // Are we looking at the live (latest) run, or a historical one from the sidebar?
+  const viewingLive = !gViewRunId || gViewRunId === data.activeRunId;
+  const runStatus   = data.status && data.status.status;
+  const isRunning   = runStatus === 'running' || runStatus === 'paused';
+
+  // Show launch card when:
+  //   a) launching phase (spinner)            — agentProc spawned but run dir not yet visible
+  //   b) viewing the live slot AND no active agent process AND not actively running
+  //      covers: fresh start (no runs), run just completed, run errored
+  // Show event log when:
+  //   a) agent is actively running/paused
+  //   b) user clicked a historical run in the sidebar
+  const showLaunch = data.launching || (viewingLive && !data.agentPid && !isRunning);
+
+  if (showLaunch) {
     overlay.classList.add('visible');
     log.style.display = 'none';
-    setLaunchBtnState(false);
-  } else if (data.launching) {
-    // Still in pre-run phase → show overlay with spinner
-    overlay.classList.add('visible');
-    log.style.display = 'none';
-    setLaunchBtnState(true);
+    setLaunchBtnState(data.launching);
+    updateLastRunBanner(data);
   } else {
-    // Agent running or historical run with events → show log
     overlay.classList.remove('visible');
     log.style.display = 'block';
     renderEvents(data.events || []);
     setLaunchBtnState(false);
+  }
+}
+
+/** Show/hide the "last run" result strip at the top of the launch card. */
+function updateLastRunBanner(data) {
+  const banner = document.getElementById('lastRunBanner');
+  const icon   = document.getElementById('lrbIcon');
+  const text   = document.getElementById('lrbText');
+  const runStatus = data.status && data.status.status;
+
+  if (!data.activeRunId || !runStatus || runStatus === 'running' || runStatus === 'paused' || data.launching) {
+    banner.className = 'last-run-banner';   // hidden
+    return;
+  }
+
+  const iters = (data.status && data.status.iteration) || 0;
+  const rid   = fmtRunId(data.activeRunId);
+
+  if (runStatus === 'done') {
+    banner.className = 'last-run-banner visible done';
+    icon.textContent = '✓';
+    text.innerHTML   = `<strong>Last run completed</strong> &nbsp;·&nbsp; ${rid} &nbsp;·&nbsp; ${iters} iteration${iters !== 1 ? 's' : ''}`;
+  } else if (runStatus === 'error' || runStatus === 'failed') {
+    banner.className = 'last-run-banner visible error';
+    icon.textContent = '✗';
+    text.innerHTML   = `<strong>Last run failed</strong> &nbsp;·&nbsp; ${rid} &nbsp;·&nbsp; ${iters} iteration${iters !== 1 ? 's' : ''}`;
+  } else {
+    banner.className = 'last-run-banner';   // unknown status — hide
+  }
+}
+
+/** "View results →" button inside the banner: load the last run's event log. */
+function viewLastRun() {
+  const runId = gState && gState.activeRunId;
+  if (!runId) return;
+  // Temporarily mark as viewing that historical run, then request its data
+  gViewRunId = runId;
+  if (gWs && gWs.readyState === WebSocket.OPEN) {
+    gWs.send(JSON.stringify({ type: 'select_run', runId }));
   }
 }
 
