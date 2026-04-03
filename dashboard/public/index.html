@@ -641,11 +641,21 @@ function setWsUI(ok) {
 
 function handleMsg(msg) {
   if (msg.type === 'state') {
+    // Remember which run was live BEFORE updating gState.
+    // If the user was already watching the previous live run (or no run),
+    // automatically follow the new activeRunId when it changes.
+    const prevActiveRunId = gState && gState.activeRunId;
     gState = msg;
-    if (!gViewRunId || gViewRunId === msg.activeRunId) {
+
+    const wasOnLive = !gViewRunId                    // first load
+                   || gViewRunId === prevActiveRunId  // was watching the live run
+                   || gViewRunId === msg.activeRunId; // already on the new run
+
+    if (wasOnLive) {
       gViewRunId = msg.activeRunId;
       renderAll(msg);
     } else {
+      // User explicitly pinned to a historical run — only refresh the sidebar
       renderRunsList(msg.runs, gViewRunId);
     }
   } else if (msg.type === 'historical') {
