@@ -175,6 +175,14 @@ def main():
     run_dir = runs_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Write PID file so the dashboard can verify this process is still alive.
+    # Deleted in the finally block below; the dashboard treats absence as "dead".
+    _pid_file = run_dir / "agent.pid"
+    try:
+        _pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        _pid_file = None  # non-fatal
+
     # Per-run dirs exposed to the agent
     os.environ.setdefault("RUN_DIR", str(run_dir))
 
@@ -350,6 +358,12 @@ def main():
             state.persistence.finish(state, outcome="failed", error=f"{type(e).__name__}: {e}")
     finally:
         interrupt_handler.stop()
+        # Remove PID file so the dashboard immediately sees process is gone
+        if _pid_file is not None:
+            try:
+                _pid_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     if state is not None:
         if state.persistence is None:

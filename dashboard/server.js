@@ -47,6 +47,7 @@ let state = {
   meta:        {},
   launching:   false,   // agent is being spawned, not yet writing runs/
   agentPid:    null,
+  agentAlive:  false,   // true iff the agent process is confirmed running right now
 };
 
 let _linesProcessed = 0;
@@ -68,6 +69,29 @@ function readText(fp) {
 function mtime(fp) {
   try { return fs.statSync(fp).mtimeMs; }
   catch { return 0; }
+}
+
+/**
+ * Check whether a PID is alive using signal 0 (no-op signal).
+ * Returns true if the process exists, false if ESRCH (no such process).
+ * EPERM means the process exists but we can't signal it → still alive.
+ */
+function isPidAlive(pid) {
+  if (!pid || typeof pid !== 'number') return false;
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; }
+}
+
+/**
+ * Read the agent.pid file for the given run directory.
+ * Returns the PID as a number, or null if missing/invalid.
+ */
+function readPidFile(runDir) {
+  try {
+    const raw = fs.readFileSync(path.join(runDir, 'agent.pid'), 'utf8').trim();
+    const pid = parseInt(raw, 10);
+    return isNaN(pid) ? null : pid;
+  } catch { return null; }
 }
 
 function changed(fp) {
@@ -214,6 +238,29 @@ function poll() {
   if (state.launching !== newLaunching || state.agentPid !== newPid) {
     state.launching = newLaunching;
     state.agentPid  = newPid;
+    dirty = true;
+  }
+
+  // Determine if any agent process is actually alive right now.
+  // Priority: (1) process we spawned this session, (2) PID file in run dir.
+  // This lets the dashboard recover from external kills and server restarts.
+  let newAlive = false;
+  if (agentProc && !agentProc.killed) {
+    // We own the process — Node already knows it's running
+    newAlive = true;
+  } else if (state.activeRunId) {
+    const runDir = path.join(RUNS_DIR, state.activeRunId);
+    const pidFromFile = readPidFile(runDir);
+    if (pidFromFile) {
+      newAlive = isPidAlive(pidFromFile);
+      // If process died but PID file still exists, delete it to avoid re-checking
+      if (!newAlive) {
+        try { fs.unlinkSync(path.join(runDir, 'agent.pid')); } catch {}
+      }
+    }
+  }
+  if (state.agentAlive !== newAlive) {
+    state.agentAlive = newAlive;
     dirty = true;
   }
 

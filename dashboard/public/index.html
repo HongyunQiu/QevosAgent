@@ -736,14 +736,21 @@ function renderAll(data, runId) {
 
 function isAgentActive(data) {
   // Launching counts as active (overlay should stay hidden, log shown)
-  if (data.launching || data.agentPid) return true;
-  const s = data.status && data.status.status;
-  return s === 'running' || s === 'paused';
+  if (data.launching) return true;
+  // Primary signal: server confirmed the process is alive via PID probe
+  if (data.agentAlive) return true;
+  // Fallback: PID we spawned this session (agentAlive may not have updated yet)
+  if (data.agentPid) return true;
+  // Do NOT fall back to status.json here: if the process is dead, status.json
+  // may still say "running"/"paused" (file is never auto-updated by a dead process).
+  return false;
 }
 
 /** True when the agent is paused mid-run waiting for an ask_user answer. */
 function isAwaitingInput(data) {
-  return !!(data && data.status && data.status.status === 'paused'
+  // Require the process to be actually alive — a dead process can't receive answers
+  return !!(data && isAgentActive(data)
+            && data.status && data.status.status === 'paused'
             && data.meta && data.meta.awaiting_input);
 }
 
