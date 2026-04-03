@@ -5,10 +5,12 @@
 """
 
 import os
+import sys
 import ast
 import json
 import subprocess
 import textwrap
+import threading
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -369,10 +371,36 @@ def tool_shell(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        # Kill the entire process tree before touching pipes.
+    # ── Streaming reader threads ───────────────────────────────────────────
+    # Read stdout and stderr concurrently in background threads.
+    # Each line is printed to sys.stdout immediately (→ Node.js broadcastConsole
+    # → dashboard Console tab in real time), while also being collected for the
+    # final ToolResult.  Using threads avoids the pipe-deadlock that arises when
+    # reading stdout and stderr sequentially.
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def _drain(pipe, lines, prefix: str) -> None:
+        try:
+            for raw in pipe:
+                lines.append(raw)
+                sys.stdout.write(prefix + raw)
+                sys.stdout.flush()
+        except Exception:
+            pass
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_lines, ""), daemon=True)
+    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_lines, "[stderr] "), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    def _kill_tree() -> None:
+        """Kill the full process tree (same logic as before)."""
         if os.name == "nt":
             subprocess.run(
                 f"taskkill /F /T /PID {proc.pid}",
@@ -384,22 +412,30 @@ def tool_shell(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except Exception:
                 pass
-        proc.kill()
-        # Close pipes explicitly — do NOT call communicate() again.
-        for pipe in (proc.stdout, proc.stderr):
-            try:
-                if pipe:
-                    pipe.close()
-            except Exception:
-                pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree()
+        # Give reader threads a moment to drain whatever was buffered before kill
+        t_out.join(timeout=2)
+        t_err.join(timeout=2)
         return ToolResult(success=False, output=None, error=f"命令超时（>{timeout}s）")
     except Exception as e:
-        proc.kill()
+        _kill_tree()
         return ToolResult(success=False, output=None, error=str(e))
 
-    output = (stdout or "").strip()
-    stderr_text = (stderr or "").strip()
-    combined = output
+    # Wait for both readers to finish flushing (process is already done)
+    t_out.join(timeout=5)
+    t_err.join(timeout=5)
+
+    output     = "".join(stdout_lines).strip()
+    stderr_text = "".join(stderr_lines).strip()
+    combined   = output
     if stderr_text:
         combined += f"\n[STDERR]: {stderr_text}"
     return ToolResult(
