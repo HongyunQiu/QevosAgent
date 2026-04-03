@@ -958,6 +958,7 @@ function renderScratchpad(content) {
   el.innerHTML = content && content.trim()
     ? esc(content).replace(/\n/g, '<br>')
     : '<span class="sp-empty">No scratchpad content yet…</span>';
+  if (gAutoScroll) el.scrollTop = el.scrollHeight;
 }
 
 function renderJobs(events) {
@@ -1111,7 +1112,10 @@ function toggleAutoScroll() {
   gAutoScroll = !gAutoScroll;
   const btn = document.getElementById('autoScrollBtn');
   btn.className = 'icon-btn' + (gAutoScroll ? ' on' : '');
-  if (gAutoScroll) { const log = document.getElementById('eventsLog'); log.scrollTop = log.scrollHeight; }
+  if (gAutoScroll) {
+    const log = document.getElementById('eventsLog'); log.scrollTop = log.scrollHeight;
+    const sp  = document.getElementById('spBody');   sp.scrollTop  = sp.scrollHeight;
+  }
 }
 
 function setTab(name) {
