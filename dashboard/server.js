@@ -274,8 +274,11 @@ function launchAgent(goal) {
 
   agentProc = spawn(cmd, cmdArgs, {
     cwd:         AGENT_DIR,
-    env:         { ...process.env },
-    windowsHide: false,           // show window on Windows if needed for debugging
+    // Force UTF-8 I/O so emoji / CJK in loop.py don't crash on Windows (GBK default).
+    // PYTHONUTF8=1  → Python 3.7+ UTF-8 mode (affects open(), stdin, stdout, stderr)
+    // PYTHONIOENCODING → explicit codec for stdin/stdout/stderr streams
+    env:         { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+    windowsHide: false,
   });
 
   agentProc.stdout.setEncoding('utf8');
