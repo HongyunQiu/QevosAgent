@@ -51,6 +51,13 @@ def _append_short_term(state: AgentState, record: dict) -> None:
         persistence.append_short_term(record)
 
 
+def _log_token_stats(state: AgentState, record: dict) -> None:
+    """Write a metadata record to short_term.jsonl only (not added to LLM context)."""
+    persistence = _get_persistence(state)
+    if persistence is not None:
+        persistence.append_short_term(record)
+
+
 def _checkpoint_state(state: AgentState, status: str = "running", error: Optional[str] = None) -> None:
     persistence = _get_persistence(state)
     if persistence is not None:
@@ -425,12 +432,19 @@ def run(
             pack = _maybe_compress_for_context(state, llm, system, messages)
             system = pack["system"]
             messages = pack["messages"]
-            if hooks.on_thought and state.meta.get("prompt_tokens_est"):
+            if state.meta.get("prompt_tokens_est"):
                 est = state.meta.get("prompt_tokens_est")
                 ctx = state.meta.get("context_window")
-                hooks.on_thought(
-                    f"[token] prompt≈{est} / context={ctx} (est), max_tokens={getattr(llm, 'max_tokens', 'n/a')}"
-                )
+                if hooks.on_thought:
+                    hooks.on_thought(
+                        f"[token] prompt≈{est} / context={ctx} (est), max_tokens={getattr(llm, 'max_tokens', 'n/a')}"
+                    )
+                _log_token_stats(state, {
+                    "role": "__token__",
+                    "prompt_est": est,
+                    "context_window": ctx,
+                    "max_tokens": getattr(llm, "max_tokens", None),
+                })
 
             import os
 

@@ -216,10 +216,15 @@ input, textarea { font-family: inherit; font-size: inherit; }
   display: flex; align-items: center; gap: 8px;
   margin: 14px 0 8px; color: var(--muted); font-size: 10.5px;
 }
-.iter-sep::before, .iter-sep::after { content:''; flex:1; height:1px; background:var(--border); }
-.iter-sep span {
+.iter-sep::before { content:''; flex:1; height:1px; background:var(--border); }
+.iter-sep::after  { content:''; flex:1; height:1px; background:var(--border); }
+.iter-sep .iter-label {
   background: var(--bg3); border: 1px solid var(--border);
   border-radius: 9px; padding: 1px 8px; font-family: var(--mono); white-space: nowrap;
+}
+.iter-sep .iter-token {
+  font-family: var(--mono); font-size: 10px; color: var(--muted); opacity: 0.65;
+  white-space: nowrap; order: 3;
 }
 
 .ev-goal { background: rgba(88,166,255,0.06); border: 1px solid rgba(88,166,255,0.15); padding: 10px 13px; }
@@ -909,12 +914,25 @@ function renderEvents(events) {
   if (!events.length) {
     log.innerHTML = '';
   } else {
+    // Build per-iter token stats map: token_stats event at iter=N-1 → used by separator "Iteration N"
+    const tokenStatsMap = {};
+    for (const ev of events) {
+      if (ev.type === 'token_stats') tokenStatsMap[ev.iter] = ev;
+    }
+
     let html = '';
     let lastIter = -1;
     for (const ev of events) {
+      if (ev.type === 'token_stats') continue;
       const iterNum = ev.iter || 0;
       if (iterNum !== lastIter && ev.type === 'tool_call') {
-        if (lastIter >= 0) html += `<div class="iter-sep"><span>Iteration ${iterNum}</span></div>`;
+        if (lastIter >= 0) {
+          const ts = tokenStatsMap[iterNum - 1];
+          const tokenHtml = ts
+            ? `<span class="iter-token">[token] prompt≈${ts.promptEst} / context=${ts.contextWindow} (est), max_tokens=${ts.maxTokens}</span>`
+            : '';
+          html += `<div class="iter-sep"><span class="iter-label">Iteration ${iterNum}</span>${tokenHtml}</div>`;
+        }
         lastIter = iterNum;
       }
       html += renderEvent(ev);

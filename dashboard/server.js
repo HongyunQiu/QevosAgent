@@ -121,7 +121,11 @@ function parseLine(raw, lineIdx) {
   let rec;
   try { rec = JSON.parse(raw); } catch { return null; }
   const { role, content } = rec;
-  if (!role || typeof content !== 'string') return null;
+  if (!role) return null;
+  if (role === '__token__') {
+    return { idx: lineIdx, type: 'token_stats', promptEst: rec.prompt_est, contextWindow: rec.context_window, maxTokens: rec.max_tokens };
+  }
+  if (typeof content !== 'string') return null;
 
   const base = { idx: lineIdx };
 
