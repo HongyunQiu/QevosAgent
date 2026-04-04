@@ -784,7 +784,7 @@ function renderEvent(ev) {
           <span class="result-badge ${bCls}">${esc(ev.tool)}</span>
           ${ev.success === false ? '<span class="ev-meta" style="color:var(--red)">failed</span>' : ''}
         </div>
-        <div class="ev-output ${big ? '' : 'expanded'}" id="${uid}">${esc(trunc(out, big ? 250 : out.length))}</div>
+        <div class="ev-output ${big ? '' : 'expanded'}" id="${uid}">${esc(out)}</div>
         ${big ? `<button class="expand-btn" onclick="toggleExpand('${uid}',this)">▼ show more (${out.length} chars)</button>` : ''}
       </div>`;
     }
