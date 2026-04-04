@@ -280,6 +280,7 @@ def tool_run_python(state: AgentState, code: str) -> ToolResult:
         result = subprocess.run(
             [python_exec, "-c", code],
             capture_output=True,
+            stdin=subprocess.DEVNULL,  # prevent inheriting parent's stdin pipe (dashboard mode)
             text=True,
             timeout=timeout,
             encoding="utf-8",
@@ -363,7 +364,16 @@ def tool_shell(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
     # buffer and only flush when the buffer fills or the process exits, making
     # real-time streaming in the dashboard Console tab impossible.
     # Non-Python programs are unaffected by this env var.
-    child_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    #
+    # Prepend the directory of sys.executable to PATH so that "python" in shell
+    # commands always resolves to the same interpreter that is running this agent,
+    # regardless of whether the process was started from an activated conda env or
+    # launched by the dashboard server (which may not have conda on its PATH).
+    import sys as _sys
+    _python_dir = str(Path(_sys.executable).parent)
+    _path = os.environ.get("PATH", "")
+    _patched_path = _python_dir + os.pathsep + _path if _python_dir not in _path.split(os.pathsep) else _path
+    child_env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": _patched_path}
 
     kwargs: dict = {
         "shell": True,

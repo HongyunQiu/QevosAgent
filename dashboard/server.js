@@ -326,6 +326,13 @@ function launchAgent(goal) {
     // PYTHONIOENCODING → explicit codec for stdin/stdout/stderr streams
     env:         { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
     windowsHide: false,
+    // Ignore stdin: the agent receives its goal as a CLI argument and dashboard
+    // commands via web_cmd.txt (watched by UserInterruptHandler._web_cmd_watcher).
+    // Keeping stdin as 'pipe' (Node default) but never writing to it causes
+    // _read_loop_pipe in the agent to block forever on readline(), which then
+    // races with subprocess.Popen inheriting the same pipe handle in tool_run_python
+    // → the child Python process hangs on startup → 30s timeout every time.
+    stdio:       ['ignore', 'pipe', 'pipe'],
   });
 
   agentProc.stdout.setEncoding('utf8');
@@ -489,6 +496,112 @@ const server = http.createServer(async (req, res) => {
     const data = loadRun(runMatch[1]);
     if (!data) { res.writeHead(404); res.end('{}'); return; }
     json(200, { type: 'historical', ...data });
+    return;
+  }
+
+  // ── GET /api/agents-md  ──────────────────────────────────────────────────
+  if (req.method === 'GET' && req.url === '/api/agents-md') {
+    const content = readText(path.join(AGENT_DIR, 'AGENTS.md')) || '';
+    json(200, { content });
+    return;
+  }
+
+  // ── GET /api/snapshot-meta  ──────────────────────────────────────────────
+  if (req.method === 'GET' && req.url === '/api/snapshot-meta') {
+    const fp = path.join(AGENT_DIR, 'agent_snapshot_meta.json');
+    if (!fs.existsSync(fp)) { json(200, { content: null, exists: false }); return; }
+    const content = readText(fp) || '';
+    json(200, { content });
+    return;
+  }
+
+  // ── POST /api/snapshot-meta  ─────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/api/snapshot-meta') {
+    try {
+      const { content } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      fs.writeFileSync(path.join(AGENT_DIR, 'agent_snapshot_meta.json'), content, 'utf8');
+      json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── POST /api/agents-md  ─────────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/api/agents-md') {
+    try {
+      const { content } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      fs.writeFileSync(path.join(AGENT_DIR, 'AGENTS.md'), content, 'utf8');
+      json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/run-files/:runId  ────────────────────────────────────────────
+  const runFilesMatch = req.url.match(/^\/api\/run-files\/([^/?]+)/);
+  if (req.method === 'GET' && runFilesMatch) {
+    const runDir = path.resolve(path.join(RUNS_DIR, runFilesMatch[1]));
+    if (!fs.existsSync(runDir)) { json(404, { error: 'run not found' }); return; }
+    const files = [];
+    function walkDir(dir, rel) {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          const relPath = rel ? rel + '/' + e.name : e.name;
+          if (e.isDirectory()) {
+            files.push({ path: relPath, type: 'dir' });
+            walkDir(path.join(dir, e.name), relPath);
+          } else {
+            const st = fs.statSync(path.join(dir, e.name));
+            files.push({ path: relPath, type: 'file', size: st.size });
+          }
+        }
+      } catch {}
+    }
+    walkDir(runDir, '');
+    json(200, { files });
+    return;
+  }
+
+  // ── POST /api/run-file/:runId/*  ─────────────────────────────────────────
+  const runFileWriteMatch = req.url.match(/^\/api\/run-file\/([^/]+)\/(.+)/);
+  if (req.method === 'POST' && runFileWriteMatch) {
+    try {
+      const runDir  = path.resolve(path.join(RUNS_DIR, runFileWriteMatch[1]));
+      const relFile = decodeURIComponent(runFileWriteMatch[2]);
+      const fullPath = path.resolve(path.join(runDir, relFile));
+      const rel = path.relative(runDir, fullPath);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) { json(403, { error: 'forbidden' }); return; }
+      const { content } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      fs.writeFileSync(fullPath, content, 'utf8');
+      json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/run-file/:runId/*  ───────────────────────────────────────────
+  const runFileMatch = req.url.match(/^\/api\/run-file\/([^/]+)\/(.+)/);
+  if (req.method === 'GET' && runFileMatch) {
+    const runDir  = path.resolve(path.join(RUNS_DIR, runFileMatch[1]));
+    const relFile = decodeURIComponent(runFileMatch[2]);
+    const fullPath = path.resolve(path.join(runDir, relFile));
+    const rel = path.relative(runDir, fullPath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      json(403, { error: 'forbidden' }); return;
+    }
+    try {
+      const st = fs.statSync(fullPath);
+      if (st.size > 512 * 1024) {
+        json(200, { content: `[File too large to display inline: ${(st.size / 1024).toFixed(0)} KB]`, truncated: true });
+        return;
+      }
+      const content = fs.readFileSync(fullPath, 'utf8');
+      json(200, { content });
+    } catch (e) {
+      if (e.code === 'ENOENT') { json(200, { content: null, exists: false }); return; }
+      json(500, { error: String(e) });
+    }
     return;
   }
 
