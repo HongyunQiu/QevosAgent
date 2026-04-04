@@ -270,6 +270,23 @@ input, textarea { font-family: inherit; font-size: inherit; }
 .ev-user-msg { padding:7px 12px; background:rgba(125,133,144,0.05); border-left:3px solid var(--border); }
 .ev-user-msg .ev-body { font-size:11.5px; color:var(--muted); line-height:1.5; }
 
+.ev-stream-output {
+  background: rgba(255,166,87,0.04); border-left: 3px solid rgba(255,166,87,0.4);
+  padding: 4px 12px 8px; margin-bottom: 6px; border-radius: 0 4px 4px 0;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 200px; overflow-y: auto;
+}
+.ev-stream-label {
+  font-size: 10px; color: var(--orange); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 4px 0 3px; display: flex; align-items: center; gap: 5px;
+}
+.ev-stream-dot {
+  width: 5px; height: 5px; border-radius: 50%; background: var(--orange);
+  animation: pulse 1s ease-in-out infinite; display: inline-block;
+}
+
 /* ── Right panel ─────────────────────────────────────────────────────── */
 .right-panel { grid-area: right; display:flex; flex-direction:column; background:var(--bg2); border-left:1px solid var(--border); overflow:hidden; }
 
@@ -388,6 +405,87 @@ input, textarea { font-family: inherit; font-size: inherit; }
 }
 @keyframes toastIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 
+/* ── Center panel tabs ───────────────────────────────────────────────── */
+.center-tab-strip {
+  display:flex; align-items:center; gap:4px;
+  padding:0 12px 0 16px; height:38px;
+  border-bottom:1px solid var(--border); background:var(--bg); flex-shrink:0;
+}
+.center-tab {
+  background:none; border:none; border-bottom:2px solid transparent;
+  color:var(--muted); font-size:11px; font-weight:600; text-transform:uppercase;
+  letter-spacing:0.5px; padding:0 8px; height:100%; cursor:pointer; transition:all 0.15s;
+}
+.center-tab:hover { color:var(--text); }
+.center-tab.active { color:var(--blue); border-bottom-color:var(--blue); }
+.ctab-sep { width:1px; height:16px; background:var(--border); flex-shrink:0; margin:0 4px; }
+.center-pane { display:none; flex:1; overflow:hidden; flex-direction:column; }
+.center-pane.active { display:flex; }
+
+/* ── AGENTS.md pane ──────────────────────────────────────────────────── */
+.agents-toolbar {
+  display:flex; align-items:center; gap:8px;
+  padding:0 16px; height:36px; border-bottom:1px solid var(--border);
+  background:var(--bg2); flex-shrink:0;
+}
+.agents-hint { font-size:11px; color:var(--muted); opacity:0.6; }
+.agents-body { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+.agents-view {
+  flex:1; overflow-y:auto; margin:0; padding:14px 18px;
+  font-family:var(--mono); font-size:11.5px; line-height:1.75;
+  color:var(--text); white-space:pre-wrap; word-break:break-word;
+  background:var(--bg);
+}
+.agents-edit {
+  flex:1; resize:none; outline:none; margin:0;
+  padding:14px 18px; font-family:var(--mono); font-size:11.5px; line-height:1.75;
+  color:var(--text); background:var(--bg3); border:none;
+  border-top:2px solid var(--blue);
+}
+
+/* ── Run Files pane ──────────────────────────────────────────────────── */
+.files-toolbar {
+  display:flex; align-items:center; gap:8px;
+  padding:0 16px; height:36px; border-bottom:1px solid var(--border);
+  background:var(--bg2); flex-shrink:0;
+}
+.files-body { flex:1; overflow:hidden; display:flex; }
+.files-tree {
+  width:210px; flex-shrink:0; overflow-y:auto;
+  border-right:1px solid var(--border); padding:6px 0;
+  background:var(--bg2);
+}
+.files-content { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+.files-content-path {
+  padding:5px 14px; border-bottom:1px solid var(--border);
+  font-family:var(--mono); font-size:11px; color:var(--cyan);
+  background:var(--bg2); flex-shrink:0;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.files-view {
+  flex:1; overflow:auto; margin:0; padding:12px 16px;
+  font-family:var(--mono); font-size:11.5px; line-height:1.7;
+  color:var(--text); white-space:pre-wrap; word-break:break-word;
+  background:var(--bg);
+}
+.files-placeholder { color:var(--muted); font-style:italic; }
+.files-empty { color:var(--muted); font-size:12px; padding:12px 14px; font-style:italic; }
+.ftree-dir {
+  display:flex; align-items:center; gap:5px; padding:3px 10px;
+  font-size:11px; color:var(--muted); font-weight:600;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.ftree-file {
+  display:flex; align-items:center; padding:3px 10px;
+  cursor:pointer; transition:background 0.1s;
+  font-family:var(--mono); font-size:11px; color:var(--text);
+  white-space:nowrap;
+}
+.ftree-file:hover { background:var(--bg3); }
+.ftree-file.selected { background:rgba(88,166,255,0.1); color:var(--blue); }
+.ftree-name { flex:1; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.ftree-size { flex-shrink:0; font-size:10px; color:var(--muted); margin-left:6px; }
+
 /* ── Scrollbars ──────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width:5px; height:5px; }
 ::-webkit-scrollbar-track { background:transparent; }
@@ -450,20 +548,77 @@ input, textarea { font-family: inherit; font-size: inherit; }
 
   <!-- ── Events Panel ───────────────────────────────────────────── -->
   <main class="events-panel">
-    <div class="events-bar">
-      <span class="events-title">Event Log</span>
+    <!-- Center tab strip -->
+    <div class="center-tab-strip">
+      <button class="center-tab active" id="ctab-events" onclick="setCenterTab('events')">Events</button>
       <span class="count-badge" id="evCount">0</span>
+      <div class="ctab-sep"></div>
+      <button class="center-tab" id="ctab-agentsmd" onclick="setCenterTab('agentsmd')">AGENTS.md</button>
+      <button class="center-tab" id="ctab-files" onclick="setCenterTab('files')">Run Files</button>
+      <button class="center-tab" id="ctab-snapshot" onclick="setCenterTab('snapshot')">Snapshot</button>
       <div class="bar-gap"></div>
-      <button class="icon-btn on" id="autoScrollBtn" onclick="toggleAutoScroll()">↓ Auto-scroll</button>
+      <button class="icon-btn on" id="autoScrollBtn" onclick="toggleAutoScroll()">↓ Auto</button>
     </div>
 
-    <!-- Event log — always visible; shows empty state when no events -->
-    <div class="events-log" id="eventsLog">
-      <div class="empty-state" id="eventsEmpty" style="display:none">
-        <div class="empty-icon">⚡</div>
-        <div class="empty-text">No runs yet.<br>
-          <span style="opacity:.6;font-size:12px">Type a goal in the bar below to start.</span>
+    <!-- Events pane -->
+    <div class="center-pane active" id="cpane-events">
+      <div class="events-log" id="eventsLog">
+        <div class="empty-state" id="eventsEmpty" style="display:none">
+          <div class="empty-icon">⚡</div>
+          <div class="empty-text">No runs yet.<br>
+            <span style="opacity:.6;font-size:12px">Type a goal in the bar below to start.</span>
+          </div>
         </div>
+      </div>
+    </div>
+
+    <!-- AGENTS.md pane -->
+    <div class="center-pane" id="cpane-agentsmd">
+      <div class="agents-toolbar">
+        <span class="agents-title">AGENTS.md</span>
+        <span class="agents-hint" id="agentsMdHint"></span>
+        <div class="bar-gap"></div>
+        <button class="icon-btn" id="agentsMdEditBtn" onclick="enterAgentsMdEdit()">✎ Edit</button>
+        <button class="icon-btn" id="agentsMdSaveBtn" style="display:none" onclick="saveAgentsMd()">✓ Save</button>
+        <button class="icon-btn" id="agentsMdCancelBtn" style="display:none" onclick="cancelAgentsMdEdit()">✕ Cancel</button>
+      </div>
+      <div class="agents-body">
+        <pre class="agents-view" id="agentsMdView"></pre>
+        <textarea class="agents-edit" id="agentsMdEdit" style="display:none" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <!-- Run Files pane -->
+    <div class="center-pane" id="cpane-files">
+      <div class="files-toolbar">
+        <span class="agents-title" id="filesRunLabel">No run selected</span>
+        <div class="bar-gap"></div>
+        <button class="icon-btn" onclick="loadRunFiles()">↺ Refresh</button>
+      </div>
+      <div class="files-body">
+        <div class="files-tree" id="filesTree">
+          <div class="files-empty">Select a run from the sidebar</div>
+        </div>
+        <div class="files-content">
+          <div class="files-content-path" id="filesContentPath" style="display:none"></div>
+          <pre class="files-view" id="filesView"><span class="files-placeholder">Select a file to view its contents</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Snapshot pane -->
+    <div class="center-pane" id="cpane-snapshot">
+      <div class="agents-toolbar">
+        <span class="agents-title">agent_snapshot_meta.json</span>
+        <span class="agents-hint" id="snapshotRunLabel"></span>
+        <div class="bar-gap"></div>
+        <button class="icon-btn" id="snapshotEditBtn" onclick="enterSnapshotEdit()">✎ Edit</button>
+        <button class="icon-btn" id="snapshotSaveBtn" style="display:none" onclick="saveSnapshot()">✓ Save</button>
+        <button class="icon-btn" id="snapshotCancelBtn" style="display:none" onclick="cancelSnapshotEdit()">✕ Cancel</button>
+      </div>
+      <div class="agents-body">
+        <pre class="agents-view" id="snapshotView"><span class="files-placeholder">Select a run to view snapshot</span></pre>
+        <textarea class="agents-edit" id="snapshotEdit" style="display:none" spellcheck="false"></textarea>
       </div>
     </div>
   </main>
@@ -528,6 +683,9 @@ let gConsoleBuf    = [];          // { stream, text }[]  — last 1000 lines
 const CON_MAX      = 1000;
 let gConsoleDirty  = false;
 let gIsLaunching   = false;
+let gStreamBuf     = [];          // stdout lines buffered while a tool_call is pending
+const STREAM_MAX   = 300;
+let gPendingToolIdx = null;       // idx of the tool_call we're currently streaming for
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
 function connectWs() {
@@ -571,6 +729,7 @@ function handleMsg(msg) {
     renderAll(msg, msg.runId);
   } else if (msg.type === 'console') {
     pushConsole(msg.stream, msg.text);
+    if (msg.stream === 'stdout') pushStreamLine(msg.text);
   }
 }
 
@@ -583,6 +742,7 @@ function renderAll(data, runId) {
   renderScratchpad(data.scratchpad || '');
   renderJobs(data.events || []);
   updateCmdBarMode(data);
+  if (gCenterTab === 'files') loadRunFiles();
 }
 
 function isAgentActive(data) {
@@ -727,6 +887,20 @@ function renderEvents(events) {
   const badge = document.getElementById('evCount');
   badge.textContent = events.length;
 
+  // Detect pending tool call and manage stream buffer
+  const pendingCall = getActivePendingToolCall(events);
+  if (pendingCall) {
+    if (gPendingToolIdx !== null && pendingCall.idx !== gPendingToolIdx) {
+      // Switched to a different tool_call — reset buffer
+      gStreamBuf = [];
+    }
+    gPendingToolIdx = pendingCall.idx;
+  } else {
+    // No pending tool — clear buffer
+    gStreamBuf = [];
+    gPendingToolIdx = null;
+  }
+
   // Detach eventsEmpty BEFORE replacing innerHTML so it isn't destroyed.
   // We re-append it at the end; renderMainArea controls its display property.
   const empty = document.getElementById('eventsEmpty');
@@ -744,6 +918,13 @@ function renderEvents(events) {
         lastIter = iterNum;
       }
       html += renderEvent(ev);
+    }
+    // Append live streaming output after the pending tool_call
+    if (pendingCall) {
+      const content = gStreamBuf.join('\n');
+      html += `<div class="ev-stream-output" id="stream-output">`
+            + `<div class="ev-stream-label"><span class="ev-stream-dot"></span>streaming</div>`
+            + `${esc(content)}</div>`;
     }
     log.innerHTML = html;
     if (gAutoScroll) log.scrollTop = log.scrollHeight;
@@ -860,6 +1041,37 @@ function renderConsole() {
   // Auto-scroll console if it's visible
   const pane = document.getElementById('pane-console');
   if (pane.classList.contains('active')) el.scrollTop = el.scrollHeight;
+}
+
+// ── Streaming output (live tool stdout) ──────────────────────────────────
+/** Return the last tool_call event that hasn't been answered by a tool_result yet, or null. */
+function getActivePendingToolCall(events) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev.type === 'tool_result' || ev.type === 'done') return null;
+    if (ev.type === 'tool_call') return ev;
+  }
+  return null;
+}
+
+/** Called for each incoming stdout chunk while a tool may be running. */
+function pushStreamLine(text) {
+  if (!gState || !isAgentActive(gState)) return;
+  const lines = text.split('\n');
+  for (const line of lines) { if (line) gStreamBuf.push(line); }
+  if (gStreamBuf.length > STREAM_MAX) gStreamBuf = gStreamBuf.slice(-STREAM_MAX);
+  updateStreamingOutput();
+}
+
+/** Update the streaming div in-place (without full events re-render). */
+function updateStreamingOutput() {
+  const el = document.getElementById('stream-output');
+  if (!el) return;
+  el.textContent = gStreamBuf.join('\n');
+  if (gAutoScroll) {
+    const log = document.getElementById('eventsLog');
+    log.scrollTop = log.scrollHeight;
+  }
 }
 
 // ── Agent launch & kill ───────────────────────────────────────────────────
@@ -1009,6 +1221,213 @@ function toast(msg) {
   el.textContent = msg; el.style.display = 'block';
   clearTimeout(_toastTimer);
   _toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+// ── Center tabs ───────────────────────────────────────────────────────────
+let gCenterTab     = 'events';
+let gAgentsMdOrig  = '';
+let gSelectedFile  = null;
+
+function setCenterTab(name) {
+  gCenterTab = name;
+  ['events', 'agentsmd', 'files', 'snapshot'].forEach(n => {
+    document.getElementById('ctab-' + n).className  = 'center-tab' + (n === name ? ' active' : '');
+    document.getElementById('cpane-' + n).className = 'center-pane' + (n === name ? ' active' : '');
+  });
+  document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
+  if (name === 'agentsmd') loadAgentsMd();
+  if (name === 'files')    loadRunFiles();
+  if (name === 'snapshot') loadSnapshot();
+}
+
+// ── AGENTS.md ─────────────────────────────────────────────────────────────
+async function loadAgentsMd() {
+  try {
+    const data = await fetch('/api/agents-md').then(r => r.json());
+    gAgentsMdOrig = data.content || '';
+    document.getElementById('agentsMdView').textContent = gAgentsMdOrig;
+    document.getElementById('agentsMdHint').textContent = (gAgentsMdOrig.length / 1024).toFixed(1) + ' KB';
+  } catch (e) {
+    document.getElementById('agentsMdView').textContent = 'Error loading AGENTS.md: ' + e.message;
+  }
+}
+
+function enterAgentsMdEdit() {
+  const edit = document.getElementById('agentsMdEdit');
+  edit.value = gAgentsMdOrig;
+  document.getElementById('agentsMdView').style.display    = 'none';
+  edit.style.display                                        = '';
+  document.getElementById('agentsMdEditBtn').style.display   = 'none';
+  document.getElementById('agentsMdSaveBtn').style.display   = '';
+  document.getElementById('agentsMdCancelBtn').style.display = '';
+  edit.focus();
+}
+
+function cancelAgentsMdEdit() {
+  document.getElementById('agentsMdView').style.display    = '';
+  document.getElementById('agentsMdEdit').style.display    = 'none';
+  document.getElementById('agentsMdEditBtn').style.display   = '';
+  document.getElementById('agentsMdSaveBtn').style.display   = 'none';
+  document.getElementById('agentsMdCancelBtn').style.display = 'none';
+}
+
+async function saveAgentsMd() {
+  const content = document.getElementById('agentsMdEdit').value;
+  try {
+    const res  = await fetch('/api/agents-md', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      gAgentsMdOrig = content;
+      document.getElementById('agentsMdView').textContent = content;
+      document.getElementById('agentsMdHint').textContent = (content.length / 1024).toFixed(1) + ' KB';
+      cancelAgentsMdEdit();
+      toast('✓ AGENTS.md saved');
+    } else {
+      toast('✗ Save failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ Network error: ' + e.message); }
+}
+
+// ── Snapshot (agent_snapshot_meta.json) ──────────────────────────────────
+let gSnapshotOrig = '';
+
+async function loadSnapshot() {
+  const view = document.getElementById('snapshotView');
+  document.getElementById('snapshotRunLabel').textContent = 'simpleAgent/agent_snapshot_meta.json';
+  view.innerHTML = '<span class="files-placeholder">Loading…</span>';
+  try {
+    const data = await fetch('/api/snapshot-meta').then(r => r.json());
+    if (data.error) {
+      gSnapshotOrig = '';
+      view.innerHTML = `<span class="files-placeholder">Error: ${esc(data.error)}</span>`;
+    } else if (data.exists === false || data.content === null) {
+      gSnapshotOrig = '';
+      view.innerHTML = `<span class="files-placeholder">agent_snapshot_meta.json does not exist yet.&nbsp;`
+        + `<a href="#" style="color:var(--blue)" onclick="createSnapshot();return false">✚ Create</a></span>`;
+    } else {
+      try { gSnapshotOrig = JSON.stringify(JSON.parse(data.content), null, 2); }
+      catch { gSnapshotOrig = data.content || ''; }
+      view.textContent = gSnapshotOrig;
+    }
+  } catch (e) {
+    view.innerHTML = `<span class="files-placeholder">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+function enterSnapshotEdit() {
+  const edit = document.getElementById('snapshotEdit');
+  edit.value = gSnapshotOrig;
+  document.getElementById('snapshotView').style.display      = 'none';
+  edit.style.display                                          = '';
+  document.getElementById('snapshotEditBtn').style.display   = 'none';
+  document.getElementById('snapshotSaveBtn').style.display   = '';
+  document.getElementById('snapshotCancelBtn').style.display = '';
+  edit.focus();
+}
+
+function cancelSnapshotEdit() {
+  document.getElementById('snapshotView').style.display      = '';
+  document.getElementById('snapshotEdit').style.display      = 'none';
+  document.getElementById('snapshotEditBtn').style.display   = '';
+  document.getElementById('snapshotSaveBtn').style.display   = 'none';
+  document.getElementById('snapshotCancelBtn').style.display = 'none';
+}
+
+async function saveSnapshot() {
+  const rawText = document.getElementById('snapshotEdit').value;
+  // Validate JSON before saving
+  try { JSON.parse(rawText); } catch (e) { toast('✗ Invalid JSON: ' + e.message); return; }
+  try {
+    const res  = await fetch('/api/snapshot-meta',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: rawText }) }
+    );
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      // Re-pretty-print after successful save
+      try { gSnapshotOrig = JSON.stringify(JSON.parse(rawText), null, 2); }
+      catch { gSnapshotOrig = rawText; }
+      document.getElementById('snapshotView').textContent = gSnapshotOrig;
+      cancelSnapshotEdit();
+      toast('✓ Snapshot saved');
+    } else {
+      toast('✗ Save failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ Network error: ' + e.message); }
+}
+
+function createSnapshot() {
+  gSnapshotOrig = '{}';
+  document.getElementById('snapshotView').textContent = gSnapshotOrig;
+  enterSnapshotEdit();
+}
+
+// ── Run Files ─────────────────────────────────────────────────────────────
+async function loadRunFiles() {
+  const runId = gViewRunId;
+  const label = document.getElementById('filesRunLabel');
+  const tree  = document.getElementById('filesTree');
+  if (!runId) {
+    label.textContent = 'No run selected';
+    tree.innerHTML = '<div class="files-empty">Select a run from the sidebar</div>';
+    return;
+  }
+  label.textContent = fmtRunId(runId);
+  tree.innerHTML = '<div class="files-empty">Loading…</div>';
+  try {
+    const data = await fetch('/api/run-files/' + encodeURIComponent(runId)).then(r => r.json());
+    renderFileTree(data.files || [], runId);
+  } catch (e) {
+    tree.innerHTML = `<div class="files-empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderFileTree(files, runId) {
+  const tree = document.getElementById('filesTree');
+  if (!files.length) { tree.innerHTML = '<div class="files-empty">Empty directory</div>'; return; }
+  let html = '';
+  for (const f of files) {
+    const depth = f.path.split('/').length - 1;
+    const pad   = depth * 12 + 10;
+    const name  = f.path.split('/').pop();
+    if (f.type === 'dir') {
+      html += `<div class="ftree-dir" style="padding-left:${pad}px">📁 ${esc(name)}</div>`;
+    } else {
+      const sel = f.path === gSelectedFile ? ' selected' : '';
+      html += `<div class="ftree-file${sel}" style="padding-left:${pad}px"
+          onclick="selectRunFile(${esc(JSON.stringify(runId))},${esc(JSON.stringify(f.path))},this)">
+          <span class="ftree-name">${esc(name)}</span>
+          <span class="ftree-size">${fmtSize(f.size)}</span>
+        </div>`;
+    }
+  }
+  tree.innerHTML = html;
+}
+
+async function selectRunFile(runId, filePath, el) {
+  document.querySelectorAll('.ftree-file').forEach(e => e.classList.remove('selected'));
+  el.classList.add('selected');
+  gSelectedFile = filePath;
+  const pathEl = document.getElementById('filesContentPath');
+  pathEl.textContent = filePath;
+  pathEl.style.display = '';
+  document.getElementById('filesView').innerHTML = '<span class="files-placeholder">Loading…</span>';
+  try {
+    const data = await fetch(`/api/run-file/${encodeURIComponent(runId)}/${filePath}`).then(r => r.json());
+    document.getElementById('filesView').textContent = data.error ? 'Error: ' + data.error : (data.content || '');
+  } catch (e) {
+    document.getElementById('filesView').innerHTML = `<span class="files-placeholder">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return '0 B';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
