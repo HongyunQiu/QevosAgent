@@ -390,6 +390,35 @@ def run(
             if hooks.on_iteration_start:
                 hooks.on_iteration_start(state.iteration, state)
 
+            # ── Drain queued interrupt commands at each iteration boundary ────────
+            # Commands injected via dashboard (web_cmd.txt → _cmd_queue) or stdin
+            # are processed here, before the LLM call, so effects are immediate:
+            #   /inject  → appended to short_term, LLM sees it this iteration
+            #   /+N      → max_iterations extended; checked at top of while
+            #   /compress→ sets state.meta["_compress_requested"], consumed below
+            #   /exit    → breaks the loop cleanly
+            _ih = getattr(hooks, 'interrupt_handler', None)
+            if _ih is not None:
+                _stop_loop = False
+                while True:
+                    _cmd = _ih.poll_command()
+                    if _cmd is None:
+                        break
+                    if _cmd == '/__pause__':
+                        continue   # pause sentinel only relevant when actually paused
+                    _r = _ih.process_command(_cmd, state)
+                    if _r == 'stop':
+                        _stop_loop = True
+                        break
+                # Apply any /+N extensions accumulated by process_command
+                _extra = state.meta.pop('_add_iterations', 0)
+                if _extra:
+                    max_iterations += _extra
+                if _stop_loop:
+                    state.meta['user_stopped'] = True
+                    break
+            # ─────────────────────────────────────────────────────────────────────
+
             system = build_system_prompt(state.tools, state.long_term, scratchpad=state.meta.get("scratchpad", ""))
             messages = build_context_messages(state)
 
