@@ -356,11 +356,21 @@ def tool_shell(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
     # communicate() *after* kill(), which hangs on Windows when shell=True spawns
     # child processes (e.g. winget) that survive the parent cmd.exe kill and keep
     # the stdout/stderr pipe open indefinitely.
+    # PYTHONUNBUFFERED=1 forces any Python child process invoked by the shell
+    # command to use line-buffered (unbuffered) stdout/stderr instead of the
+    # default block-buffered mode that applies when stdout is a pipe.
+    # Without this, Python subprocesses accumulate output in an 8 KB internal
+    # buffer and only flush when the buffer fills or the process exits, making
+    # real-time streaming in the dashboard Console tab impossible.
+    # Non-Python programs are unaffected by this env var.
+    child_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+
     kwargs: dict = {
         "shell": True,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "env": child_env,
     }
     if os.name == "nt":
         # Give the shell its own process group so taskkill /T can reach all children.
