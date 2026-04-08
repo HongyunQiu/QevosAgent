@@ -10,7 +10,6 @@ __pycache__/
 # Local experiment outputs / snapshots
 agent_memory.json
 agent_snapshot.json
-agent_snapshot_meta.json
 
 # Logs / pids
 *.log
