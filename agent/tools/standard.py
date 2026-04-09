@@ -86,7 +86,7 @@ def _materialize_tool_recipe(
         description=description,
         args_schema=args_schema if isinstance(args_schema, dict) else {},
         fn=_make_tool_wrapper(run_fn, name),
-        is_evolve_tool=False,
+        is_evolve_tool=True,
     )
     return spec, []
 
@@ -660,6 +660,86 @@ def tool_promote_tool_candidate(state: AgentState, name: str) -> ToolResult:
     )
 
 
+def tool_delete_tool(state: AgentState, name: str, confirm: bool = False) -> ToolResult:
+    """
+    【进化工具管理】删除一个已降级/废弃的进化工具。
+
+    只能删除进化工具（通过 register_tool 注册的），不能删除内置工具。
+
+    操作流程（必须遵守）：
+      1. 先以 confirm=False 调用本工具，查看待删除工具的详细信息
+      2. 再用 ask_user 向用户确认是否真的删除，把工具信息告知用户
+      3. 仅当用户明确同意后，才以 confirm=True 调用本工具执行删除
+
+    confirm=False（默认）：仅预览信息，不做任何修改
+    confirm=True：执行删除（从 state.tools、evolved_tools 及相关候选/无效记录中清除）
+    """
+    evolved_tools = state.meta.get("evolved_tools", {})
+
+    if name not in evolved_tools:
+        if name in state.tools:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"工具 '{name}' 是内置标准工具，不允许删除。",
+            )
+        return ToolResult(
+            success=False,
+            output=None,
+            error=f"工具 '{name}' 不存在。",
+        )
+
+    recipe = evolved_tools[name]
+    description = recipe.get("description", "（无描述）") if isinstance(recipe, dict) else "（无描述）"
+
+    if not confirm:
+        has_candidate = name in state.meta.get("tool_repair_candidates", {})
+        # 记录本次 preview，confirm=True 时需要验证此标记存在
+        state.meta.setdefault("_delete_tool_previewed", set()).add(name)
+        return ToolResult(
+            success=True,
+            output={
+                "preview": True,
+                "name": name,
+                "description": description,
+                "has_repair_candidate": has_candidate,
+                "tip": (
+                    f"以上是将被删除的工具信息。请先用 ask_user 向用户确认，"
+                    f"用户明确同意后再以 confirm=True 调用 delete_tool 执行删除。"
+                ),
+            },
+        )
+
+    # 强制要求：必须先经过 confirm=False 的预览步骤
+    previewed = state.meta.get("_delete_tool_previewed", set())
+    if name not in previewed:
+        return ToolResult(
+            success=False,
+            output=None,
+            error=(
+                f"删除工具 '{name}' 前必须先以 confirm=False 调用 delete_tool 预览信息，"
+                f"并通过 ask_user 向用户确认后才能执行删除。"
+            ),
+        )
+
+    # 执行删除，同时清理 preview 标记
+    previewed.discard(name)
+    state.tools.pop(name, None)
+    state.meta.get("evolved_tools", {}).pop(name, None)
+    state.meta.get("tool_repair_candidates", {}).pop(name, None)
+    state.meta.get("invalid_evolved_tools", {}).pop(name, None)
+
+    state.long_term.append(f"[工具删除] 进化工具 '{name}' 已被删除。原描述：{description}")
+
+    return ToolResult(
+        success=True,
+        output={
+            "deleted": name,
+            "tip": "工具已删除。如需持久化此变更，请调用 save_snapshot_meta。",
+        },
+    )
+
+
 # ── 工具集构建器 ──────────────────────────────────────────────────────────────
 
 def tool_save_snapshot_meta(state: AgentState, path: str) -> ToolResult:
@@ -1043,6 +1123,19 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "python_code": "定义 run(state, **kwargs)->ToolResult 函数的 Python 代码"
             },
             fn=tool_register_tool,
+            is_evolve_tool=True,
+        ),
+        ToolSpec(
+            name="delete_tool",
+            description=(
+                "【进化管理】删除一个已降级/废弃的进化工具（内置工具不可删除）。"
+                "必须先以 confirm=False 预览，再用 ask_user 向用户确认，最后以 confirm=True 执行删除。"
+            ),
+            args_schema={
+                "name": "要删除的工具名称",
+                "confirm": "是否确认删除（bool）。False=仅预览（默认），True=执行删除（须先经用户确认）",
+            },
+            fn=tool_delete_tool,
             is_evolve_tool=True,
         ),
         # ── 异步后台任务 ──────────────────────────────────────────────────────
