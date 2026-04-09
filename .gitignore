@@ -11,6 +11,14 @@ __pycache__/
 agent_memory.json
 agent_snapshot.json
 
+agent-reach/
+~/.agent-reach/
+~/.agent-reach-venv/
+agent_snapshot_meta.json
+.claude
+.cursor
+.codex
+
 # Logs / pids
 *.log
 *.out
