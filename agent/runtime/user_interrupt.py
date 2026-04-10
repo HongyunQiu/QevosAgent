@@ -255,7 +255,12 @@ class UserInterruptHandler:
             except Exception:
                 break
             if not line:
-                self._input_queue.put(None)
+                # 在 Web 看板模式下（RUN_DIR 已设置），stdin 被故意设为 'ignore'，
+                # 不代表"无输入"——_web_cmd_watcher 会通过 web_cmd.txt 提供输入。
+                # 此时不向 _input_queue 投 None，避免 get_user_input() 立刻返回 None
+                # 导致 ask_user 暂停流程提前退出。
+                if not os.environ.get("RUN_DIR"):
+                    self._input_queue.put(None)
                 break
             self._finish_line(line.rstrip("\n"))
 

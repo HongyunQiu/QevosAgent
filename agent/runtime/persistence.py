@@ -21,11 +21,24 @@ def _utc_now() -> str:
 
 
 def _write_text_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", delete=False, dir=str(path.parent), encoding="utf-8") as tmp:
+    # Resolve to absolute path to avoid abs->relative rename failure on Windows
+    # (tempfile always returns an absolute tmp.name via os.path.abspath internally)
+    abs_path = path.resolve()
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", delete=False, dir=str(abs_path.parent), encoding="utf-8") as tmp:
         tmp.write(content)
         tmp_path = Path(tmp.name)
-    tmp_path.replace(path)
+    # On Windows, a reader holding the target open causes PermissionError; retry briefly.
+    for attempt in range(5):
+        try:
+            tmp_path.replace(abs_path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                tmp_path.unlink(missing_ok=True)
+                raise
+            import time
+            time.sleep(0.05 * (attempt + 1))
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:

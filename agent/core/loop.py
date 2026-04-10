@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Optional, Callable
 
 from .types import Action, ActionType, AgentState, ToolSpec, ToolResult
-from .llm import LLMBackend, build_system_prompt, build_context_messages, parse_response
+from .llm import LLMBackend, build_system_prompt, build_context_messages, parse_response, _extract_json
 from .executor import execute
 from ..runtime.persistence import RunPersistence
 
@@ -202,6 +202,134 @@ def _parse_acceptance_evidence(text: str, run_dir: Optional[str] = None) -> dict
         "evidence_values": evidence_values,
         "paths": _extract_claimed_artifact_paths(artifact_text, run_dir=run_dir),
     }
+
+
+# ── 结构化完成报告 ────────────────────────────────────────────────────────────
+
+def _normalize_completion_report(report: Optional[dict]) -> dict:
+    """将 completion_report 规范化为标准结构，处理缺失/非法字段。"""
+    data = dict(report or {})
+
+    def _listify(value) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        text = str(value).strip()
+        return [text] if text else []
+
+    evidence_type = str(data.get("evidence_type", "none")).strip().lower() or "none"
+    if evidence_type not in {"artifact", "tool_result", "observation", "none"}:
+        evidence_type = "none"
+
+    outcome = str(data.get("outcome", "done")).strip().lower() or "done"
+    if outcome not in {"done", "done_partial", "done_blocked"}:
+        outcome = "done"
+
+    confidence = str(data.get("confidence", "medium")).strip().lower() or "medium"
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "medium"
+
+    return {
+        "goal_understanding": str(data.get("goal_understanding", "")).strip(),
+        "completed_work": _listify(data.get("completed_work")),
+        "remaining_gaps": _listify(data.get("remaining_gaps")),
+        "evidence_type": evidence_type,
+        "evidence": _listify(data.get("evidence")),
+        "outcome": outcome,
+        "confidence": confidence,
+    }
+
+
+def _completion_report_from_legacy_acceptance(state: AgentState, final_answer: Optional[str]) -> Optional[dict]:
+    """将旧 ACCEPTANCE 草稿本格式转换为结构化完成报告（向后兼容层）。"""
+    scratchpad = state.meta.get("scratchpad", "")
+    if not isinstance(scratchpad, str) or "ACCEPTANCE" not in scratchpad.upper():
+        return None
+
+    parsed = _parse_acceptance_evidence(scratchpad + "\n" + (final_answer or ""))
+    evidence = parsed["paths"] if parsed["evidence_type"] == "artifact" else parsed["evidence_values"]
+    completed = []
+    if final_answer and final_answer.strip():
+        completed.append(final_answer.strip().splitlines()[0][:200])
+
+    return _normalize_completion_report(
+        {
+            "goal_understanding": (state.goal or "").strip(),
+            "completed_work": completed or ["已生成最终回答"],
+            "remaining_gaps": [],
+            "evidence_type": parsed["evidence_type"],
+            "evidence": evidence,
+            "outcome": "done",
+            "confidence": "medium",
+        }
+    )
+
+
+def _review_completion_report(state: AgentState, final_answer: Optional[str]) -> tuple[str, dict]:
+    """
+    审核完成报告，返回 (verdict, verdict_dict)。
+
+    verdict 取值:
+      "pass"            - 完整完成，可直接退出
+      "weak_pass"       - 部分完成或被阻塞，退出前暂停询问用户是否继续
+      "needs_more_work" - 缺少报告或产物文件，需继续循环补救
+    """
+    import os
+    from pathlib import Path
+
+    report = state.meta.get("completion_report")
+    normalized = _normalize_completion_report(report if isinstance(report, dict) else None)
+
+    # 兼容旧 ACCEPTANCE 草稿本格式
+    if not normalized["goal_understanding"]:
+        legacy = _completion_report_from_legacy_acceptance(state, final_answer)
+        if legacy is not None:
+            normalized = legacy
+
+    if not normalized["goal_understanding"]:
+        return "needs_more_work", {"status": "needs_more_work", "reason": "missing_completion_report"}
+
+    if not normalized["completed_work"] and not (final_answer or "").strip():
+        return "needs_more_work", {"status": "needs_more_work", "reason": "missing_completed_work"}
+
+    # artifact 类证据：验证文件实际存在
+    if normalized["evidence_type"] == "artifact":
+        run_dir = os.environ.get("RUN_DIR")
+        if run_dir:
+            repo_root = Path(run_dir).resolve().parent.parent
+        else:
+            repo_root = Path.cwd().resolve()
+
+        missing: list[str] = []
+        for item in normalized["evidence"]:
+            for raw_path in _extract_claimed_artifact_paths(item, run_dir=run_dir) or [item]:
+                pp = Path(raw_path)
+                if not pp.is_absolute():
+                    pp = repo_root / pp
+                if not pp.exists():
+                    missing.append(str(pp.resolve()))
+
+        if missing:
+            verdict_dict = {
+                "status": "needs_more_work",
+                "reason": "artifact_missing",
+                "missing": sorted(set(missing)),
+                "report": normalized,
+            }
+            state.meta["completion_review"] = verdict_dict
+            return "needs_more_work", verdict_dict
+
+    # 三态结果：done_partial / done_blocked → weak_pass（弱通过，暂停询问用户）
+    if normalized["outcome"] in {"done_partial", "done_blocked"}:
+        reason = "partial_completion" if normalized["outcome"] == "done_partial" else "blocked_completion"
+        verdict_dict = {"status": "weak_pass", "reason": reason, "report": normalized}
+        state.meta["completion_review"] = verdict_dict
+        return "weak_pass", verdict_dict
+
+    verdict_dict = {"status": "pass", "reason": "completion_report_sufficient", "report": normalized}
+    state.meta["completion_review"] = verdict_dict
+    return "pass", verdict_dict
 
 
 def _maybe_compress_for_context(state: AgentState, llm: LLMBackend, system: str, messages: list[dict]) -> dict:
@@ -524,84 +652,48 @@ def run(
             )
 
             if action.type == ActionType.DONE:
-                def _acceptance_gate(state: AgentState, final_answer: Optional[str]):
-                    import os
-                    from pathlib import Path
+                verdict, verdict_dict = _review_completion_report(state, action.final_answer)
 
-                    sp = state.meta.get("scratchpad", "")
-                    if not isinstance(sp, str):
-                        sp = ""
-
-                    if "ACCEPTANCE" not in sp.upper():
-                        return False, [
-                            {
-                                "code": "acceptance_missing",
-                                "message": "缺少验收自评。请在草稿本追加一个 ACCEPTANCE 区块：包含验收标准(criteria)、证据(evidence 路径/片段)与结论(verdict)。",
-                            }
-                        ]
-
-                    text = (sp or "") + "\n" + (final_answer or "")
-                    run_dir = os.environ.get("RUN_DIR")
-                    if run_dir:
-                        repo_root = Path(run_dir).resolve().parent.parent
-                    else:
-                        repo_root = Path.cwd().resolve()
-
-                    acceptance_evidence = _parse_acceptance_evidence(text, run_dir=run_dir)
-                    paths = acceptance_evidence["paths"]
-
-                    norm_paths: list[Path] = []
-                    for p in paths:
-                        pp = Path(p)
-                        if not pp.is_absolute():
-                            pp = repo_root / pp
-                        norm_paths.append(pp)
-
-                    failures = []
-                    for pp in sorted({p.resolve() for p in norm_paths}):
-                        if not pp.exists():
-                            failures.append(
-                                {
-                                    "code": "artifact_missing",
-                                    "message": f"宣称/引用的产物不存在: {pp}。若应生成该文件，请先 write_file 落盘后再 done。",
-                                }
-                            )
-
-                    if failures:
-                        return False, failures
-                    return True, []
-
-                passed, failures = _acceptance_gate(state, action.final_answer)
-                if not passed:
+                if verdict == "needs_more_work":
+                    reason = verdict_dict.get("reason", "unknown")
                     state.meta.setdefault("acceptance_failures", []).append(
-                        {
-                            "iteration": state.iteration,
-                            "failures": failures,
-                        }
+                        {"iteration": state.iteration, "failures": [verdict_dict]}
                     )
                     if hooks.on_error:
                         hooks.on_error("[验收失败] 未通过验收，继续 loop 进行补救")
-                        try:
-                            hooks.on_error("[验收失败详情] " + json.dumps(failures, ensure_ascii=False))
-                        except Exception:
-                            pass
 
-                    _append_short_term(
-                        state,
-                        {
-                            "role": "user",
-                            "content": (
-                                "[系统][验收失败] 你刚才尝试 done，但未通过验收，因此不会退出。\n"
-                                "你必须先补救并满足验收，再次 done。\n\n"
-                                f"失败原因: {json.dumps(failures, ensure_ascii=False, indent=2)}\n\n"
-                                "补救建议: 若缺少产物文件，请调用 write_file 生成；若缺少验收自评，请用 scratchpad_append 追加 ACCEPTANCE 区块(标准+证据+结论)。"
-                            ),
-                        },
-                    )
+                    if reason == "missing_completion_report":
+                        feedback = (
+                            "[系统][验收失败] 缺少完成报告。请在 done 之前调用 submit_completion_report 工具，\n"
+                            "提交包含 goal_understanding、completed_work、remaining_gaps、"
+                            "evidence_type、evidence、outcome、confidence 的完成报告。\n"
+                            "也可在草稿本中追加 ACCEPTANCE 区块（包含验收标准 criteria、"
+                            "证据 evidence 路径/片段与结论 verdict）作为兼容格式。"
+                        )
+                    elif reason == "missing_completed_work":
+                        feedback = (
+                            "[系统][验收失败] 完成报告缺少已完成事项（completed_work 为空）且无最终输出。\n"
+                            "请补充 submit_completion_report 中的 completed_work 字段，"
+                            "或在 done 中提供 final_answer。"
+                        )
+                    elif reason == "artifact_missing":
+                        missing = verdict_dict.get("missing", [])
+                        feedback = (
+                            f"[系统][验收失败] 以下宣称的产物文件不存在: {missing}。\n"
+                            "请先用 write_file 生成这些文件，再重新 done。"
+                        )
+                    else:
+                        feedback = (
+                            f"[系统][验收失败] 验收未通过，原因: {reason}。\n"
+                            f"详情: {json.dumps(verdict_dict, ensure_ascii=False, indent=2)}"
+                        )
+
+                    _append_short_term(state, {"role": "user", "content": feedback})
                     _checkpoint_state(state)
                     state.iteration += 1
                     continue
 
+                # weak_pass 或 pass：先保存最终答案和运行摘要
                 if hooks.on_done:
                     hooks.on_done(action.final_answer or "（无最终输出）")
                 state.meta["final_answer"] = action.final_answer
@@ -631,6 +723,38 @@ def run(
                         state.long_term.append(summary)
                     except Exception:
                         pass
+
+                # weak_pass：系统主动发起 ask_user，让用户决定是否在当前基础上继续
+                if verdict == "weak_pass":
+                    report = verdict_dict.get("report", {})
+                    outcome = report.get("outcome", "done_partial")
+                    completed = report.get("completed_work", [])
+                    gaps = report.get("remaining_gaps", [])
+
+                    completed_str = "\n".join(f"  - {item}" for item in completed) if completed else "  （无）"
+                    gaps_str = "\n".join(f"  - {item}" for item in gaps) if gaps else "  （无）"
+
+                    if outcome == "done_blocked":
+                        status_label = "遇到外部阻塞，已完成可做部分"
+                    else:
+                        status_label = "主体工作完成，有已知遗留"
+
+                    question = (
+                        f"[{status_label}]\n\n"
+                        f"已完成:\n{completed_str}\n\n"
+                        f"遗留/阻塞:\n{gaps_str}\n\n"
+                        "是否在此基础上继续推进？"
+                        "如果是，请告诉我下一步的重点；如果不需要，直接回复「完成」即可。"
+                    )
+
+                    state.meta["awaiting_input"] = question
+                    state.meta["paused"] = True
+                    if hooks.on_error:
+                        hooks.on_error(f"[弱通过] {status_label}，暂停等待用户决策")
+                    _checkpoint_state(state, status="paused")
+                    break
+
+                # 正常 pass：直接退出
                 break
 
             if action.type == ActionType.ERROR:
@@ -945,29 +1069,12 @@ def _rebuild_context_on_hard_block(
             if m.get("role") != "assistant":
                 continue
             content = m.get("content", "")
-            # 尝试解析 JSON（支持 fenced 和 raw）
-            text = content
-            fence = _re.search(r"```(?:json)?\s*(.*?)```", content, _re.DOTALL | _re.IGNORECASE)
-            if fence:
-                text = fence.group(1).strip()
-            try:
-                import json as _json2
-                data = _json2.loads(text)
-            except Exception:
-                try:
-                    start = text.find("{")
-                    if start >= 0:
-                        import json as _json2
-                        dec = _json2.JSONDecoder()
-                        data, _ = dec.raw_decode(text[start:])
-                    else:
-                        continue
-                except Exception:
-                    continue
+            data, _ = _extract_json(content)
+            if data is None:
+                continue
             if data.get("tool") == blocked_tool and data.get("action") == "tool_call":
                 args = data.get("args", {})
-                import json as _json2
-                args_str = _json2.dumps(args, ensure_ascii=False)
+                args_str = json.dumps(args, ensure_ascii=False)
                 example = f"  - {blocked_tool}({args_str[:120]})"
                 if example not in failed_examples:
                     failed_examples.append(example)

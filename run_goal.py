@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import sys
 from pathlib import Path
@@ -203,6 +204,16 @@ def main():
     snapshot_path = os.environ.get("AGENT_SNAPSHOT", DEFAULT_SNAPSHOT)
     snapshot_exists = Path(snapshot_path).exists()
 
+    # Pre-load long_term from snapshot so history survives even if LLM skips load_snapshot_meta.
+    preloaded_long_term: list[str] = []
+    if snapshot_exists:
+        try:
+            snap_data = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
+            if isinstance(snap_data, dict) and isinstance(snap_data.get("long_term"), list):
+                preloaded_long_term = [x for x in snap_data["long_term"] if isinstance(x, str)]
+        except Exception:
+            pass
+
     # Scratchpad preview printing disabled: scratchpad is often stale/low-signal and noisy in logs.
 
     # Prefix instruction: load snapshot when available; otherwise proceed without it.
@@ -245,6 +256,7 @@ def main():
         api_key=os.environ.get("OPENAI_API_KEY"),
         max_iterations=int(os.environ.get("MAX_ITERS", "100")),
         verbose=True,
+        long_term=preloaded_long_term,
     )
 
     # ── 用户干预处理器：后台线程读取 stdin，"/" 开头为命令，其余为 ask_user 回答 ──

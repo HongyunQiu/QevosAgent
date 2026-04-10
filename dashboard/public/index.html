@@ -239,7 +239,12 @@ input, textarea { font-family: inherit; font-size: inherit; }
   border: 1px solid rgba(63,185,80,0.3); border-radius: 4px;
   padding: 2px 9px; font-family: var(--mono); font-size: 11.5px; font-weight: 600;
 }
-.ev-args { padding: 2px 12px 8px; font-family: var(--mono); font-size: 11px; color: var(--cyan); line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+.ev-args { padding: 2px 12px 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+.hl-key  { color: #79c0ff; }
+.hl-str  { color: #a5d6ff; }
+.hl-num  { color: var(--orange); }
+.hl-bool { color: var(--purple); }
+.hl-null { color: var(--muted); font-style: italic; }
 .ev-arrow { color: var(--muted); font-size: 12px; }
 .ev-meta  { color: var(--muted); font-size: 11px; }
 .ev-mini-thought { font-size: 11px; color: #a093cc; font-style: italic; padding: 0 12px 4px; }
@@ -272,6 +277,12 @@ input, textarea { font-family: inherit; font-size: inherit; }
 
 .ev-user-msg { padding:7px 12px; background:rgba(125,133,144,0.05); border-left:3px solid var(--border); }
 .ev-user-msg .ev-body { font-size:11.5px; color:var(--muted); line-height:1.5; }
+
+.ev-ask-user { background:rgba(227,179,65,0.06); border-left:3px solid var(--yellow); padding:8px 12px; }
+.ev-ask-user .ev-ask-label { font-size:11px; color:var(--yellow); font-weight:600; margin-bottom:4px; }
+.ev-ask-user .ev-ask-q { font-size:12.5px; color:var(--text); line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+.ev-user-answer { padding:7px 12px; background:rgba(88,166,255,0.05); border-left:3px solid rgba(88,166,255,0.4); }
+.ev-user-answer .ev-body { font-size:11.5px; color:var(--blue); line-height:1.5; }
 
 .ev-stream-output {
   background: rgba(255,166,87,0.04); border-left: 3px solid rgba(255,166,87,0.4);
@@ -531,6 +542,24 @@ input, textarea { font-family: inherit; font-size: inherit; }
 .md-render th,.md-render td { border:1px solid var(--border); padding:4px 10px; text-align:left; }
 .md-render th { background:var(--bg2); font-weight:600; }
 .icon-btn.active { border-color:var(--blue); color:var(--blue); }
+
+/* ── JSON / JSONL render ─────────────────────────────────────────────── */
+.json-render {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
+  background: var(--bg); overflow: auto; padding: 12px 16px;
+  white-space: pre-wrap; word-break: break-all; flex: 1; color: var(--muted);
+}
+.jsonl-line {
+  display: flex; gap: 10px;
+  border-bottom: 1px solid var(--border); padding: 6px 0;
+}
+.jsonl-line:last-child { border-bottom: none; }
+.jsonl-idx {
+  color: var(--muted); font-size: 10px; min-width: 28px;
+  text-align: right; padding-top: 2px; flex-shrink: 0;
+  user-select: none; opacity: 0.5;
+}
+.jsonl-body { flex: 1; white-space: pre-wrap; word-break: break-all; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 </head>
@@ -638,7 +667,7 @@ input, textarea { font-family: inherit; font-size: inherit; }
         <span class="agents-title" id="filesRunLabel">No run selected</span>
         <div class="bar-gap"></div>
         <button class="icon-btn" onclick="loadRunFiles()">↺ Refresh</button>
-        <button class="icon-btn" id="filesRenderBtn" onclick="toggleFilesRender()" title="Toggle Markdown render">⬡ MD</button>
+        <button class="icon-btn" id="filesRenderBtn" onclick="toggleFilesRender()" title="Preview (Markdown / JSON / JSONL)">◈ Preview</button>
       </div>
       <div class="files-body">
         <div class="files-tree" id="filesTree">
@@ -648,6 +677,7 @@ input, textarea { font-family: inherit; font-size: inherit; }
           <div class="files-content-path" id="filesContentPath" style="display:none"></div>
           <pre class="files-view" id="filesView"><span class="files-placeholder">Select a file to view its contents</span></pre>
           <div class="md-render" id="filesMdView" style="display:none"></div>
+          <div class="json-render" id="filesJsonView" style="display:none"></div>
         </div>
       </div>
     </div>
@@ -1013,12 +1043,21 @@ function renderEvent(ev) {
       if (!ev.thought) return '';
       return `<div class="ev ev-thought"><div class="ev-body">💭 ${esc(ev.thought)}</div></div>`;
     case 'tool_call': {
-      const args    = fmtArgs(ev.args || {});
+      if (ev.tool === 'ask_user') {
+        const q = (ev.args && ev.args.question) || fmtArgs(ev.args || {});
+        const thought = ev.thought ? `<div class="ev-mini-thought">💭 ${esc(ev.thought)}</div>` : '';
+        return `<div class="ev ev-ask-user">
+          ${thought}
+          <div class="ev-ask-label">💬 Agent 向你提问</div>
+          <div class="ev-ask-q">${esc(q)}</div>
+        </div>`;
+      }
+      const argsHL  = fmtArgsHL(ev.args || {});
       const thought = ev.thought ? `<div class="ev-mini-thought">💭 ${esc(ev.thought)}</div>` : '';
       return `<div class="ev ev-tool-call">
         ${thought}
         <div class="ev-header"><span class="ev-arrow">⚡</span><span class="tool-name-badge">${esc(ev.tool)}</span></div>
-        ${args ? `<div class="ev-args">${esc(args)}</div>` : ''}
+        ${argsHL ? `<div class="ev-args">${argsHL}</div>` : ''}
       </div>`;
     }
     case 'tool_result': {
@@ -1033,8 +1072,8 @@ function renderEvent(ev) {
           <span class="result-badge ${bCls}">${esc(ev.tool)}</span>
           ${ev.success === false ? '<span class="ev-meta" style="color:var(--red)">failed</span>' : ''}
         </div>
-        <div class="ev-output ${big ? '' : 'expanded'}" id="${uid}">${esc(out)}</div>
-        ${big ? `<button class="expand-btn" onclick="toggleExpand('${uid}',this)">▼ show more (${out.length} chars)</button>` : ''}
+        <div class="ev-output expanded" id="${uid}">${fmtOutputHL(out)}</div>
+        ${big ? `<button class="expand-btn" onclick="toggleExpand('${uid}',this)">▲ show less</button>` : ''}
       </div>`;
     }
     case 'done':
@@ -1043,6 +1082,8 @@ function renderEvent(ev) {
       return `<div class="ev ev-error"><div class="ev-body">✗ ${esc(ev.text || 'Error occurred')}</div></div>`;
     case 'injected':
       return `<div class="ev ev-injected"><span class="arrow">→</span><span class="cmd">${esc(ev.text)}</span></div>`;
+    case 'user_answer':
+      return `<div class="ev ev-user-answer"><div class="ev-body">👤 ${esc(trunc(ev.text || '', 300))}</div></div>`;
     case 'user_msg': {
       const t = ev.text;
       if (!t || t.length < 4) return '';
@@ -1272,6 +1313,50 @@ function fmtArgs(args) {
   catch { return String(args); }
 }
 
+function syntaxHL(jsonStr) {
+  // Single-pass regex: key strings, value strings, numbers, booleans, null
+  const re = /"((?:\\.|[^"\\])*)"\s*:|"((?:\\.|[^"\\])*)"|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?=[\s,\}\]\n]|$)|(true|false|null)(?=[\s,\}\]\n]|$)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(jsonStr)) !== null) {
+    out += esc(jsonStr.slice(last, m.index));
+    last = re.lastIndex;
+    if (m[1] !== undefined) {
+      const quoted = '"' + m[1] + '"';
+      const tail = m[0].slice(quoted.length);
+      out += `<span class="hl-key">${esc(quoted)}</span>${esc(tail)}`;
+    } else if (m[2] !== undefined) {
+      out += `<span class="hl-str">${esc(m[0])}</span>`;
+    } else if (m[3] !== undefined) {
+      out += `<span class="hl-num">${esc(m[3])}</span>`;
+    } else if (m[4] !== undefined) {
+      out += `<span class="${m[4]==='null'?'hl-null':'hl-bool'}">${esc(m[4])}</span>`;
+    }
+  }
+  out += esc(jsonStr.slice(last));
+  return out;
+}
+
+function fmtArgsHL(args) {
+  if (!args || Object.keys(args).length === 0) return '';
+  try {
+    const s = JSON.stringify(args, null, 2);
+    const display = s.length > 800 ? s.slice(0, 800) + '\n…' : s;
+    return syntaxHL(display);
+  } catch { return esc(String(args)); }
+}
+
+function fmtOutputHL(text) {
+  if (!text) return '';
+  const trimmed = text.trim();
+  if (trimmed.length < 50000 && (trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      return syntaxHL(JSON.stringify(parsed, null, 2));
+    } catch {}
+  }
+  return esc(text);
+}
+
 function esc(str) {
   return String(str)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -1476,7 +1561,54 @@ function renderFileTree(files, runId) {
 }
 
 let gFilesContent  = '';
-let gFilesRenderMD = false;
+let gFilesPreview  = false;
+let gFilesPath     = '';
+
+function applyPreview(content, filePath, preview) {
+  const pre     = document.getElementById('filesView');
+  const mdDiv   = document.getElementById('filesMdView');
+  const jsonDiv = document.getElementById('filesJsonView');
+  const ext     = (filePath || '').split('.').pop().toLowerCase();
+
+  if (!preview || !content) {
+    pre.style.display = ''; mdDiv.style.display = 'none'; jsonDiv.style.display = 'none';
+    return;
+  }
+
+  if (ext === 'md' || ext === 'markdown') {
+    pre.style.display = 'none'; jsonDiv.style.display = 'none';
+    if (typeof marked !== 'undefined') {
+      mdDiv.innerHTML = marked.parse(content); mdDiv.style.display = '';
+    } else { pre.style.display = ''; }
+    return;
+  }
+
+  if (ext === 'json') {
+    pre.style.display = 'none'; mdDiv.style.display = 'none';
+    try {
+      const parsed = JSON.parse(content);
+      jsonDiv.innerHTML = syntaxHL(JSON.stringify(parsed, null, 2));
+    } catch { jsonDiv.innerHTML = syntaxHL(content); }
+    jsonDiv.style.display = '';
+    return;
+  }
+
+  if (ext === 'jsonl') {
+    pre.style.display = 'none'; mdDiv.style.display = 'none';
+    const lines = content.split('\n').filter(l => l.trim());
+    jsonDiv.innerHTML = lines.map((line, i) => {
+      let body;
+      try { body = syntaxHL(JSON.stringify(JSON.parse(line), null, 2)); }
+      catch { body = esc(line); }
+      return `<div class="jsonl-line"><span class="jsonl-idx">${i + 1}</span><span class="jsonl-body">${body}</span></div>`;
+    }).join('') || '<span class="files-placeholder">(empty)</span>';
+    jsonDiv.style.display = '';
+    return;
+  }
+
+  // 其他类型：回退到原始显示
+  pre.style.display = ''; mdDiv.style.display = 'none'; jsonDiv.style.display = 'none';
+}
 
 function applyMdRender(preId, divId, content, render) {
   const pre = document.getElementById(preId);
@@ -1491,15 +1623,16 @@ function applyMdRender(preId, divId, content, render) {
   }
 }
 function toggleFilesRender() {
-  gFilesRenderMD = !gFilesRenderMD;
-  document.getElementById('filesRenderBtn').classList.toggle('active', gFilesRenderMD);
-  applyMdRender('filesView', 'filesMdView', gFilesContent, gFilesRenderMD);
+  gFilesPreview = !gFilesPreview;
+  document.getElementById('filesRenderBtn').classList.toggle('active', gFilesPreview);
+  applyPreview(gFilesContent, gFilesPath, gFilesPreview);
 }
 
 async function selectRunFile(runId, filePath, el) {
   document.querySelectorAll('.ftree-file').forEach(e => e.classList.remove('selected'));
   el.classList.add('selected');
   gSelectedFile = filePath;
+  gFilesPath = filePath;
   const pathEl = document.getElementById('filesContentPath');
   pathEl.textContent = filePath;
   pathEl.style.display = '';
@@ -1508,7 +1641,7 @@ async function selectRunFile(runId, filePath, el) {
     const data = await fetch(`/api/run-file/${encodeURIComponent(runId)}/${filePath}`).then(r => r.json());
     gFilesContent = data.error ? '' : (data.content || '');
     document.getElementById('filesView').textContent = data.error ? 'Error: ' + data.error : gFilesContent;
-    applyMdRender('filesView', 'filesMdView', gFilesContent, gFilesRenderMD);
+    applyPreview(gFilesContent, gFilesPath, gFilesPreview);
   } catch (e) {
     document.getElementById('filesView').innerHTML = `<span class="files-placeholder">Error: ${esc(e.message)}</span>`;
   }

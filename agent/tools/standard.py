@@ -1211,15 +1211,33 @@ def tool_save_snapshot_meta(state: AgentState, path: str) -> ToolResult:
         if invalid_evolved_tools:
             state.meta["invalid_evolved_tools"] = invalid_evolved_tools
 
+        # Merge with existing snapshot's long_term to avoid losing history from previous runs.
+        p = Path(path)
+        existing_long_term: list[str] = []
+        if p.exists():
+            try:
+                existing = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(existing, dict) and isinstance(existing.get("long_term"), list):
+                    existing_long_term = [x for x in existing["long_term"] if isinstance(x, str)]
+            except Exception:
+                pass
+
+        # Deduplicated merge: preserve order, existing entries first, then new ones not already present.
+        seen: set[str] = set(existing_long_term)
+        merged_long_term = list(existing_long_term)
+        for entry in state.long_term:
+            if isinstance(entry, str) and entry not in seen:
+                seen.add(entry)
+                merged_long_term.append(entry)
+
         payload = {
-            "long_term": list(state.long_term),
+            "long_term": merged_long_term,
             "evolved_tools": valid_evolved_tools,
             "tool_repair_candidates": state.meta.get("tool_repair_candidates", {}),
             "tool_repair_failures": state.meta.get("tool_repair_failures", []),
             "tool_repair_history": state.meta.get("tool_repair_history", []),
             "scratchpad": state.meta.get("scratchpad", ""),
         }
-        p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return ToolResult(
@@ -1341,6 +1359,51 @@ def tool_load_snapshot_meta(state: AgentState, path: str, overwrite: bool = Fals
         )
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
+
+
+# ── 完成报告工具 ──────────────────────────────────────────────────────────────
+
+
+def _normalize_report_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def tool_submit_completion_report(
+    state: AgentState,
+    goal_understanding: str,
+    completed_work,
+    remaining_gaps,
+    evidence_type: str,
+    evidence,
+    outcome: str = "done",
+    confidence: str = "medium",
+) -> ToolResult:
+    """提交结构化完成报告，供验收门检查。
+
+    outcome 取值:
+      done         - 完整完成，无遗留
+      done_partial - 主体完成但有已知缺口
+      done_blocked - 外部阻塞，只完成了可做部分
+
+    evidence_type 取值: artifact | tool_result | observation | none
+    confidence 取值: low | medium | high
+    """
+    report = {
+        "goal_understanding": (goal_understanding or "").strip(),
+        "completed_work": _normalize_report_list(completed_work),
+        "remaining_gaps": _normalize_report_list(remaining_gaps),
+        "evidence_type": (evidence_type or "none").strip().lower(),
+        "evidence": _normalize_report_list(evidence),
+        "outcome": (outcome or "done").strip().lower(),
+        "confidence": (confidence or "medium").strip().lower(),
+    }
+    state.meta["completion_report"] = report
+    return ToolResult(success=True, output=report)
 
 
 # ── 异步后台任务工具 ──────────────────────────────────────────────────────────
@@ -1584,6 +1647,25 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "reason": "修改目标的原因"
             },
             fn=tool_set_goal,
+        ),
+        ToolSpec(
+            name="submit_completion_report",
+            description=(
+                "在调用 done 之前提交结构化完成报告，用于验收门语义判定。"
+                "outcome 三态: done=完整完成 / done_partial=有已知缺口 / done_blocked=外部阻塞只做了可做部分。"
+                "evidence_type: artifact=文件产物 / tool_result=工具输出 / observation=观察到的结果 / none=无证据。"
+                "confidence: low / medium / high。"
+            ),
+            args_schema={
+                "goal_understanding": "你认定的任务目标（自然语言描述）",
+                "completed_work": "已完成事项列表（字符串列表或单个字符串）",
+                "remaining_gaps": "未完成/遗留事项列表（字符串列表或单个字符串，无则传空列表）",
+                "evidence_type": "证据类型: artifact | tool_result | observation | none",
+                "evidence": "证据列表（artifact 时填文件路径，其他类型填描述）",
+                "outcome": "完成状态: done | done_partial | done_blocked（默认 done）",
+                "confidence": "完成信心: low | medium | high（默认 medium）",
+            },
+            fn=tool_submit_completion_report,
         ),
         ToolSpec(
             name="ask_user",

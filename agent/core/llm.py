@@ -250,50 +250,81 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratc
 
 # ── 响应解析器 ────────────────────────────────────────────────────────────────
 
+def _extract_json(text: str) -> tuple:
+    """Extract the first JSON *object* from *text* using three strategies.
+
+    Returns ``(dict, None)`` on success or ``(None, exception)`` on failure.
+
+    Strategy order matters:
+      1. Direct parse of the stripped text — cheapest path.
+      2. Locate an explicit ``\\`\\`\\`json`` marker and raw_decode from there.
+         This step is intentionally placed BEFORE the generic brace-scan (step 3)
+         so that prose containing stray ``{…}`` fragments before the fence does
+         not shadow the real JSON payload.  raw_decode is used instead of a
+         regex-to-closing-fence so nested fences inside string values don't
+         truncate the match.
+      3. Scan successive ``{`` positions via raw_decode — handles plain fences,
+         prose prefixes, and other wrapping patterns.
+
+    Fence extraction (step 2) is attempted only after direct parsing fails so
+    that code fences embedded inside JSON string values (e.g. a ```python block
+    inside ``final_answer``) do not fool a fence regex into extracting non-JSON
+    content as the payload.
+    """
+    dec = json.JSONDecoder()
+    stripped = text.strip()
+
+    # 1) Direct parse.
+    try:
+        return json.loads(stripped), None
+    except json.JSONDecodeError:
+        pass
+
+    # 2) Explicit ```json marker → raw_decode.
+    m = re.search(r"```json\s*", text, re.IGNORECASE)
+    if m:
+        after = text[m.end():]
+        brace = after.find("{")
+        if brace != -1:
+            try:
+                obj, _ = dec.raw_decode(after[brace:])
+                return obj, None
+            except Exception:
+                pass
+
+    # 3) Generic brace scan — tries each ``{`` until one yields a complete object.
+    parse_error: Exception = json.JSONDecodeError("No JSON object found", stripped, 0)
+    search_from = 0
+    while True:
+        idx = stripped.find("{", search_from)
+        if idx == -1:
+            break
+        try:
+            obj, _ = dec.raw_decode(stripped[idx:])
+            return obj, None
+        except Exception as e:
+            parse_error = e
+            search_from = idx + 1
+
+    return None, parse_error
+
+
 def parse_response(raw: str) -> Action:
     """Parse the LLM raw response into an Action.
 
-    The model is instructed to output exactly one JSON object, but in practice it
-    may:
-      - wrap JSON in markdown fences
-      - prepend/append extra text
-      - output multiple JSON objects back-to-back
-
-    We therefore try, in order:
-      1) extract ```json ...``` fenced block
-      2) parse the entire trimmed text as JSON
-      3) fall back to extracting the *first* JSON object via JSONDecoder.raw_decode
-
-    This makes the agent robust to the common "Extra data" and "prefix text" errors.
+    Delegates JSON extraction to :func:`_extract_json` so the parsing strategy
+    is defined in exactly one place.
     """
-    # 1) Try extracting a fenced JSON block.
-    match = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL | re.IGNORECASE)
-    text = match.group(1).strip() if match else raw.strip()
-
-    data = None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        # 3) Fallback: find and decode the first JSON object within the text.
-        # This handles cases like:
-        #   "First tool call.\n{...}" or "{...}\n{...}"
-        try:
-            s = text
-            start = s.find("{")
-            if start == -1:
-                raise
-            dec = json.JSONDecoder()
-            obj, end = dec.raw_decode(s[start:])
-            data = obj
-        except Exception as e:
-            # Keep error message compact; the loop will feed it back.
-            return Action(
-                type=ActionType.ERROR,
-                thought=(
-                    f"JSON 解析失败: {e}\n"
-                    f"原始输出(截断): {raw[:300]}"
-                ),
-            )
+    data, exc = _extract_json(raw)
+    if data is None:
+        # Keep error message compact; the loop will feed it back.
+        return Action(
+            type=ActionType.ERROR,
+            thought=(
+                f"JSON 解析失败: {exc}\n"
+                f"原始输出(截断): {raw[:300]}"
+            ),
+        )
 
     # Defensive: some servers/models may emit `null` or a non-object JSON.
     if not isinstance(data, dict):
@@ -312,13 +343,36 @@ def parse_response(raw: str) -> Action:
             final_answer=data.get("final_answer", ""),
         )
 
+    # 检测 LLM 把工具名写成了 action 值（如 action="ask_user"）
+    if action_str not in ("tool_call",):
+        # 尝试将 action 值本身作为 tool 名自动修复
+        guessed_tool = action_str
+        guessed_args = {k: v for k, v in data.items()
+                        if k not in ("thought", "action", "tool", "args")}
+        if not guessed_args:
+            guessed_args = data.get("args", {})
+        return Action(
+            type=ActionType.ERROR,
+            thought=(
+                f"action='{action_str}' 不合法，action 只能是 'tool_call' 或 'done'。\n"
+                f"如需调用工具，请严格使用以下格式：\n"
+                f'{{"thought":"...","action":"tool_call","tool":"{guessed_tool}","args":{{...}}}}\n'
+                f"例如调用 ask_user：\n"
+                f'{{"thought":"...","action":"tool_call","tool":"ask_user","args":{{"question":"你的问题"}}}}'
+            )
+        )
+
     tool = data.get("tool", "")
     args = data.get("args", {})
 
     if not tool:
         return Action(
             type=ActionType.ERROR,
-            thought=f"action=tool_call 但未指定 tool 字段。thought: {thought}"
+            thought=(
+                f"action=tool_call 但未指定 tool 字段。\n"
+                f"正确格式：{{\"action\":\"tool_call\",\"tool\":\"工具名\",\"args\":{{...}}}}\n"
+                f"thought: {thought}"
+            )
         )
 
     return Action(

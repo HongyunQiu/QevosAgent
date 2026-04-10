@@ -131,7 +131,13 @@ function parseLine(raw, lineIdx) {
 
   if (role === 'assistant') {
     let action;
-    try { action = JSON.parse(content); } catch { return null; }
+    try {
+      // Strip ```json ... ``` fences — LLM sometimes wraps its JSON in markdown code blocks.
+      // This mirrors the fence-stripping logic in llm.py's _parse_llm_output.
+      const fenceMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      const jsonStr = fenceMatch ? fenceMatch[1].trim() : content;
+      action = JSON.parse(jsonStr);
+    } catch { return null; }
     const thought = action.thought || null;
     if (action.action === 'tool_call') {
       return { ...base, type: 'tool_call', tool: action.tool, args: action.args || {}, thought };
@@ -149,15 +155,21 @@ function parseLine(raw, lineIdx) {
   if (role === 'user') {
     const toolMatch = content.match(/^\[工具:\s*([^\]]+)\]\s*(执行成功|执行失败)\s*\n?([\s\S]*)/);
     if (toolMatch) {
+      const toolName = toolMatch[1].trim();
+      // ask_user tool_result is redundant — the question is already shown in the tool_call event.
+      if (toolName === 'ask_user') return null;
       const success = toolMatch[2] === '执行成功';
       const raw_out = toolMatch[3]
         .replace(/^输出\(可能已截断\):\n?/, '')
         .replace(/^错误:\n?/, '')
         .trim();
-      return { ...base, type: 'tool_result', tool: toolMatch[1].trim(), success, output: raw_out };
+      return { ...base, type: 'tool_result', tool: toolName, success, output: raw_out };
     }
     if (content.startsWith('[用户干预注入]') || content.startsWith('[Web看板]')) {
       return { ...base, type: 'injected', text: content.replace(/^\[[^\]]+\]\s*\n?/, '').trim() };
+    }
+    if (content.startsWith('[用户补充信息]')) {
+      return { ...base, type: 'user_answer', text: content.replace(/^\[用户补充信息\]\s*\n?/, '').trim() };
     }
     if (lineIdx === 0) {
       const goalMarker = content.match(/请完成以下目标：\s*\n([\s\S]*)/);
