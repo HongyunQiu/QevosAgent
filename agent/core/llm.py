@@ -97,7 +97,7 @@ class OpenAIBackend(LLMBackend):
         if max_tokens is None:
             import os
             # Default higher because tool_call JSON (esp. long code strings) is easy to truncate.
-            max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+            max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "16384"))
         self.max_tokens = max(1, int(max_tokens))
 
     def _call_api(self, messages: list[dict], system: str, max_tokens: int, use_json_format: bool) -> str:

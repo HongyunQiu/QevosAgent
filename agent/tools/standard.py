@@ -342,6 +342,455 @@ def tool_read_file(state: AgentState, path: str) -> ToolResult:
         return ToolResult(success=False, output=None, error=str(e))
 
 
+def tool_read_file_lines(
+    state: AgentState,
+    path: str,
+    start_line: int = 1,
+    end_line: int = 0,
+) -> ToolResult:
+    """读取文件的指定行范围（行号从 1 开始），避免全量加载大文件。
+
+    - start_line: 起始行（含，默认 1）
+    - end_line:   结束行（含，默认 0 = 读到文件末尾）
+
+    返回带行号前缀的内容，格式与 cat -n 一致，方便后续调用 edit_file 时精确定位。
+    """
+    try:
+        import os as _os
+        path2 = _os.path.expandvars(_os.path.expanduser(path))
+        p = Path(path2)
+        if not p.exists():
+            return ToolResult(success=False, output=None, error=f"文件不存在: {path}")
+
+        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+        total = len(lines)
+
+        s = max(1, int(start_line))
+        e = int(end_line) if int(end_line) > 0 else total
+        e = min(e, total)
+
+        if s > total:
+            return ToolResult(
+                success=False, output=None,
+                error=f"start_line={s} 超出文件总行数 {total}"
+            )
+
+        selected = lines[s - 1: e]
+        numbered = "".join(f"{s + i:>6}\t{line}" for i, line in enumerate(selected))
+        return ToolResult(
+            success=True,
+            output=f"[{p.name}  行 {s}–{e} / 共 {total} 行]\n{numbered}",
+        )
+    except Exception as ex:
+        return ToolResult(success=False, output=None, error=str(ex))
+
+
+def tool_file_outline(state: AgentState, path: str) -> ToolResult:
+    """提取文件的结构概要（类、函数、方法及其行号），无需读取完整内容。
+
+    - Python 文件：使用 AST 精确解析，输出缩进树形结构
+    - 其他文件：用正则识别常见函数/类声明（JS/TS/Go/Java/C 等）
+
+    结合 read_file_lines 使用：先用本工具定位目标代码块的行号，
+    再用 read_file_lines 只读那一段，节省大量 token。
+    """
+    try:
+        import os as _os, ast as _ast, re as _re
+        path2 = _os.path.expandvars(_os.path.expanduser(path))
+        p = Path(path2)
+        if not p.exists():
+            return ToolResult(success=False, output=None, error=f"文件不存在: {path}")
+
+        content = p.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        total = len(lines)
+
+        # ── Python: AST 解析 ────────────────────────────────────────────────
+        if p.suffix.lower() == ".py":
+            try:
+                tree = _ast.parse(content)
+            except SyntaxError as e:
+                return ToolResult(success=False, output=None, error=f"Python 语法错误: {e}")
+
+            entries: list[str] = []
+
+            def _walk(nodes, indent=0):
+                for node in nodes:
+                    if isinstance(node, (_ast.ClassDef, _ast.FunctionDef, _ast.AsyncFunctionDef)):
+                        kind = "class" if isinstance(node, _ast.ClassDef) else (
+                            "async def" if isinstance(node, _ast.AsyncFunctionDef) else "def"
+                        )
+                        end = getattr(node, "end_lineno", "?")
+                        entries.append(f"{'  ' * indent}{kind} {node.name}  [{node.lineno}–{end}]")
+                        if isinstance(node, _ast.ClassDef):
+                            _walk(node.body, indent + 1)
+
+            _walk(_ast.walk(tree) if False else tree.body)  # top-level only, recurse into classes
+            if not entries:
+                return ToolResult(success=True, output=f"[{p.name}]  共 {total} 行，未找到类/函数定义")
+            return ToolResult(
+                success=True,
+                output=f"[{p.name}]  共 {total} 行\n" + "\n".join(entries),
+            )
+
+        # ── 通用：正则启发式 ────────────────────────────────────────────────
+        patterns = [
+            # JS/TS
+            (r"^(\s*)(export\s+)?(default\s+)?(async\s+)?function\s+(\w+)", "function"),
+            (r"^(\s*)(export\s+)?(abstract\s+)?class\s+(\w+)", "class"),
+            (r"^(\s*)(\w+)\s*[:=]\s*(async\s+)?\(.*\)\s*=>", "arrow"),
+            # Go
+            (r"^func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\s*\(", "func"),
+            # Java/C#/C++
+            (r"^(\s*)(public|private|protected|static|virtual|override).*\s(\w+)\s*\([^)]*\)\s*\{", "method"),
+            # C/C++ loose
+            (r"^(\w[\w\s\*]+)\s+(\w+)\s*\([^)]*\)\s*\{", "func"),
+        ]
+        entries2: list[str] = []
+        for i, line in enumerate(lines, 1):
+            for pat, kind in patterns:
+                m = _re.match(pat, line)
+                if m:
+                    entries2.append(f"  {kind:<8} {line.strip()[:80]}  [行 {i}]")
+                    break
+
+        if not entries2:
+            return ToolResult(
+                success=True,
+                output=f"[{p.name}]  共 {total} 行（未识别到函数/类声明，可直接用 read_file_lines 分段读取）",
+            )
+        return ToolResult(
+            success=True,
+            output=f"[{p.name}]  共 {total} 行\n" + "\n".join(entries2),
+        )
+    except Exception as ex:
+        return ToolResult(success=False, output=None, error=str(ex))
+
+
+def tool_grep_files(
+    state: AgentState,
+    pattern: str,
+    path: str = ".",
+    glob: str = "",
+    context: int = 0,
+    max_results: int = 50,
+    ignore_case: bool = False,
+) -> ToolResult:
+    """在文件中搜索正则表达式，返回匹配行及上下文，用于追踪跨文件的符号引用。
+
+    参数：
+    - pattern:      正则表达式（如 "def load_model" 或 "import torch"）
+    - path:         搜索目录或单个文件（默认当前目录）
+    - glob:         文件名过滤（如 "*.py"、"*.{ts,js}"，空 = 所有文本文件）
+    - context:      每个匹配项前后各保留几行（默认 0）
+    - max_results:  最多返回几条匹配（默认 50，防止结果爆炸）
+    - ignore_case:  是否忽略大小写（默认 false）
+
+    典型用法：
+      grep_files("class Trainer", path="src/", glob="*.py")  → 找类定义位置
+      grep_files("from .utils import", path=".", glob="*.py") → 找所有导入点
+    """
+    try:
+        import os as _os, re as _re, fnmatch as _fnmatch
+        path2 = _os.path.expandvars(_os.path.expanduser(path))
+        base = Path(path2)
+
+        flags = _re.IGNORECASE if ignore_case else 0
+        try:
+            rx = _re.compile(pattern, flags)
+        except _re.error as e:
+            return ToolResult(success=False, output=None, error=f"无效正则: {e}")
+
+        # 收集候选文件
+        if base.is_file():
+            candidates = [base]
+        else:
+            candidates = [f for f in base.rglob("*") if f.is_file()]
+            # glob 过滤
+            if glob:
+                # 支持 "*.{py,ts}" 展开
+                globs = []
+                m = _re.match(r"^(.*)\{(.+)\}(.*)$", glob)
+                if m:
+                    for ext in m.group(2).split(","):
+                        globs.append(m.group(1) + ext.strip() + m.group(3))
+                else:
+                    globs = [glob]
+                candidates = [
+                    f for f in candidates
+                    if any(_fnmatch.fnmatch(f.name, g) for g in globs)
+                ]
+            # 跳过二进制/隐藏/大文件
+            candidates = [
+                f for f in candidates
+                if not any(part.startswith(".") for part in f.parts)
+                and f.stat().st_size < 2 * 1024 * 1024  # 2MB
+            ]
+            candidates.sort()
+
+        results: list[str] = []
+        total_matches = 0
+        truncated = False
+
+        for fpath in candidates:
+            try:
+                file_lines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                continue
+
+            rel = str(fpath.relative_to(base)) if base.is_dir() else fpath.name
+
+            for lineno, line in enumerate(file_lines, 1):
+                if not rx.search(line):
+                    continue
+
+                if total_matches >= max_results:
+                    truncated = True
+                    break
+
+                total_matches += 1
+                if context > 0:
+                    lo = max(0, lineno - 1 - context)
+                    hi = min(len(file_lines), lineno + context)
+                    block_lines = []
+                    for i in range(lo, hi):
+                        marker = ">" if i == lineno - 1 else " "
+                        block_lines.append(f"{rel}:{i+1}{marker} {file_lines[i]}")
+                    results.append("\n".join(block_lines))
+                else:
+                    results.append(f"{rel}:{lineno}: {line}")
+
+            if truncated:
+                break
+
+        if not results:
+            return ToolResult(success=True, output=f"未找到匹配 {pattern!r} 的内容")
+
+        header = f"找到 {total_matches} 处匹配（pattern={pattern!r}）"
+        if truncated:
+            header += f"  [已截断，最多显示 {max_results} 条]"
+        return ToolResult(success=True, output=header + "\n\n" + "\n".join(results))
+    except Exception as ex:
+        return ToolResult(success=False, output=None, error=str(ex))
+
+
+def tool_analyze_content(
+    state: AgentState,
+    sources: list,
+    question: str,
+    model: str = "",
+    max_tokens: int = 4000,
+) -> ToolResult:
+    """将多个文件/文本合并为一个大上下文，发起一次独立的模型调用进行深度分析。
+
+    原始内容不会进入主对话上下文，只有分析结果返回给主 agent，
+    从而在处理大型代码库或多文件关联分析时节省主上下文空间。
+
+    sources 格式（列表，支持混合）：
+      - 字符串路径：      "src/model.py"  → 自动读取文件内容
+      - {"path": "..."}  → 同上
+      - {"text": "...", "label": "描述"}  → 直接传入文本片段
+
+    question: 希望模型回答的问题或分析任务，例如：
+      "梳理这些文件中数据流向，找出可能的性能瓶颈"
+      "列出所有公开 API 接口及其参数"
+
+    model:      覆盖模型名（空 = 沿用主 agent 的模型）
+    max_tokens: 分析调用的最大输出 token（默认 4000）
+
+    返回：模型的分析文本（不含原始文件内容）。
+    """
+    import os as _os
+
+    # ── 1. 加载所有来源 ───────────────────────────────────────────────────────
+    sections: list[str] = []
+    load_errors: list[str] = []
+    total_chars = 0
+    char_limit = int(_os.environ.get("ANALYZE_CONTENT_CHAR_LIMIT", str(400_000)))  # ~100k tokens
+
+    for src in (sources or []):
+        if isinstance(src, str):
+            src = {"path": src}
+        if not isinstance(src, dict):
+            load_errors.append(f"无效来源格式：{src!r}（需字符串路径或字典）")
+            continue
+
+        if "path" in src:
+            raw_path = _os.path.expandvars(_os.path.expanduser(src["path"]))
+            p = Path(raw_path)
+            label = src.get("label") or p.name
+            if not p.exists():
+                load_errors.append(f"文件不存在：{src['path']}")
+                continue
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except Exception as e:
+                load_errors.append(f"读取失败 {src['path']}：{e}")
+                continue
+        elif "text" in src:
+            text = str(src["text"])
+            label = src.get("label", "文本片段")
+        else:
+            load_errors.append(f"来源缺少 'path' 或 'text' 字段：{src!r}")
+            continue
+
+        if total_chars + len(text) > char_limit:
+            remaining = char_limit - total_chars
+            if remaining <= 0:
+                load_errors.append(f"已达字符上限 {char_limit}，跳过：{label}")
+                continue
+            text = text[:remaining]
+            load_errors.append(f"警告：{label} 被截断至 {remaining} 字符（总上限 {char_limit}）")
+
+        total_chars += len(text)
+        sections.append(f"=== {label} ===\n{text}")
+
+    if not sections:
+        err = "没有可分析的内容。" + ("错误：" + "；".join(load_errors) if load_errors else "")
+        return ToolResult(success=False, output=None, error=err)
+
+    # ── 2. 构建分析 prompt ────────────────────────────────────────────────────
+    combined = "\n\n".join(sections)
+    warn_block = ("\n\n[加载警告]\n" + "\n".join(load_errors)) if load_errors else ""
+    user_msg = (
+        f"以下是需要分析的内容（共 {len(sections)} 个来源，{total_chars:,} 字符）：\n\n"
+        f"{combined}"
+        f"{warn_block}\n\n"
+        f"---\n请回答以下问题/完成以下任务：\n{question}"
+    )
+
+    system_msg = (
+        "你是一个专注的代码与文档分析助手。"
+        "请仔细阅读所有提供的内容，然后给出精准、结构化的分析。"
+        "分析应直接回答问题，不要重复原始内容，不要废话。"
+    )
+
+    # ── 3. 获取 LLM 后端 ──────────────────────────────────────────────────────
+    llm = state.meta.get("_llm")
+
+    if llm is None:
+        # 兜底：用环境变量重建一个 OpenAI 兼容客户端
+        try:
+            from ..core.llm import OpenAIBackend
+            llm = OpenAIBackend(
+                api_key=_os.environ.get("OPENAI_API_KEY", ""),
+                base_url=_os.environ.get("OPENAI_BASE_URL") or None,
+                model=model or _os.environ.get("LLM_MODEL", ""),
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            return ToolResult(success=False, output=None, error=f"无法初始化 LLM 客户端：{e}")
+
+    # ── 4. 独立模型调用（不污染主对话） ─────────────────────────────────────
+    try:
+        # 若需要覆盖模型或 max_tokens，临时 patch
+        orig_model = getattr(llm, "model", None)
+        orig_max = getattr(llm, "max_tokens", None)
+        if model:
+            llm.model = model
+        llm.max_tokens = max_tokens
+
+        messages = [{"role": "user", "content": user_msg}]
+        result_text = llm.complete_text(messages, system=system_msg, max_tokens=max_tokens)
+
+        # 还原
+        if model and orig_model is not None:
+            llm.model = orig_model
+        if orig_max is not None:
+            llm.max_tokens = orig_max
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=f"模型调用失败：{e}")
+
+    header = (
+        f"[analyze_content] 分析了 {len(sections)} 个来源，"
+        f"{total_chars:,} 字符，独立调用（不占主上下文）\n"
+    )
+    if load_errors:
+        header += "[加载警告] " + "；".join(load_errors) + "\n"
+    header += "─" * 40 + "\n"
+
+    return ToolResult(success=True, output=header + result_text)
+
+
+def tool_edit_file(
+    state: AgentState,
+    path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> ToolResult:
+    """对文件进行精确的字符串替换，无需重写整个文件。
+
+    精确匹配 old_string 并替换为 new_string：
+    - old_string 在文件中不存在 → 报错（检查空格、换行、缩进是否完全一致）
+    - old_string 出现多次且 replace_all=False → 报错，提示在 old_string 中加入更多上下文
+    - replace_all=True → 替换所有匹配项
+
+    适用场景：修改已有函数/代码块、替换配置值、重命名变量等，
+    相比 write_file 节省大量 token，且不会意外覆盖文件其他部分。
+    """
+    try:
+        import os as _os
+        path2 = _os.path.expandvars(_os.path.expanduser(path))
+        p = Path(path2)
+
+        if not p.exists():
+            return ToolResult(success=False, output=None, error=f"文件不存在: {path}")
+
+        content = p.read_text(encoding="utf-8")
+
+        if old_string not in content:
+            # Give a diagnostic hint: show nearby lines if old_string is a single line
+            hint = ""
+            if "\n" not in old_string.strip():
+                keyword = old_string.strip()[:30]
+                for i, line in enumerate(content.splitlines(), 1):
+                    if keyword and keyword.lower() in line.lower():
+                        hint = f"\n提示：第 {i} 行含有类似内容：{line!r}"
+                        break
+            return ToolResult(
+                success=False,
+                output=None,
+                error=(
+                    "old_string 在文件中未找到。\n"
+                    "请确认内容（空格、换行、缩进）与文件完全一致。"
+                    + hint
+                ),
+            )
+
+        count = content.count(old_string)
+        if count > 1 and not replace_all:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=(
+                    f"old_string 在文件中出现了 {count} 次，无法唯一定位。\n"
+                    f"请在 old_string 中加入更多上下文使其唯一，或传入 replace_all=true 替换全部。"
+                ),
+            )
+
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+            replaced = count
+        else:
+            new_content = content.replace(old_string, new_string, 1)
+            replaced = 1
+
+        p.write_text(new_content, encoding="utf-8")
+
+        old_lines = old_string.count("\n") + 1
+        new_lines = new_string.count("\n") + 1
+        return ToolResult(
+            success=True,
+            output=(
+                f"已修改 {p.resolve()}\n"
+                f"替换了 {replaced} 处：{old_lines} 行 → {new_lines} 行"
+            ),
+        )
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
 def tool_shell(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
     """执行 shell 命令并返回输出（危险工具，生产环境应加白名单）。
 
@@ -1049,9 +1498,83 @@ def get_standard_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="read_file",
-            description="读取文件内容并返回",
+            description="读取文件完整内容并返回。文件较大时优先用 file_outline + read_file_lines 组合代替",
             args_schema={"path": "文件路径（字符串）"},
             fn=tool_read_file,
+        ),
+        ToolSpec(
+            name="read_file_lines",
+            description=(
+                "读取文件的指定行范围，带行号前缀。"
+                "适合大文件的分段阅读：先用 file_outline 定位目标代码块的行号，再用本工具只读那一段。"
+            ),
+            args_schema={
+                "path": "文件路径",
+                "start_line": "起始行号（从 1 开始，默认 1）",
+                "end_line": "结束行号（含，默认 0 = 读到末尾）",
+            },
+            fn=tool_read_file_lines,
+        ),
+        ToolSpec(
+            name="file_outline",
+            description=(
+                "提取文件的类/函数/方法结构概要及各自的行号范围，无需读完整文件。"
+                "Python 文件用 AST 精确解析；其他语言用正则识别常见声明。"
+                "用法：先调本工具定位目标代码块在第几行，再用 read_file_lines 只读那段内容。"
+            ),
+            args_schema={"path": "文件路径（字符串）"},
+            fn=tool_file_outline,
+        ),
+        ToolSpec(
+            name="grep_files",
+            description=(
+                "在文件或目录中搜索正则表达式，返回匹配行及上下文，用于跨文件追踪符号引用、定位定义位置。"
+                "典型用法：grep_files('class Trainer', path='src/', glob='*.py') 找类定义；"
+                "grep_files('import utils', glob='*.py') 找所有导入点。"
+            ),
+            args_schema={
+                "pattern": "正则表达式（如 'def train' 或 'import numpy'）",
+                "path": "搜索目录或文件（默认当前目录 '.'）",
+                "glob": "文件名过滤（如 '*.py'、'*.{ts,js}'，空 = 所有小于 2MB 的文本文件）",
+                "context": "每处匹配前后各保留几行（默认 0）",
+                "max_results": "最多返回条数（默认 50）",
+                "ignore_case": "是否忽略大小写（默认 false）",
+            },
+            fn=tool_grep_files,
+        ),
+        ToolSpec(
+            name="analyze_content",
+            description=(
+                "将多个文件/文本合并为大上下文，发起一次【独立】模型调用进行深度分析，"
+                "分析结果返回主 agent，原始内容不占用主对话上下文。"
+                "适合：多文件联合阅读、大文件完整理解、跨模块依赖梳理等需要全局视野的任务。"
+            ),
+            args_schema={
+                "sources": (
+                    "来源列表，每项可为：文件路径字符串 / {\"path\":\"...\"} / "
+                    "{\"text\":\"...\",\"label\":\"描述\"}"
+                ),
+                "question": "要回答的问题或分析任务描述",
+                "model": "（可选）覆盖模型名，空 = 沿用主 agent 模型",
+                "max_tokens": "（可选）分析调用最大输出 token，默认 4000",
+            },
+            fn=tool_analyze_content,
+        ),
+        ToolSpec(
+            name="edit_file",
+            description=(
+                "对文件进行精确的字符串替换，无需重写整个文件。"
+                "先用 read_file 读取文件，找到要修改的确切内容，再调用本工具替换。"
+                "比 write_file 节省大量 token，且不会误改文件其他部分。"
+                "old_string 必须与文件内容完全一致（含空格、缩进、换行）。"
+            ),
+            args_schema={
+                "path": "文件路径（字符串）",
+                "old_string": "要被替换的原始字符串（必须在文件中唯一存在，或配合 replace_all 使用）",
+                "new_string": "替换后的新字符串",
+                "replace_all": "（可选，默认 false）true = 替换文件中所有匹配项；false = 仅替换第一处（若出现多次则报错）",
+            },
+            fn=tool_edit_file,
         ),
         ToolSpec(
             name="set_goal",

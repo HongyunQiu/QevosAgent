@@ -370,6 +370,7 @@ def run(
             raw_goal = goal.strip()
         state.meta["_task_desc"] = raw_goal
         state.meta["scratchpad"] = f"任务描述:\n{raw_goal}\n"
+        state.meta["_llm"] = llm  # 供工具（如 analyze_content）发起独立模型调用
         _append_short_term(
             state,
             {
@@ -390,6 +391,7 @@ def run(
                     state.long_term.append(item)
         state.meta.pop("paused", None)
         state.meta.pop("awaiting_input", None)
+        state.meta["_llm"] = llm  # 恢复运行时也更新引用
         _checkpoint_state(state)
 
     try:
@@ -641,7 +643,7 @@ def run(
 
                 if is_json_parse_error and hasattr(llm, "max_tokens"):
                     retry_n = int(state.meta.get("json_parse_retry", 0))
-                    cap = int(os.environ.get("LLM_MAX_TOKENS_CAP", "8192"))
+                    cap = int(os.environ.get("LLM_MAX_TOKENS_CAP", "32768"))
                     old = int(getattr(llm, "max_tokens", 0) or 0)
                     if retry_n < retry_max and old > 0 and old < cap:
                         new = min(cap, max(old + 1, old * 2))
