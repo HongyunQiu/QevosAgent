@@ -834,6 +834,11 @@ def tool_shell(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
     if os.name == "nt":
         # Give the shell its own process group so taskkill /T can reach all children.
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        # Give the shell its own session/process group so that os.killpg() on
+        # timeout only kills the subprocess tree — NOT the parent node server.js
+        # (which would share the same process group if we don't do this).
+        kwargs["start_new_session"] = True
 
     try:
         proc = subprocess.Popen(command, **kwargs)
