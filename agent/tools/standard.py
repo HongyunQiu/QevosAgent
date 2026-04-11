@@ -1191,6 +1191,228 @@ def tool_delete_tool(state: AgentState, name: str, confirm: bool = False) -> Too
 
 # ── 工具集构建器 ──────────────────────────────────────────────────────────────
 
+# ── 工具文件（独立持久化） ────────────────────────────────────────────────────
+
+def tool_save_tools(state: AgentState, path: str) -> ToolResult:
+    """将进化工具及修复元数据保存到独立 JSON 文件（与记忆文件分离）。"""
+    try:
+        evolved_tools = state.meta.get("evolved_tools", {})
+        valid_tools: dict = {}
+        invalid_tools: dict = {}
+        for name, rec in evolved_tools.items():
+            python_code = rec.get("python_code", "") if isinstance(rec, dict) else ""
+            errors = _validate_evolved_tool_python_code(python_code) if python_code else ["缺少 python_code"]
+            if errors:
+                invalid_tools[name] = {"errors": errors, "recipe": rec}
+            else:
+                valid_tools[name] = rec
+
+        payload = {
+            "version": 1,
+            "tools": valid_tools,
+            "repair_candidates": state.meta.get("tool_repair_candidates", {}),
+            "repair_failures": state.meta.get("tool_repair_failures", []),
+            "repair_history": state.meta.get("tool_repair_history", []),
+        }
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return ToolResult(
+            success=True,
+            output={
+                "path": str(p.resolve()),
+                "saved": len(valid_tools),
+                "skipped_invalid": len(invalid_tools),
+            },
+        )
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+def tool_load_tools(state: AgentState, path: str, overwrite: bool = False) -> ToolResult:
+    """从独立 JSON 工具文件加载进化工具，按配方注册到 state.tools。"""
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return ToolResult(success=False, output=None, error="工具文件必须是 JSON 对象")
+
+        tools_dict = payload.get("tools", {})
+        repair_candidates = payload.get("repair_candidates", {})
+        if not isinstance(tools_dict, dict):
+            return ToolResult(success=False, output=None, error="tools 字段必须是字典")
+
+        state.meta["evolved_tools"] = tools_dict
+        state.meta.setdefault("invalid_evolved_tools", {})
+        state.meta["tool_repair_candidates"] = repair_candidates if isinstance(repair_candidates, dict) else {}
+        state.meta["tool_repair_failures"] = list(payload.get("repair_failures", []))
+        state.meta["tool_repair_history"] = list(payload.get("repair_history", []))
+
+        restored = skipped = invalid = 0
+        for name, rec in tools_dict.items():
+            if not overwrite and name in state.tools:
+                skipped += 1
+                continue
+            if not isinstance(rec, dict):
+                invalid += 1
+                continue
+            python_code = rec.get("python_code", "")
+            description = rec.get("description", "")
+            args_schema = rec.get("args_schema", {})
+
+            if not isinstance(python_code, str) or not python_code.strip():
+                invalid += 1
+                state.meta["invalid_evolved_tools"][name] = {"errors": ["缺少 python_code"], "recipe": rec}
+                continue
+
+            validation_errors = _validate_evolved_tool_python_code(python_code)
+            if validation_errors:
+                invalid += 1
+                state.meta["invalid_evolved_tools"][name] = {"errors": validation_errors, "recipe": rec}
+                continue
+
+            spec, errors = _materialize_tool_recipe(name, description, args_schema, python_code)
+            if spec is None:
+                invalid += 1
+                state.meta["invalid_evolved_tools"][name] = {"errors": errors, "recipe": rec}
+                continue
+
+            state.tools[name] = spec
+            restored += 1
+
+        return ToolResult(
+            success=True,
+            output={"restored": restored, "skipped": skipped, "invalid": invalid},
+        )
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+# ── 细粒度记忆（episodic JSONL） ──────────────────────────────────────────────
+
+def _episodic_ts() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def tool_append_episodic(
+    state: AgentState,
+    path: str,
+    summary: str,
+    tags: str = "",
+) -> ToolResult:
+    """在细粒度记忆文件（JSONL）中追加一条任务执行记录。
+
+    每次任务结束后调用，写入一段话概括：关键操作、重要发现、最终结果。
+    - summary: 一段话，包含关键点和便于日后检索的信息（建议 100–300 字）。
+    - tags: 逗号分隔的关键词，便于检索（如 "ssh,磁盘,linux,运维"）。
+    目标（goal）和时间戳自动从 state 中取得，无需手动填写。
+    """
+    try:
+        if not summary or not summary.strip():
+            return ToolResult(success=False, output=None, error="summary 不能为空")
+
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if isinstance(tags, str) else list(tags)
+
+        entry = {
+            "ts": _episodic_ts(),
+            "goal": (state.goal or "")[:200],
+            "summary": summary.strip(),
+            "tags": tag_list,
+        }
+
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        return ToolResult(success=True, output={"appended": True, "path": str(p.resolve())})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+def tool_search_episodic(
+    state: AgentState,
+    path: str,
+    keyword: str = "",
+    limit: int = 20,
+) -> ToolResult:
+    """读取细粒度记忆文件，按关键词过滤并返回最近 N 条记录。
+
+    - keyword: 可选，在 goal/summary/tags 三个字段中做子串匹配（空则返回最近 N 条）。
+    - limit: 最多返回条数，默认 20。
+    """
+    try:
+        p = Path(path)
+        if not p.exists():
+            return ToolResult(success=True, output={"entries": [], "total": 0})
+
+        entries: list[dict] = []
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+        if keyword:
+            kw = keyword.lower()
+            entries = [
+                e for e in entries
+                if kw in e.get("goal", "").lower()
+                or kw in e.get("summary", "").lower()
+                or any(kw in t.lower() for t in e.get("tags", []))
+            ]
+
+        total = len(entries)
+        result = entries[-limit:] if total > limit else entries
+        return ToolResult(success=True, output={"entries": result, "total": total})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+# ── 概念记忆（concept Markdown） ──────────────────────────────────────────────
+
+def tool_save_concept(state: AgentState, path: str, content: str) -> ToolResult:
+    """将概念记忆写入 Markdown 文件，并同步到当前 state（立即注入 system prompt）。
+
+    content 应按工作方向/研究方向分章节叙述，例如：
+        ## 工具开发与维护
+        （叙述性总结…）
+
+        ## 远程系统运维
+        （叙述性总结…）
+
+    每次需要更新概念记忆时，先用 read_concept 读取旧内容，修改后整体覆盖写入。
+    """
+    try:
+        if not content or not content.strip():
+            return ToolResult(success=False, output=None, error="content 不能为空")
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content.strip() + "\n", encoding="utf-8")
+        state.meta["concept_memory"] = content.strip()
+        return ToolResult(success=True, output={"path": str(p.resolve()), "chars": len(content)})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+def tool_read_concept(state: AgentState, path: str) -> ToolResult:
+    """读取概念记忆文件并加载到 state，使其注入后续的 system prompt。"""
+    try:
+        p = Path(path)
+        if not p.exists():
+            return ToolResult(success=True, output={"content": "", "exists": False})
+        content = p.read_text(encoding="utf-8").strip()
+        state.meta["concept_memory"] = content
+        return ToolResult(success=True, output={"content": content, "chars": len(content)})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+# ────────────────────────────────────────────────────────────────────────────
 def tool_save_snapshot_meta(state: AgentState, path: str) -> ToolResult:
     """Persist long_term + evolved_tools recipes to a JSON snapshot."""
     try:
@@ -1673,15 +1895,87 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             args_schema={"question": "要向人类询问的问题（字符串）"},
             fn=lambda state, question: ToolResult(success=True, output={"question": question}),
         ),
+        # ── 新拆分持久化工具 ──────────────────────────────────────────────────
+        ToolSpec(
+            name="save_tools",
+            description=(
+                "将进化工具（evolved_tools）及修复元数据保存到独立 JSON 文件。"
+                "与记忆文件解耦，工具代码单独管理。"
+            ),
+            args_schema={"path": "工具文件路径（如 ./agent_tools.json）"},
+            fn=tool_save_tools,
+        ),
+        ToolSpec(
+            name="load_tools",
+            description=(
+                "从独立 JSON 工具文件加载进化工具并注册到 state.tools。"
+                "不涉及记忆，仅恢复工具。"
+            ),
+            args_schema={
+                "path": "工具文件路径（如 ./agent_tools.json）",
+                "overwrite": "是否覆盖已有同名工具（bool，默认 false）",
+            },
+            fn=tool_load_tools,
+        ),
+        ToolSpec(
+            name="append_episodic",
+            description=(
+                "向细粒度记忆文件（JSONL）追加一条任务执行记录。"
+                "在任务结束时调用，写入一段话概括关键操作、重要发现和最终结果。"
+                "goal 和时间戳自动填写，只需提供 summary 和 tags。"
+            ),
+            args_schema={
+                "path": "细粒度记忆文件路径（如 ./memory_episodic.jsonl）",
+                "summary": "一段话概括（100-300字），包含关键发现、操作结果、重要参数等便于检索的信息",
+                "tags": "逗号分隔的关键词，便于日后检索（如 'ssh,磁盘,linux,运维'）",
+            },
+            fn=tool_append_episodic,
+        ),
+        ToolSpec(
+            name="search_episodic",
+            description=(
+                "读取细粒度记忆文件，按关键词过滤并返回最近 N 条记录。"
+                "在开始新任务前调用，检索与当前目标相关的历史经验。"
+            ),
+            args_schema={
+                "path": "细粒度记忆文件路径",
+                "keyword": "（可选）检索关键词，在 goal/summary/tags 中做子串匹配，空则返回最近 N 条",
+                "limit": "（可选）最多返回条数，默认 20",
+            },
+            fn=tool_search_episodic,
+        ),
+        ToolSpec(
+            name="save_concept",
+            description=(
+                "将概念记忆写入 Markdown 文件，并同步注入当前 system prompt。"
+                "概念记忆按工作方向/研究方向分章节叙述，是对细粒度记忆的二次提炼。"
+                "更新时先用 read_concept 读取旧内容，修改后整体覆盖写入。"
+            ),
+            args_schema={
+                "path": "概念记忆文件路径（如 ./memory_concept.md）",
+                "content": "完整 Markdown 内容，按工作方向分 ## 章节叙述",
+            },
+            fn=tool_save_concept,
+        ),
+        ToolSpec(
+            name="read_concept",
+            description=(
+                "读取概念记忆文件并加载到 state，使其注入后续 system prompt。"
+                "在任务开始时调用，获取当前的领域知识概览。"
+            ),
+            args_schema={"path": "概念记忆文件路径（如 ./memory_concept.md）"},
+            fn=tool_read_concept,
+        ),
+        # ── 旧版快照（保留向后兼容） ──────────────────────────────────────────
         ToolSpec(
             name="save_snapshot_meta",
-            description="保存长期记忆(state.long_term)和进化工具配方(state.meta['evolved_tools'])到一个 JSON 快照文件",
+            description="【旧版】保存长期记忆(state.long_term)和进化工具配方到单一 JSON 快照文件（建议改用 save_tools + append_episodic）",
             args_schema={"path": "快照文件路径（如 ./agent_snapshot_meta.json）"},
             fn=tool_save_snapshot_meta,
         ),
         ToolSpec(
             name="load_snapshot_meta",
-            description="从 JSON 快照文件恢复长期记忆，并按配方把进化工具恢复到 state.tools 里（离线恢复，不依赖 LLM）",
+            description="【旧版】从 JSON 快照文件恢复长期记忆和进化工具（建议改用 load_tools + search_episodic）",
             args_schema={
                 "path": "快照文件路径",
                 "overwrite": "是否覆盖同名已有工具（bool，默认 false）",

@@ -176,7 +176,12 @@ class AnthropicBackend(LLMBackend):
 
 # ── System Prompt 构建器 ───────────────────────────────────────────────────────
 
-def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratchpad: str = "") -> str:
+def build_system_prompt(
+    tools: dict[str, ToolSpec],
+    long_term: list[str],
+    scratchpad: str = "",
+    concept_memory: str = "",
+) -> str:
     """
     动态构建 system prompt。
     工具集变化（进化后）时，prompt 会自动更新——这是工具进化能生效的关键。
@@ -193,9 +198,16 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratc
 
     tools_section = "\n".join(tool_docs) if tool_docs else "（暂无可用工具）"
 
+    concept_section = ""
+    if concept_memory and concept_memory.strip():
+        concept_section = (
+            "\n\n## 概念记忆（工作方向概览）\n"
+            + concept_memory.strip()
+        )
+
     memory_section = ""
     if long_term:
-        memory_section = "\n\n## 你的长期记忆（经验积累）\n" + "\n".join(
+        memory_section = "\n\n## 细粒度记忆（近期任务经验）\n" + "\n".join(
             f"- {m}" for m in long_term
         )
 
@@ -221,6 +233,7 @@ def build_system_prompt(tools: dict[str, ToolSpec], long_term: list[str], scratc
 
 ## 可用工具
 {tools_section}
+{concept_section}
 {memory_section}
 {scratchpad_section}
 
