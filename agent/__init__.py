@@ -42,6 +42,8 @@ class Agent:
         long_term: list = None,
         max_iterations: int = 30,
         verbose: bool = True,
+        concept_memory: str = "",
+        initial_meta: dict = None,
     ):
         if backend == "openai":
             # Allow OpenAI-compatible local servers (vLLM etc.) via env var.
@@ -69,6 +71,8 @@ class Agent:
         self.long_term = list(long_term or [])
         self.max_iterations = max_iterations
         self.hooks = console_hooks() if verbose else AgentHooks()
+        self.concept_memory = concept_memory or ""
+        self.initial_meta = dict(initial_meta or {})
 
     def run(self, goal: str, state: AgentState = None) -> AgentState:
         """运行智能体直到目标完成或超过最大迭代次数。
@@ -84,11 +88,15 @@ class Agent:
             max_iterations=self.max_iterations,
             hooks=self.hooks,
             state=state,
+            concept_memory=self.concept_memory,
+            initial_meta=self.initial_meta,
         )
         # 把这次运行的长期记忆持久化回 Agent 实例（跨次运行积累经验）
         self.long_term = state.long_term
         # 工具集也持久化（进化后的工具在下次运行时仍可用）
         self.tools = state.tools
+        # 同步概念记忆（LLM 可能调用 save_concept 更新了它）
+        self.concept_memory = state.meta.get("concept_memory", self.concept_memory)
         return state
 
     def add_tool(self, spec: ToolSpec):

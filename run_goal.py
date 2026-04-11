@@ -7,7 +7,9 @@ from pathlib import Path
 from agent import Agent
 from agent.runtime.persistence import RunPersistence
 
-DEFAULT_SNAPSHOT = "./agent_snapshot_meta.json"
+DEFAULT_TOOLS    = "./agent_tools.json"
+DEFAULT_EPISODIC = "./memory_episodic.jsonl"
+DEFAULT_CONCEPT  = "./memory_concept.md"
 DEFAULT_RUNS_DIR = "./runs"
 
 
@@ -201,32 +203,67 @@ def main():
         print("No goal provided.")
         sys.exit(2)
 
-    snapshot_path = os.environ.get("AGENT_SNAPSHOT", DEFAULT_SNAPSHOT)
-    snapshot_exists = Path(snapshot_path).exists()
+    tools_path    = Path(os.environ.get("AGENT_TOOLS",    DEFAULT_TOOLS))
+    episodic_path = Path(os.environ.get("AGENT_EPISODIC", DEFAULT_EPISODIC))
+    concept_path  = Path(os.environ.get("AGENT_CONCEPT",  DEFAULT_CONCEPT))
 
-    # Pre-load long_term from snapshot so history survives even if LLM skips load_snapshot_meta.
-    preloaded_long_term: list[str] = []
-    if snapshot_exists:
-        try:
-            snap_data = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
-            if isinstance(snap_data, dict) and isinstance(snap_data.get("long_term"), list):
-                preloaded_long_term = [x for x in snap_data["long_term"] if isinstance(x, str)]
-        except Exception:
-            pass
+    from agent.tools.standard import get_standard_tools, tool_load_tools, tool_search_episodic
+    from agent.core.types import AgentState as _AgentState
 
-    # Scratchpad preview printing disabled: scratchpad is often stale/low-signal and noisy in logs.
-
-    # Prefix instruction: load snapshot when available; otherwise proceed without it.
-    if snapshot_exists:
-        prefix = (
-            f"你必须先调用 load_snapshot_meta(path='{snapshot_path}') 加载快照，恢复长期记忆与工具。\n"
-            f"注意：加载快照只是准备步骤；完成后必须继续完成下面的用户目标，绝不能在此提前 done。\n\n"
-        )
+    # ── (1) 预加载工具（Python 层，不依赖 LLM） ────────────────────────────────
+    _preload_state = _AgentState(goal="__preload__", tools=get_standard_tools())
+    if tools_path.exists():
+        _r = tool_load_tools(_preload_state, str(tools_path))
+        if _r.success:
+            print(f"[run_goal] tools loaded: {_r.output}")
+        else:
+            print(f"[run_goal] tools load warning: {_r.error}")
     else:
-        prefix = (
-            f"提示：快照文件不存在({snapshot_path})。请直接继续完成下面的用户目标；"
-            f"如确实需要跨次记忆/工具，可在结束时保存快照。\n\n"
-        )
+        print(f"[run_goal] no tools file at {tools_path}, starting fresh")
+
+    # ── (2) 预加载细粒度记忆（最近 20 条 → 格式化为字符串） ────────────────────
+    preloaded_long_term: list[str] = []
+    if episodic_path.exists():
+        _r = tool_search_episodic(_preload_state, str(episodic_path), limit=20)
+        if _r.success:
+            for _e in _r.output.get("entries", []):
+                _date    = (_e.get("ts") or "")[:10]
+                _goal_s  = (_e.get("goal") or "")[:60]
+                _summary = (_e.get("summary") or "")
+                _tags    = ",".join(_e.get("tags") or [])
+                _line    = f"[{_date}] {_goal_s} ── {_summary}"
+                if _tags:
+                    _line += f"  (tags:{_tags})"
+                preloaded_long_term.append(_line)
+            print(f"[run_goal] episodic memory: {len(preloaded_long_term)} entries loaded")
+    else:
+        print(f"[run_goal] no episodic file at {episodic_path}, starting fresh")
+
+    # ── (3) 预加载概念记忆 ────────────────────────────────────────────────────
+    preloaded_concept = ""
+    if concept_path.exists():
+        try:
+            preloaded_concept = concept_path.read_text(encoding="utf-8").strip()
+            print(f"[run_goal] concept memory: {len(preloaded_concept)} chars loaded")
+        except Exception as _ce:
+            print(f"[run_goal] concept memory load warning: {_ce}")
+    else:
+        print(f"[run_goal] no concept file at {concept_path}, starting fresh")
+
+    # ── 构建 initial_meta（传递工具配方和修复元数据到 run state） ──────────────
+    _META_KEYS = ("evolved_tools", "tool_repair_candidates", "tool_repair_failures", "tool_repair_history")
+    initial_meta = {k: v for k, v in _preload_state.meta.items() if k in _META_KEYS}
+    if preloaded_concept:
+        initial_meta["concept_memory"] = preloaded_concept
+
+    # ── 目标前缀 ──────────────────────────────────────────────────────────────
+    # 工具和记忆已由 Python 层预加载，无需 LLM 主动调用恢复命令。
+    # 结束时告知 LLM 应调用 append_episodic 记录本次摘要。
+    prefix = (
+        "工具、细粒度记忆和概念记忆已自动预加载，请直接完成任务。\n"
+        "任务结束前请调用 append_episodic 记录本次执行摘要（summary + tags），"
+        "如概念记忆需要更新则调用 save_concept。\n\n"
+    )
 
     # Load repo conventions (OpenClaw-style) if present.
     # Keep it short; it's a hard constraint but should not bloat prompts.
@@ -257,6 +294,10 @@ def main():
         max_iterations=int(os.environ.get("MAX_ITERS", "100")),
         verbose=True,
         long_term=preloaded_long_term,
+        extra_tools={k: v for k, v in _preload_state.tools.items()
+                     if k not in get_standard_tools()},
+        concept_memory=preloaded_concept,
+        initial_meta=initial_meta,
     )
 
     # ── 用户干预处理器：后台线程读取 stdin，"/" 开头为命令，其余为 ask_user 回答 ──
@@ -390,18 +431,17 @@ def main():
             outcome = "done"
         state.persistence.finish(state, outcome=outcome, error=None if outcome != "failed" else "timeout")
 
-    # Optional: persist snapshot after run (so long_term is not lost between processes)
+    # Auto-save tools on exit（Python 层直接调用，不依赖 LLM）
     if state is not None and os.environ.get("AUTO_SAVE_SNAPSHOT_ON_EXIT", "0") == "1":
-        snap = os.environ.get("AGENT_SNAPSHOT", DEFAULT_SNAPSHOT)
+        from agent.tools.standard import tool_save_tools
         try:
-            if "save_snapshot_meta" in state.tools:
-                # call tool directly (offline) to persist long_term + evolved_tools + scratchpad
-                state.tools["save_snapshot_meta"].fn(state=state, path=snap)
-                print(f"\n[run_goal] snapshot saved: {snap}")
+            _r = tool_save_tools(state, str(tools_path))
+            if _r.success:
+                print(f"\n[run_goal] tools saved: {_r.output}")
             else:
-                print("\n[run_goal] save_snapshot_meta tool not available; snapshot not saved")
-        except Exception as e:
-            print(f"\n[run_goal] snapshot save failed: {e}")
+                print(f"\n[run_goal] tools save warning: {_r.error}")
+        except Exception as _e:
+            print(f"\n[run_goal] tools save failed: {_e}")
 
     print("\n=== RUN_GOAL RESULT ===")
     if state is not None:

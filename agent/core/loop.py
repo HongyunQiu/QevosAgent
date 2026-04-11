@@ -465,17 +465,21 @@ def run(
     max_iterations: int = 30,
     hooks: Optional[AgentHooks] = None,
     state: Optional[AgentState] = None,
+    concept_memory: str = "",
+    initial_meta: Optional[dict] = None,
 ) -> AgentState:
     """
     启动智能体主循环。
 
     参数:
-        goal          - 自然语言描述的目标
-        llm           - LLM 后端实例
-        tools         - 初始工具集 {name: ToolSpec}
-        long_term     - 预置的长期记忆（可选，用于跨次运行恢复经验）
+        goal           - 自然语言描述的目标
+        llm            - LLM 后端实例
+        tools          - 初始工具集 {name: ToolSpec}
+        long_term      - 预置的长期记忆（可选，用于跨次运行恢复经验）
         max_iterations - 安全阀，防止无限循环
-        hooks         - 观测回调（不影响核心逻辑）
+        hooks          - 观测回调（不影响核心逻辑）
+        concept_memory - 概念记忆字符串（Markdown），注入 system prompt 的概念记忆章节
+        initial_meta   - 初始 meta 字典（如 evolved_tools 等），在新 state 创建后合并
 
     返回:
         最终的 AgentState（包含完整历史，可用于持久化）
@@ -490,6 +494,13 @@ def run(
             tools=dict(tools),  # 复制一份，允许运行时修改（进化）
             long_term=list(long_term or []),
         )
+        # 合并 initial_meta（evolved_tools 配方、repair 数据等），不覆盖已存在的键
+        if initial_meta:
+            for k, v in initial_meta.items():
+                state.meta.setdefault(k, v)
+        # 注入概念记忆（优先使用 initial_meta 中的值，其次用参数）
+        if concept_memory and not state.meta.get("concept_memory"):
+            state.meta["concept_memory"] = concept_memory
         try:
             import os
 

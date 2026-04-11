@@ -1184,7 +1184,7 @@ def tool_delete_tool(state: AgentState, name: str, confirm: bool = False) -> Too
         success=True,
         output={
             "deleted": name,
-            "tip": "工具已删除。如需持久化此变更，请调用 save_snapshot_meta。",
+            "tip": "工具已删除。如需持久化此变更，请调用 save_tools。",
         },
     )
 
@@ -1408,177 +1408,6 @@ def tool_read_concept(state: AgentState, path: str) -> ToolResult:
         content = p.read_text(encoding="utf-8").strip()
         state.meta["concept_memory"] = content
         return ToolResult(success=True, output={"content": content, "chars": len(content)})
-    except Exception as e:
-        return ToolResult(success=False, output=None, error=str(e))
-
-
-# ────────────────────────────────────────────────────────────────────────────
-def tool_save_snapshot_meta(state: AgentState, path: str) -> ToolResult:
-    """Persist long_term + evolved_tools recipes to a JSON snapshot."""
-    try:
-        evolved_tools = state.meta.get("evolved_tools", {})
-        valid_evolved_tools = {}
-        invalid_evolved_tools = {}
-        for name, rec in evolved_tools.items():
-            python_code = rec.get("python_code", "") if isinstance(rec, dict) else ""
-            errors = _validate_evolved_tool_python_code(python_code) if python_code else ["缺少 python_code"]
-            if errors:
-                invalid_evolved_tools[name] = {
-                    "errors": errors,
-                    "recipe": rec,
-                }
-                continue
-            valid_evolved_tools[name] = rec
-
-        if invalid_evolved_tools:
-            state.meta["invalid_evolved_tools"] = invalid_evolved_tools
-
-        # Merge with existing snapshot's long_term to avoid losing history from previous runs.
-        p = Path(path)
-        existing_long_term: list[str] = []
-        if p.exists():
-            try:
-                existing = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(existing, dict) and isinstance(existing.get("long_term"), list):
-                    existing_long_term = [x for x in existing["long_term"] if isinstance(x, str)]
-            except Exception:
-                pass
-
-        # Deduplicated merge: preserve order, existing entries first, then new ones not already present.
-        seen: set[str] = set(existing_long_term)
-        merged_long_term = list(existing_long_term)
-        for entry in state.long_term:
-            if isinstance(entry, str) and entry not in seen:
-                seen.add(entry)
-                merged_long_term.append(entry)
-
-        payload = {
-            "long_term": merged_long_term,
-            "evolved_tools": valid_evolved_tools,
-            "tool_repair_candidates": state.meta.get("tool_repair_candidates", {}),
-            "tool_repair_failures": state.meta.get("tool_repair_failures", []),
-            "tool_repair_history": state.meta.get("tool_repair_history", []),
-            "scratchpad": state.meta.get("scratchpad", ""),
-        }
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return ToolResult(
-            success=True,
-            output={
-                "path": str(p.resolve()),
-                "saved_tools": len(valid_evolved_tools),
-                "skipped_invalid_tools": len(invalid_evolved_tools),
-                "saved_repair_candidates": len(payload["tool_repair_candidates"]),
-            },
-        )
-    except Exception as e:
-        return ToolResult(success=False, output=None, error=str(e))
-
-
-def tool_load_snapshot_meta(state: AgentState, path: str, overwrite: bool = False) -> ToolResult:
-    """Load snapshot and re-register evolved tools into state.tools.
-
-    This is an offline restore mechanism that does NOT call the LLM.
-    """
-    try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return ToolResult(success=False, output=None, error="snapshot must be a JSON object")
-
-        long_term = payload.get("long_term", [])
-        evolved = payload.get("evolved_tools", {})
-        repair_candidates = payload.get("tool_repair_candidates", {})
-        # scratchpad is intentionally NOT restored by default to avoid stale/noisy runs.
-        # If you want scratchpad persistence, re-enable restoration here.
-        if not isinstance(long_term, list) or not all(isinstance(x, str) for x in long_term):
-            return ToolResult(success=False, output=None, error="snapshot.long_term must be list[str]")
-        if not isinstance(evolved, dict):
-            return ToolResult(success=False, output=None, error="snapshot.evolved_tools must be dict")
-        if not isinstance(repair_candidates, dict):
-            return ToolResult(success=False, output=None, error="snapshot.tool_repair_candidates must be dict")
-
-        state.long_term = list(long_term)
-        state.meta["evolved_tools"] = evolved
-        state.meta.setdefault("invalid_evolved_tools", {})
-        restored_candidates = {}
-        restored_candidate_failures = list(payload.get("tool_repair_failures", []))
-        for cand_name, cand in repair_candidates.items():
-            if not isinstance(cand, dict):
-                restored_candidate_failures.append({
-                    "name": cand_name,
-                    "errors": ["候选修复元数据不是对象"],
-                })
-                continue
-            spec, errors = _materialize_tool_recipe(
-                cand.get("name", cand_name),
-                cand.get("description", ""),
-                cand.get("args_schema", {}),
-                cand.get("python_code", ""),
-            )
-            if spec is None:
-                restored_candidate_failures.append({
-                    "name": cand_name,
-                    "errors": errors,
-                })
-                continue
-            restored = dict(cand)
-            restored["validation"] = {"ok": True, "errors": []}
-            restored_candidates[cand_name] = restored
-
-        state.meta["tool_repair_candidates"] = restored_candidates
-        state.meta["tool_repair_failures"] = restored_candidate_failures
-        state.meta["tool_repair_history"] = payload.get("tool_repair_history", [])
-
-        restored = 0
-        skipped = 0
-        invalid = 0
-        for name, rec in evolved.items():
-            if not overwrite and name in state.tools:
-                skipped += 1
-                continue
-            # rec: {name, description, args_schema, python_code}
-            python_code = rec.get("python_code", "")
-            description = rec.get("description", "")
-            args_schema = rec.get("args_schema", {})
-            if not isinstance(python_code, str) or not python_code.strip():
-                invalid += 1
-                state.meta["invalid_evolved_tools"][name] = {
-                    "errors": ["缺少 python_code"],
-                    "recipe": rec,
-                }
-                continue
-
-            validation_errors = _validate_evolved_tool_python_code(python_code)
-            if validation_errors:
-                invalid += 1
-                state.meta["invalid_evolved_tools"][name] = {
-                    "errors": validation_errors,
-                    "recipe": rec,
-                }
-                continue
-
-            spec, errors = _materialize_tool_recipe(name, description, args_schema, python_code)
-            if spec is None:
-                invalid += 1
-                state.meta["invalid_evolved_tools"][name] = {
-                    "errors": errors,
-                    "recipe": rec,
-                }
-                continue
-
-            state.tools[name] = spec
-            restored += 1
-
-        return ToolResult(
-            success=True,
-            output={
-                "restored": restored,
-                "skipped": skipped,
-                "invalid": invalid,
-                "repair_candidates": len(repair_candidates),
-                "long_term": len(state.long_term),
-            },
-        )
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
@@ -1965,22 +1794,6 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             ),
             args_schema={"path": "概念记忆文件路径（如 ./memory_concept.md）"},
             fn=tool_read_concept,
-        ),
-        # ── 旧版快照（保留向后兼容） ──────────────────────────────────────────
-        ToolSpec(
-            name="save_snapshot_meta",
-            description="【旧版】保存长期记忆(state.long_term)和进化工具配方到单一 JSON 快照文件（建议改用 save_tools + append_episodic）",
-            args_schema={"path": "快照文件路径（如 ./agent_snapshot_meta.json）"},
-            fn=tool_save_snapshot_meta,
-        ),
-        ToolSpec(
-            name="load_snapshot_meta",
-            description="【旧版】从 JSON 快照文件恢复长期记忆和进化工具（建议改用 load_tools + search_episodic）",
-            args_schema={
-                "path": "快照文件路径",
-                "overwrite": "是否覆盖同名已有工具（bool，默认 false）",
-            },
-            fn=tool_load_snapshot_meta,
         ),
         ToolSpec(
             name="validate_tool_recipe",
