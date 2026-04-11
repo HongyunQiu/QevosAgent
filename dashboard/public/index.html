@@ -705,7 +705,7 @@ input, textarea { font-family: inherit; font-size: inherit; }
         <button class="icon-btn" id="agentsMdCancelBtn" style="display:none" onclick="cancelAgentsMdEdit()">✕ Cancel</button>
       </div>
       <div class="agents-body">
-        <pre class="agents-view" id="agentsMdView"></pre>
+        <div class="md-render agents-view" id="agentsMdView"></div>
         <textarea class="agents-edit" id="agentsMdEdit" style="display:none" spellcheck="false"></textarea>
       </div>
     </div>
@@ -1469,7 +1469,7 @@ async function loadAgentsMd() {
   try {
     const data = await fetch('/api/agents-md').then(r => r.json());
     gAgentsMdOrig = data.content || '';
-    document.getElementById('agentsMdView').textContent = gAgentsMdOrig;
+    document.getElementById('agentsMdView').innerHTML = typeof marked !== 'undefined' ? marked.parse(gAgentsMdOrig) : `<pre>${gAgentsMdOrig}</pre>`;
     document.getElementById('agentsMdHint').textContent = (gAgentsMdOrig.length / 1024).toFixed(1) + ' KB';
   } catch (e) {
     document.getElementById('agentsMdView').textContent = 'Error loading AGENTS.md: ' + e.message;
@@ -1505,7 +1505,7 @@ async function saveAgentsMd() {
     const data = await res.json();
     if (res.ok && data.ok) {
       gAgentsMdOrig = content;
-      document.getElementById('agentsMdView').textContent = content;
+      document.getElementById('agentsMdView').innerHTML = typeof marked !== 'undefined' ? marked.parse(content) : `<pre>${content}</pre>`;
       document.getElementById('agentsMdHint').textContent = (content.length / 1024).toFixed(1) + ' KB';
       cancelAgentsMdEdit();
       toast('✓ AGENTS.md saved');
