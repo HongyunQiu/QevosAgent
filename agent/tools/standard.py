@@ -1313,9 +1313,11 @@ def tool_append_episodic(
 
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if isinstance(tags, str) else list(tags)
 
+        # _task_desc 是去掉前缀指令后的原始用户输入，优先使用
+        raw_goal = (state.meta.get("_task_desc") or state.goal or "")
         entry = {
             "ts": _episodic_ts(),
-            "goal": (state.goal or "")[:200],
+            "goal": raw_goal[:200],
             "summary": summary.strip(),
             "tags": tag_list,
         }
