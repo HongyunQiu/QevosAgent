@@ -226,11 +226,11 @@ input, textarea { font-family: inherit; font-size: inherit; }
 }
 
 .ev-goal { background: rgba(88,166,255,0.06); border: 1px solid rgba(88,166,255,0.15); padding: 10px 13px; }
-.ev-goal .ev-label { font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--blue); margin-bottom: 5px; }
+.ev-goal .ev-label { font-size: 12px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--blue); margin-bottom: 5px; }
 .ev-goal .ev-body  { font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 
 .ev-thought { background: rgba(210,168,255,0.05); border-left: 3px solid rgba(210,168,255,0.4); padding: 7px 12px; }
-.ev-thought .ev-body { color: #c5b3f0; font-size: 12px; font-style: italic; line-height: 1.6; }
+.ev-thought .ev-body { color: #c5b3f0; font-size: 16px; font-style: italic; line-height: 1.6; }
 
 .ev-tool-call { background: rgba(63,185,80,0.05); border-left: 3px solid rgba(63,185,80,0.5); }
 .ev-header { display: flex; align-items: center; gap: 8px; padding: 7px 12px 4px; flex-wrap: wrap; }
@@ -239,7 +239,7 @@ input, textarea { font-family: inherit; font-size: inherit; }
   border: 1px solid rgba(63,185,80,0.3); border-radius: 4px;
   padding: 2px 9px; font-family: var(--mono); font-size: 11.5px; font-weight: 600;
 }
-.ev-args { padding: 2px 12px 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+.ev-args { padding: 2px 12px 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
 .hl-key  { color: #79c0ff; }
 .hl-str  { color: #a5d6ff; }
 .hl-num  { color: var(--orange); }
@@ -247,14 +247,14 @@ input, textarea { font-family: inherit; font-size: inherit; }
 .hl-null { color: var(--muted); font-style: italic; }
 .ev-arrow { color: var(--muted); font-size: 12px; }
 .ev-meta  { color: var(--muted); font-size: 11px; }
-.ev-mini-thought { font-size: 11px; color: #a093cc; font-style: italic; padding: 0 12px 4px; }
+.ev-mini-thought { font-size: 12px; color: #a093cc; font-style: italic; padding: 0 12px 4px; }
 
 .ev-tool-result { background: rgba(88,166,255,0.04); border-left: 3px solid rgba(88,166,255,0.3); }
 .ev-tool-result.fail-result { border-left-color: rgba(248,81,73,0.5); background: rgba(248,81,73,0.04); }
 .result-badge { background: rgba(88,166,255,0.1); color: var(--blue); border: 1px solid rgba(88,166,255,0.2); border-radius: 4px; padding: 2px 9px; font-family: var(--mono); font-size: 11.5px; }
 .result-badge.fail { background: rgba(248,81,73,0.1); color: var(--red); border-color: rgba(248,81,73,0.2); }
 .ev-output {
-  padding: 2px 12px 8px; font-family: var(--mono); font-size: 11px; color: var(--muted);
+  padding: 2px 12px 8px; font-family: var(--mono); font-size: 12px; color: var(--muted);
   line-height: 1.6; white-space: pre-wrap; word-break: break-all;
   max-height: 100px; overflow: hidden; position: relative;
 }
@@ -566,7 +566,12 @@ input, textarea { font-family: inherit; font-size: inherit; }
   display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
 }
 .memory-section-body {
-  flex: 1; overflow: auto; min-height: 0;
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.memory-section-body .md-render,
+.memory-section-body > div {
+  flex: 1; overflow: auto;
 }
 .memory-divider {
   height: 4px; background: var(--bg2); border-top: 1px solid var(--border);
