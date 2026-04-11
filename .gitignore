@@ -7,17 +7,25 @@ __pycache__/
 .venv/
 .env
 
-# Local experiment outputs / snapshots
+# Local experiment outputs / snapshots (runtime data, not source)
 agent_memory.json
 agent_snapshot.json
-d
+agent_snapshot_meta.json
+agent_tools.json
+memory_episodic.jsonl
+memory_concept.md
 agent-reach/
 ~/.agent-reach/
 ~/.agent-reach-venv/
-agent_snapshot_meta.json
 .claude
 .cursor
 .codex
+
+# Local dirs / generated artifacts
+.worktrees/
+artifacts/
+fff.nvim/
+*.vcd
 
 # Logs / pids
 *.log
