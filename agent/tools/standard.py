@@ -1325,6 +1325,9 @@ def tool_append_episodic(
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+        # 验收门标记：通知 loop.py 本次运行已完成 episodic 记录
+        state.meta["_episodic_appended"] = True
+
         return ToolResult(success=True, output={"appended": True, "path": str(p.resolve())})
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))

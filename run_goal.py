@@ -255,14 +255,15 @@ def main():
     initial_meta = {k: v for k, v in _preload_state.meta.items() if k in _META_KEYS}
     if preloaded_concept:
         initial_meta["concept_memory"] = preloaded_concept
+    # 把文件路径传入 state.meta，供 episodic 验收门反馈消息使用
+    initial_meta["_episodic_path"] = str(episodic_path)
+    initial_meta["_concept_path"]  = str(concept_path)
 
     # ── 目标前缀 ──────────────────────────────────────────────────────────────
     # 工具和记忆已由 Python 层预加载，无需 LLM 主动调用恢复命令。
     # 结束时告知 LLM 应调用 append_episodic 记录本次摘要。
     prefix = (
-        "工具、细粒度记忆和概念记忆已自动预加载，请直接完成任务。\n"
-        "任务结束前请调用 append_episodic 记录本次执行摘要（summary + tags），"
-        "如概念记忆需要更新则调用 save_concept。\n\n"
+        "工具、细粒度记忆和概念记忆已自动预加载，请直接完成任务。\n\n"
     )
 
     # Load repo conventions (OpenClaw-style) if present.
