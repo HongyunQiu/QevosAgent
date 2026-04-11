@@ -522,21 +522,41 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── GET /api/snapshot-meta  ──────────────────────────────────────────────
-  if (req.method === 'GET' && req.url === '/api/snapshot-meta') {
-    const fp = path.join(AGENT_DIR, 'agent_snapshot_meta.json');
+  // ── GET /api/memory-concept  ─────────────────────────────────────────────
+  if (req.method === 'GET' && req.url === '/api/memory-concept') {
+    const fp = path.join(AGENT_DIR, 'memory_concept.md');
     if (!fs.existsSync(fp)) { json(200, { content: null, exists: false }); return; }
     const content = readText(fp) || '';
     json(200, { content });
     return;
   }
 
-  // ── POST /api/snapshot-meta  ─────────────────────────────────────────────
-  if (req.method === 'POST' && req.url === '/api/snapshot-meta') {
+  // ── POST /api/memory-concept  ────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/api/memory-concept') {
     try {
       const { content } = JSON.parse(await readBody(req));
       if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
-      fs.writeFileSync(path.join(AGENT_DIR, 'agent_snapshot_meta.json'), content, 'utf8');
+      fs.writeFileSync(path.join(AGENT_DIR, 'memory_concept.md'), content, 'utf8');
+      json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/memory-episodic  ────────────────────────────────────────────
+  if (req.method === 'GET' && req.url === '/api/memory-episodic') {
+    const fp = path.join(AGENT_DIR, 'memory_episodic.jsonl');
+    if (!fs.existsSync(fp)) { json(200, { content: null, exists: false }); return; }
+    const content = readText(fp) || '';
+    json(200, { content });
+    return;
+  }
+
+  // ── POST /api/memory-episodic  ───────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/api/memory-episodic') {
+    try {
+      const { content } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      fs.writeFileSync(path.join(AGENT_DIR, 'memory_episodic.jsonl'), content, 'utf8');
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;

@@ -560,6 +560,50 @@ input, textarea { font-family: inherit; font-size: inherit; }
   user-select: none; opacity: 0.5;
 }
 .jsonl-body { flex: 1; white-space: pre-wrap; word-break: break-all; }
+
+/* ── Memory pane ─────────────────────────────────────────────────────────── */
+.memory-section {
+  display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
+}
+.memory-section-body {
+  flex: 1; overflow: auto; min-height: 0;
+}
+.memory-divider {
+  height: 4px; background: var(--bg2); border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.concept-view {
+  padding: 14px 18px;
+}
+/* ── Episodic entry cards ─────────────────────────────────────────────────── */
+.episodic-list { padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+.episodic-entry {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 14px; display: flex; flex-direction: column; gap: 5px;
+}
+.episodic-header { display: flex; align-items: baseline; gap: 10px; }
+.episodic-ts {
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  flex-shrink: 0; opacity: 0.7;
+}
+.episodic-goal {
+  font-size: 11.5px; color: var(--blue); font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.episodic-summary {
+  font-size: 12px; color: var(--text); line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+.episodic-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.episodic-tag {
+  font-size: 10px; font-family: var(--mono); color: var(--muted);
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 6px;
+}
+.episodic-parse-err {
+  background: var(--bg2); border: 1px solid var(--orange);
+  border-radius: 4px; padding: 6px 10px; font-size: 11px; color: var(--orange);
+}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 </head>
@@ -628,7 +672,7 @@ input, textarea { font-family: inherit; font-size: inherit; }
       <div class="ctab-sep"></div>
       <button class="center-tab" id="ctab-agentsmd" onclick="setCenterTab('agentsmd')">AGENTS.md</button>
       <button class="center-tab" id="ctab-files" onclick="setCenterTab('files')">Run Files</button>
-      <button class="center-tab" id="ctab-snapshot" onclick="setCenterTab('snapshot')">Snapshot</button>
+      <button class="center-tab" id="ctab-memory" onclick="setCenterTab('memory')">Memory</button>
       <div class="bar-gap"></div>
       <button class="icon-btn on" id="autoScrollBtn" onclick="toggleAutoScroll()">↓ Auto</button>
     </div>
@@ -682,20 +726,42 @@ input, textarea { font-family: inherit; font-size: inherit; }
       </div>
     </div>
 
-    <!-- Snapshot pane -->
-    <div class="center-pane" id="cpane-snapshot">
-      <div class="agents-toolbar">
-        <span class="agents-title">agent_snapshot_meta.json</span>
-        <span class="agents-hint" id="snapshotRunLabel"></span>
-        <div class="bar-gap"></div>
-        <button class="icon-btn" id="snapshotEditBtn" onclick="enterSnapshotEdit()">✎ Edit</button>
-        <button class="icon-btn" id="snapshotSaveBtn" style="display:none" onclick="saveSnapshot()">✓ Save</button>
-        <button class="icon-btn" id="snapshotCancelBtn" style="display:none" onclick="cancelSnapshotEdit()">✕ Cancel</button>
+    <!-- Memory pane -->
+    <div class="center-pane" id="cpane-memory">
+
+      <!-- Concept memory section (Markdown) -->
+      <div class="memory-section" style="flex:0 0 42%;">
+        <div class="agents-toolbar">
+          <span class="agents-title">memory_concept.md</span>
+          <div class="bar-gap"></div>
+          <button class="icon-btn" id="conceptEditBtn" onclick="enterConceptEdit()">✎ Edit</button>
+          <button class="icon-btn" id="conceptSaveBtn" style="display:none" onclick="saveConcept()">✓ Save</button>
+          <button class="icon-btn" id="conceptCancelBtn" style="display:none" onclick="cancelConceptEdit()">✕ Cancel</button>
+        </div>
+        <div class="memory-section-body">
+          <div class="md-render concept-view" id="conceptView"><span class="files-placeholder">Loading…</span></div>
+          <textarea class="agents-edit" id="conceptEdit" style="display:none" spellcheck="false"></textarea>
+        </div>
       </div>
-      <div class="agents-body">
-        <pre class="agents-view" id="snapshotView"><span class="files-placeholder">Select a run to view snapshot</span></pre>
-        <textarea class="agents-edit" id="snapshotEdit" style="display:none" spellcheck="false"></textarea>
+
+      <div class="memory-divider"></div>
+
+      <!-- Episodic memory section (JSONL cards) -->
+      <div class="memory-section" style="flex:1 1 58%;">
+        <div class="agents-toolbar">
+          <span class="agents-title">memory_episodic.jsonl</span>
+          <span class="agents-hint" id="episodicCount"></span>
+          <div class="bar-gap"></div>
+          <button class="icon-btn" id="episodicEditBtn" onclick="enterEpisodicEdit()">✎ Edit</button>
+          <button class="icon-btn" id="episodicSaveBtn" style="display:none" onclick="saveEpisodic()">✓ Save</button>
+          <button class="icon-btn" id="episodicCancelBtn" style="display:none" onclick="cancelEpisodicEdit()">✕ Cancel</button>
+        </div>
+        <div class="memory-section-body">
+          <div id="episodicView"><span class="files-placeholder" style="padding:14px 18px;display:block">Loading…</span></div>
+          <textarea class="agents-edit" id="episodicEdit" style="display:none" spellcheck="false"></textarea>
+        </div>
       </div>
+
     </div>
   </main>
 
@@ -1383,14 +1449,14 @@ let gSelectedFile  = null;
 
 function setCenterTab(name) {
   gCenterTab = name;
-  ['events', 'agentsmd', 'files', 'snapshot'].forEach(n => {
+  ['events', 'agentsmd', 'files', 'memory'].forEach(n => {
     document.getElementById('ctab-' + n).className  = 'center-tab' + (n === name ? ' active' : '');
     document.getElementById('cpane-' + n).className = 'center-pane' + (n === name ? ' active' : '');
   });
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
   if (name === 'agentsmd') loadAgentsMd();
   if (name === 'files')    loadRunFiles();
-  if (name === 'snapshot') loadSnapshot();
+  if (name === 'memory')   loadMemory();
 }
 
 // ── AGENTS.md ─────────────────────────────────────────────────────────────
@@ -1444,78 +1510,185 @@ async function saveAgentsMd() {
   } catch (e) { toast('✗ Network error: ' + e.message); }
 }
 
-// ── Snapshot (agent_snapshot_meta.json) ──────────────────────────────────
-let gSnapshotOrig = '';
+// ── Memory (memory_concept.md + memory_episodic.jsonl) ───────────────────
+let gConceptOrig   = '';
+let gEpisodicOrig  = '';
 
-async function loadSnapshot() {
-  const view = document.getElementById('snapshotView');
-  document.getElementById('snapshotRunLabel').textContent = 'simpleAgent/agent_snapshot_meta.json';
+async function loadMemory() {
+  await Promise.all([loadConceptMemory(), loadEpisodicMemory()]);
+}
+
+// ── Concept (Markdown) ───────────────────────────────────────────────────
+async function loadConceptMemory() {
+  const view = document.getElementById('conceptView');
   view.innerHTML = '<span class="files-placeholder">Loading…</span>';
   try {
-    const data = await fetch('/api/snapshot-meta').then(r => r.json());
+    const data = await fetch('/api/memory-concept').then(r => r.json());
     if (data.error) {
-      gSnapshotOrig = '';
+      gConceptOrig = '';
       view.innerHTML = `<span class="files-placeholder">Error: ${esc(data.error)}</span>`;
     } else if (data.exists === false || data.content === null) {
-      gSnapshotOrig = '';
-      view.innerHTML = `<span class="files-placeholder">agent_snapshot_meta.json does not exist yet.&nbsp;`
-        + `<a href="#" style="color:var(--blue)" onclick="createSnapshot();return false">✚ Create</a></span>`;
+      gConceptOrig = '';
+      view.innerHTML = `<span class="files-placeholder" style="padding:14px 18px;display:block">`
+        + `memory_concept.md 尚不存在。`
+        + `<a href="#" style="color:var(--blue);margin-left:6px" onclick="createConcept();return false">✚ Create</a></span>`;
     } else {
-      try { gSnapshotOrig = JSON.stringify(JSON.parse(data.content), null, 2); }
-      catch { gSnapshotOrig = data.content || ''; }
-      view.textContent = gSnapshotOrig;
+      gConceptOrig = data.content || '';
+      view.innerHTML = typeof marked !== 'undefined'
+        ? marked.parse(gConceptOrig)
+        : `<pre style="white-space:pre-wrap;padding:14px 18px">${esc(gConceptOrig)}</pre>`;
     }
   } catch (e) {
     view.innerHTML = `<span class="files-placeholder">Error: ${esc(e.message)}</span>`;
   }
 }
 
-function enterSnapshotEdit() {
-  const edit = document.getElementById('snapshotEdit');
-  edit.value = gSnapshotOrig;
-  document.getElementById('snapshotView').style.display      = 'none';
-  edit.style.display                                          = '';
-  document.getElementById('snapshotEditBtn').style.display   = 'none';
-  document.getElementById('snapshotSaveBtn').style.display   = '';
-  document.getElementById('snapshotCancelBtn').style.display = '';
+function enterConceptEdit() {
+  document.getElementById('conceptView').style.display     = 'none';
+  const edit = document.getElementById('conceptEdit');
+  edit.value = gConceptOrig;
+  edit.style.display                                        = '';
+  document.getElementById('conceptEditBtn').style.display   = 'none';
+  document.getElementById('conceptSaveBtn').style.display   = '';
+  document.getElementById('conceptCancelBtn').style.display = '';
   edit.focus();
 }
 
-function cancelSnapshotEdit() {
-  document.getElementById('snapshotView').style.display      = '';
-  document.getElementById('snapshotEdit').style.display      = 'none';
-  document.getElementById('snapshotEditBtn').style.display   = '';
-  document.getElementById('snapshotSaveBtn').style.display   = 'none';
-  document.getElementById('snapshotCancelBtn').style.display = 'none';
+function cancelConceptEdit() {
+  document.getElementById('conceptView').style.display     = '';
+  document.getElementById('conceptEdit').style.display     = 'none';
+  document.getElementById('conceptEditBtn').style.display   = '';
+  document.getElementById('conceptSaveBtn').style.display   = 'none';
+  document.getElementById('conceptCancelBtn').style.display = 'none';
 }
 
-async function saveSnapshot() {
-  const rawText = document.getElementById('snapshotEdit').value;
-  // Validate JSON before saving
-  try { JSON.parse(rawText); } catch (e) { toast('✗ Invalid JSON: ' + e.message); return; }
+async function saveConcept() {
+  const rawText = document.getElementById('conceptEdit').value;
   try {
-    const res  = await fetch('/api/snapshot-meta',
+    const res  = await fetch('/api/memory-concept',
       { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: rawText }) }
-    );
+        body: JSON.stringify({ content: rawText }) });
     const data = await res.json();
     if (res.ok && data.ok) {
-      // Re-pretty-print after successful save
-      try { gSnapshotOrig = JSON.stringify(JSON.parse(rawText), null, 2); }
-      catch { gSnapshotOrig = rawText; }
-      document.getElementById('snapshotView').textContent = gSnapshotOrig;
-      cancelSnapshotEdit();
-      toast('✓ Snapshot saved');
+      gConceptOrig = rawText;
+      const view = document.getElementById('conceptView');
+      view.innerHTML = typeof marked !== 'undefined'
+        ? marked.parse(gConceptOrig)
+        : `<pre style="white-space:pre-wrap;padding:14px 18px">${esc(gConceptOrig)}</pre>`;
+      cancelConceptEdit();
+      toast('✓ Concept memory saved');
     } else {
       toast('✗ Save failed: ' + (data.error || 'unknown'));
     }
   } catch (e) { toast('✗ Network error: ' + e.message); }
 }
 
-function createSnapshot() {
-  gSnapshotOrig = '{}';
-  document.getElementById('snapshotView').textContent = gSnapshotOrig;
-  enterSnapshotEdit();
+function createConcept() {
+  gConceptOrig = '# 长期概念记忆\n\n## \n\n';
+  const view = document.getElementById('conceptView');
+  view.innerHTML = typeof marked !== 'undefined'
+    ? marked.parse(gConceptOrig)
+    : `<pre style="white-space:pre-wrap;padding:14px 18px">${esc(gConceptOrig)}</pre>`;
+  enterConceptEdit();
+}
+
+// ── Episodic (JSONL cards) ────────────────────────────────────────────────
+function _renderEpisodicCards(raw) {
+  const lines = (raw || '').split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return `<span class="files-placeholder" style="padding:14px 18px;display:block">暂无记录</span>`;
+  // Show most recent first
+  const cards = [...lines].reverse().map((line, idx) => {
+    try {
+      const e = JSON.parse(line);
+      const ts      = esc((e.ts      || '').slice(0, 10));
+      const goal    = esc((e.goal    || '').slice(0, 100));
+      const summary = esc(e.summary  || '');
+      const tagHtml = (e.tags || []).map(t => `<span class="episodic-tag">${esc(String(t))}</span>`).join('');
+      return `<div class="episodic-entry">
+        <div class="episodic-header">
+          <span class="episodic-ts">${ts}</span>
+          <span class="episodic-goal" title="${goal}">${goal}</span>
+        </div>
+        <div class="episodic-summary">${summary}</div>
+        ${tagHtml ? `<div class="episodic-tags">${tagHtml}</div>` : ''}
+      </div>`;
+    } catch {
+      return `<div class="episodic-entry episodic-parse-err"><code>${esc(line)}</code></div>`;
+    }
+  });
+  return `<div class="episodic-list">${cards.join('')}</div>`;
+}
+
+async function loadEpisodicMemory() {
+  const view  = document.getElementById('episodicView');
+  const count = document.getElementById('episodicCount');
+  view.innerHTML = '<span class="files-placeholder" style="padding:14px 18px;display:block">Loading…</span>';
+  try {
+    const data = await fetch('/api/memory-episodic').then(r => r.json());
+    if (data.error) {
+      gEpisodicOrig = '';
+      count.textContent = '';
+      view.innerHTML = `<span class="files-placeholder">Error: ${esc(data.error)}</span>`;
+    } else if (data.exists === false || data.content === null) {
+      gEpisodicOrig = '';
+      count.textContent = '';
+      view.innerHTML = `<span class="files-placeholder" style="padding:14px 18px;display:block">memory_episodic.jsonl 尚不存在</span>`;
+    } else {
+      gEpisodicOrig = data.content || '';
+      const n = gEpisodicOrig.split('\n').filter(l => l.trim()).length;
+      count.textContent = `${n} 条`;
+      view.innerHTML = _renderEpisodicCards(gEpisodicOrig);
+    }
+  } catch (e) {
+    view.innerHTML = `<span class="files-placeholder">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+function enterEpisodicEdit() {
+  document.getElementById('episodicView').style.display     = 'none';
+  const edit = document.getElementById('episodicEdit');
+  edit.value = gEpisodicOrig;
+  edit.style.display                                          = '';
+  document.getElementById('episodicEditBtn').style.display   = 'none';
+  document.getElementById('episodicSaveBtn').style.display   = '';
+  document.getElementById('episodicCancelBtn').style.display = '';
+  edit.focus();
+}
+
+function cancelEpisodicEdit() {
+  document.getElementById('episodicView').style.display     = '';
+  document.getElementById('episodicEdit').style.display     = 'none';
+  document.getElementById('episodicEditBtn').style.display   = '';
+  document.getElementById('episodicSaveBtn').style.display   = 'none';
+  document.getElementById('episodicCancelBtn').style.display = 'none';
+}
+
+async function saveEpisodic() {
+  const rawText = document.getElementById('episodicEdit').value;
+  // Validate: every non-empty line must be valid JSON
+  const badLines = rawText.split('\n').filter(l => l.trim()).filter(l => {
+    try { JSON.parse(l); return false; } catch { return true; }
+  });
+  if (badLines.length) {
+    toast(`✗ 第 ${rawText.split('\n').findIndex(l => l.trim() === badLines[0].trim()) + 1} 行 JSON 无效`);
+    return;
+  }
+  try {
+    const res  = await fetch('/api/memory-episodic',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: rawText }) });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      gEpisodicOrig = rawText;
+      const n = gEpisodicOrig.split('\n').filter(l => l.trim()).length;
+      document.getElementById('episodicCount').textContent = `${n} 条`;
+      document.getElementById('episodicView').innerHTML = _renderEpisodicCards(gEpisodicOrig);
+      cancelEpisodicEdit();
+      toast('✓ Episodic memory saved');
+    } else {
+      toast('✗ Save failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ Network error: ' + e.message); }
 }
 
 // ── Run Files ─────────────────────────────────────────────────────────────
