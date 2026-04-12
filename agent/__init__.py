@@ -95,7 +95,7 @@ class Agent:
         self.long_term = state.long_term
         # 工具集也持久化（进化后的工具在下次运行时仍可用）
         self.tools = state.tools
-        # 同步概念记忆（LLM 可能调用 save_concept 更新了它）
+        # 同步宏观工作记忆（LLM 可能调用 save_concept 更新了它）
         self.concept_memory = state.meta.get("concept_memory", self.concept_memory)
         return state
 

@@ -524,7 +524,7 @@ const server = http.createServer(async (req, res) => {
 
   // ── GET /api/memory-concept  ─────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/memory-concept') {
-    const fp = path.join(AGENT_DIR, 'memory_concept.md');
+    const fp = path.join(AGENT_DIR, 'memory_macro.md');
     if (!fs.existsSync(fp)) { json(200, { content: null, exists: false }); return; }
     const content = readText(fp) || '';
     json(200, { content });
@@ -536,7 +536,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const { content } = JSON.parse(await readBody(req));
       if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
-      fs.writeFileSync(path.join(AGENT_DIR, 'memory_concept.md'), content, 'utf8');
+      fs.writeFileSync(path.join(AGENT_DIR, 'memory_macro.md'), content, 'utf8');
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;

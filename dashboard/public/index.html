@@ -737,7 +737,7 @@ input, textarea { font-family: inherit; font-size: inherit; }
       <!-- Concept memory section (Markdown) -->
       <div class="memory-section" style="flex:0 0 42%;">
         <div class="agents-toolbar">
-          <span class="agents-title">memory_concept.md</span>
+          <span class="agents-title">memory_macro.md</span>
           <div class="bar-gap"></div>
           <button class="icon-btn" id="conceptEditBtn" onclick="enterConceptEdit()">✎ Edit</button>
           <button class="icon-btn" id="conceptSaveBtn" style="display:none" onclick="saveConcept()">✓ Save</button>
@@ -1535,7 +1535,7 @@ async function loadConceptMemory() {
     } else if (data.exists === false || data.content === null) {
       gConceptOrig = '';
       view.innerHTML = `<span class="files-placeholder" style="padding:14px 18px;display:block">`
-        + `memory_concept.md 尚不存在。`
+        + `memory_macro.md 尚不存在。`
         + `<a href="#" style="color:var(--blue);margin-left:6px" onclick="createConcept();return false">✚ Create</a></span>`;
     } else {
       gConceptOrig = data.content || '';
@@ -1581,7 +1581,7 @@ async function saveConcept() {
         ? marked.parse(gConceptOrig)
         : `<pre style="white-space:pre-wrap;padding:14px 18px">${esc(gConceptOrig)}</pre>`;
       cancelConceptEdit();
-      toast('✓ Concept memory saved');
+      toast('✓ 宏观工作记忆已保存');
     } else {
       toast('✗ Save failed: ' + (data.error || 'unknown'));
     }
@@ -1589,7 +1589,7 @@ async function saveConcept() {
 }
 
 function createConcept() {
-  gConceptOrig = '# 长期概念记忆\n\n## \n\n';
+  gConceptOrig = '# 宏观工作记忆\n\n## \n\n';
   const view = document.getElementById('conceptView');
   view.innerHTML = typeof marked !== 'undefined'
     ? marked.parse(gConceptOrig)

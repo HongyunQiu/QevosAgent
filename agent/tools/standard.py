@@ -1383,19 +1383,19 @@ def tool_search_episodic(
         return ToolResult(success=False, output=None, error=str(e))
 
 
-# ── 概念记忆（concept Markdown） ──────────────────────────────────────────────
+# ── 宏观工作记忆（macro Markdown） ───────────────────────────────────────────
 
 def tool_save_concept(state: AgentState, path: str, content: str) -> ToolResult:
-    """将概念记忆写入 Markdown 文件，并同步到当前 state（立即注入 system prompt）。
+    """将宏观工作记忆写入 Markdown 文件，并同步到当前 state（立即注入 system prompt）。
 
-    content 应按工作方向/研究方向分章节叙述，例如：
-        ## 工具开发与维护
-        （叙述性总结…）
+    content 按工作方向分章节，每条精简一句话、提及关键词，不写具体流程，例如：
+        ## 联网搜索
+        集成 web_search、DDGS，了解 agent-reach（exa/reddit/bilibili）。
 
-        ## 远程系统运维
-        （叙述性总结…）
+        ## 远程运维
+        通过 ssh 连接了 xxx、yyy 等远程主机，实现自动化部署。
 
-    每次需要更新概念记忆时，先用 read_concept 读取旧内容，修改后整体覆盖写入。
+    每次更新前先用 read_concept 读取旧内容，修改后整体覆盖写入。
     """
     try:
         if not content or not content.strip():
@@ -1410,7 +1410,7 @@ def tool_save_concept(state: AgentState, path: str, content: str) -> ToolResult:
 
 
 def tool_read_concept(state: AgentState, path: str) -> ToolResult:
-    """读取概念记忆文件并加载到 state，使其注入后续的 system prompt。"""
+    """读取宏观工作记忆文件并加载到 state，使其注入后续的 system prompt。"""
     try:
         p = Path(path)
         if not p.exists():
@@ -1786,23 +1786,23 @@ def get_standard_tools() -> dict[str, ToolSpec]:
         ToolSpec(
             name="save_concept",
             description=(
-                "将概念记忆写入 Markdown 文件，并同步注入当前 system prompt。"
-                "概念记忆按工作方向/研究方向分章节叙述，是对细粒度记忆的二次提炼。"
+                "将宏观工作记忆写入 Markdown 文件，并同步注入当前 system prompt。"
+                "内容按工作方向分章节，每条精简一句话、提及关键词，不写具体流程。"
                 "更新时先用 read_concept 读取旧内容，修改后整体覆盖写入。"
             ),
             args_schema={
-                "path": "概念记忆文件路径（如 ./memory_concept.md）",
-                "content": "完整 Markdown 内容，按工作方向分 ## 章节叙述",
+                "path": "宏观工作记忆文件路径（如 ./memory_macro.md）",
+                "content": "完整 Markdown 内容，按工作方向分 ## 章节，每条一句话精简叙述",
             },
             fn=tool_save_concept,
         ),
         ToolSpec(
             name="read_concept",
             description=(
-                "读取概念记忆文件并加载到 state，使其注入后续 system prompt。"
-                "在任务开始时调用，获取当前的领域知识概览。"
+                "读取宏观工作记忆文件并加载到 state，使其注入后续 system prompt。"
+                "在任务开始时调用，获取当前的工作方向全景。"
             ),
-            args_schema={"path": "概念记忆文件路径（如 ./memory_concept.md）"},
+            args_schema={"path": "宏观工作记忆文件路径（如 ./memory_macro.md）"},
             fn=tool_read_concept,
         ),
         ToolSpec(

@@ -149,29 +149,69 @@ class AnthropicBackend(LLMBackend):
         # Anthropic token counting is model-specific; keep heuristic.
         return _estimate_tokens_heuristic([system] + [m.get("content", "") for m in messages])
 
-    def __init__(self, model: str = "claude-opus-4-6", api_key: Optional[str] = None):
+    def __init__(
+        self,
+        model: str = "claude-opus-4-6",
+        api_key: Optional[str] = None,
+        thinking_budget: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+    ):
         import anthropic
+        import os
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
+        # Extended thinking budget (tokens). Set to 0 to disable.
+        # Env: ANTHROPIC_THINKING_BUDGET (default 8000)
+        if thinking_budget is None:
+            thinking_budget = int(os.environ.get("ANTHROPIC_THINKING_BUDGET", "8000"))
+        self.thinking_budget = max(0, thinking_budget)
+        # Output token limit. Must exceed thinking_budget when thinking is enabled.
+        # Env: ANTHROPIC_MAX_TOKENS or LLM_MAX_TOKENS (default 16000)
+        if max_tokens is None:
+            max_tokens = int(os.environ.get(
+                "ANTHROPIC_MAX_TOKENS",
+                os.environ.get("LLM_MAX_TOKENS", "16000"),
+            ))
+        if self.thinking_budget > 0:
+            # Anthropic requires max_tokens > budget_tokens
+            max_tokens = max(max_tokens, self.thinking_budget + 2048)
+        self.max_tokens = max_tokens
+
+    @staticmethod
+    def _extract_text(content) -> str:
+        """Return the first text block from a Messages response content list."""
+        for block in content:
+            if getattr(block, "type", None) == "text":
+                return block.text
+        # Fallback for unexpected shapes
+        first = content[0] if content else None
+        return getattr(first, "text", str(first)) if first is not None else ""
 
     def complete(self, messages: list[dict], system: str) -> str:
-        resp = self.client.messages.create(
+        """Main agent loop call: full max_tokens, extended thinking enabled."""
+        kwargs: dict = dict(
             model=self.model,
-            max_tokens=2048,
+            max_tokens=self.max_tokens,
             system=system,
             messages=messages,
         )
-        return resp.content[0].text
+        if self.thinking_budget > 0:
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": self.thinking_budget}
+        resp = self.client.messages.create(**kwargs)
+        return self._extract_text(resp.content)
 
     def complete_text(self, messages: list[dict], system: str, max_tokens: int = 200) -> str:
-        """Lightweight plain-text call for summarisation / note extraction."""
+        """Lightweight plain-text call for summarisation / note extraction.
+
+        No extended thinking — keeps latency and cost low.
+        """
         resp = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             system=system,
             messages=messages,
         )
-        return resp.content[0].text
+        return self._extract_text(resp.content)
 
 
 # ── System Prompt 构建器 ───────────────────────────────────────────────────────
@@ -201,7 +241,7 @@ def build_system_prompt(
     concept_section = ""
     if concept_memory and concept_memory.strip():
         concept_section = (
-            "\n\n## 概念记忆（工作方向概览）\n"
+            "\n\n## 宏观工作记忆\n"
             + concept_memory.strip()
         )
 
@@ -319,6 +359,15 @@ def _extract_json(text: str) -> tuple:
             parse_error = e
             search_from = idx + 1
 
+    # 4) json_repair — handles malformed JSON from complex string escaping.
+    try:
+        from json_repair import repair_json  # type: ignore
+        repaired = repair_json(stripped, return_objects=True)
+        if isinstance(repaired, dict):
+            return repaired, None
+    except Exception:
+        pass
+
     return None, parse_error
 
 
@@ -330,14 +379,23 @@ def parse_response(raw: str) -> Action:
     """
     data, exc = _extract_json(raw)
     if data is None:
-        # Keep error message compact; the loop will feed it back.
-        return Action(
-            type=ActionType.ERROR,
-            thought=(
+        if "{" not in raw:
+            # Pure text output — model forgot the JSON protocol entirely.
+            thought = (
+                "你的上一条输出是纯文本，没有任何 JSON 结构。\n"
+                "无论任务是否完成，都必须通过 JSON 格式输出，不能直接输出纯文本。\n"
+                "如果任务已完成，请使用：\n"
+                '{"thought": "...", "action": "done", "final_answer": "..."}\n'
+                "如果需要继续调用工具，请使用：\n"
+                '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
+            )
+        else:
+            # JSON-like content found but failed to parse.
+            thought = (
                 f"JSON 解析失败: {exc}\n"
                 f"原始输出(截断): {raw[:300]}"
-            ),
-        )
+            )
+        return Action(type=ActionType.ERROR, thought=thought)
 
     # Defensive: some servers/models may emit `null` or a non-object JSON.
     if not isinstance(data, dict):

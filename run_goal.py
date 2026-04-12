@@ -9,7 +9,7 @@ from agent.runtime.persistence import RunPersistence
 
 DEFAULT_TOOLS    = "./agent_tools.json"
 DEFAULT_EPISODIC = "./memory_episodic.jsonl"
-DEFAULT_CONCEPT  = "./memory_concept.md"
+DEFAULT_CONCEPT  = "./memory_macro.md"
 DEFAULT_RUNS_DIR = "./runs"
 
 

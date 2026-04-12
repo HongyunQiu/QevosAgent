@@ -707,7 +707,7 @@ def run(
                 # ── episodic 记忆验收门 ───────────────────────────────────────
                 if not state.meta.get("_episodic_appended"):
                     episodic_path = state.meta.get("_episodic_path", "./memory_episodic.jsonl")
-                    concept_path  = state.meta.get("_concept_path",  "./memory_concept.md")
+                    concept_path  = state.meta.get("_concept_path",  "./memory_macro.md")
                     state.meta.setdefault("acceptance_failures", []).append(
                         {"iteration": state.iteration, "failures": [{"reason": "missing_episodic"}]}
                     )
@@ -719,7 +719,7 @@ def run(
                         f"  summary: 一段话概括（100–300 字），包含关键操作、重要发现、对未来有检索价值的信息\n"
                         f"  tags: 逗号分隔关键词（如 'ssh,磁盘,linux'）\n\n"
                         f"同时请判断本次任务是否带来了新的领域认知或经验规律——"
-                        f"如果是，请一并调用 save_concept(path='{concept_path}', content=...) 更新概念记忆。"
+                        f"如果是，请一并调用 save_concept(path='{concept_path}', content=...) 更新宏观工作记忆（按工作方向精简叙述，提及关键词即可，不写具体流程）。"
                     )
                     _append_short_term(state, {"role": "user", "content": feedback})
                     _checkpoint_state(state)
