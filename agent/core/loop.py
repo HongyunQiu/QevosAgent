@@ -531,6 +531,10 @@ def run(
         state.meta.pop("paused", None)
         state.meta.pop("awaiting_input", None)
         state.meta["_llm"] = llm  # 恢复运行时也更新引用
+        # 用户提供了新指导，重置循环检测状态，给模型新的起点
+        state.meta.pop("_loop_warn_counts", None)
+        state.meta.pop("_call_sig_history", None)
+        state.meta.pop("_need_user_help", None)
         _checkpoint_state(state)
 
     try:
@@ -854,31 +858,10 @@ def run(
                 # 成功解析说明 JSON 截断已恢复，重置连续失败计数
                 state.meta["_json_fail_streak"] = 0
 
-                # ── 硬封锁检查 ────────────────────────────────────────────────
-                # 若该工具已被加入 _hard_blocked_tools，拒绝执行 + 重建上下文
-                hard_blocked = state.meta.get("_hard_blocked_tools", set())
-                if action.tool in hard_blocked:
-                    warn_count = state.meta.get("_loop_warn_counts", {}).get(action.tool, 0)
-                    if hooks.on_error:
-                        hooks.on_error(f"[硬封锁+上下文重建] {action.tool} 被拒绝执行（已忽略 {warn_count} 次循环警告），重建 short_term")
-                    # 重建 short_term：清除吸引子上下文，注入干净起点
-                    _rebuild_context_on_hard_block(action.tool, state, hooks=hooks)
-                    _checkpoint_state(state)
-                    state.iteration += 1
-                    continue
-
                 if hooks.on_tool_call:
                     hooks.on_tool_call(action.tool, action.args)
 
                 result = execute(action, state)
-
-                # ── 成功执行非封锁工具后解除封锁 ────────────────────────────
-                # 当模型真正换用了其他工具且执行成功，解除所有封锁（策略转变已发生）
-                if result.success:
-                    hard_blocked = state.meta.get("_hard_blocked_tools", set())
-                    if hard_blocked and action.tool not in hard_blocked:
-                        state.meta["_hard_blocked_tools"] = set()
-                        state.meta["_loop_warn_counts"] = {}
 
                 if hooks.on_tool_result:
                     hooks.on_tool_result(result)
@@ -905,6 +888,18 @@ def run(
                             "content": feedback,
                         },
                     )
+
+                # ── 循环升级：自动向用户求助 ──────────────────────────────────
+                # _build_feedback 检测到循环次数超阈值时会设置此标志，
+                # 此处自动暂停并等待用户指导（替代原有的硬封锁机制）
+                need_help = state.meta.pop("_need_user_help", None)
+                if need_help:
+                    state.meta["awaiting_input"] = need_help
+                    state.meta["paused"] = True
+                    if hooks.on_error:
+                        hooks.on_error(f"[循环检测→用户求助] 自动暂停，等待用户指导")
+                    _checkpoint_state(state, status="paused")
+                    break
 
                 if os.environ.get("AUTO_RAW_LOG", "0") == "1":
                     try:
@@ -1255,33 +1250,34 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                     f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
                 )
 
-            # ── C：循环警告升级（硬封锁） ───────────────────────────────────
+            # ── C：循环警告升级（向用户求助） ───────────────────────────────────
             # 当某工具连续触发循环警告 LOOP_HARD_BLOCK_AFTER 次仍不改变策略，
-            # 将该工具加入 _hard_blocked_tools，主循环将拒绝实际执行，
-            # 强制模型选择 done 或 ask_user。
+            # 设置 _need_user_help 标志，主循环将自动暂停并向用户请求指导。
             hard_block_after = int(os.environ.get("LOOP_HARD_BLOCK_AFTER", "3"))
             if loop_triggered:
                 warn_counts = state.meta.setdefault("_loop_warn_counts", {})
                 warn_counts[action.tool] = warn_counts.get(action.tool, 0) + 1
                 if warn_counts[action.tool] >= hard_block_after:
-                    blocked = state.meta.setdefault("_hard_blocked_tools", set())
-                    blocked.add(action.tool)
+                    raw_goal = (state.meta.get("_task_desc") or "").strip()
+                    goal_hint = f"\n当前目标：{raw_goal[:200]}" if raw_goal else ""
+                    scratchpad = (state.meta.get("scratchpad") or "").strip()
+                    sp_hint = f"\n\n当前草稿本摘要：\n{scratchpad[:400]}" if scratchpad else ""
+                    state.meta["_need_user_help"] = (
+                        f"我在执行任务时陷入了循环：已连续 {warn_counts[action.tool]} 次调用 `{action.tool}` "
+                        f"（参数：{args_preview[:200]}）但未能取得进展。"
+                        f"{goal_hint}{sp_hint}\n\n"
+                        f"请问您有什么建议？例如：提供新的解决思路、指出绕过方式，或告知是否可以跳过此步骤。"
+                    )
                     repeat_warning += (
-                        f"\n\n⛔⛔ 硬封锁触发：你已经收到 {warn_counts[action.tool]} 次循环警告但仍重复调用 `{action.tool}`。"
-                        f"\n系统将在下次调用时拒绝执行 `{action.tool}`，直到你选择以下行动之一："
-                        f"\n  1. action=done：如实报告已尝试方法、失败原因和当前状态（这是可接受的完成）"
-                        f"\n  2. tool=ask_user：向用户提问，请求具体指导或新方案"
-                        f"\n  3. 调用与 `{action.tool}` 完全不同类型的工具，展现真正的策略转变"
+                        f"\n\n⛔⛔ 循环升级：你已经收到 {warn_counts[action.tool]} 次循环警告但仍重复调用 `{action.tool}`。"
+                        f"\n系统将在本次调用完成后自动暂停并向用户请求指导。"
                     )
             else:
-                # 非循环调用：重置该工具的警告计数
+                # 非循环调用：重置该工具的警告计数，清除待求助标志
                 warn_counts = state.meta.get("_loop_warn_counts", {})
                 if action.tool in warn_counts:
                     warn_counts[action.tool] = 0
-                # 调用了不同的非封锁工具 → 解除该工具的封锁
-                blocked = state.meta.get("_hard_blocked_tools", set())
-                if blocked and action.tool not in blocked:
-                    blocked.discard(action.tool)  # 仅解除当前工具（如果它曾被封）
+                state.meta.pop("_need_user_help", None)
 
         except Exception:
             pass
