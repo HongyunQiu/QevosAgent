@@ -396,8 +396,26 @@ def parse_response(raw: str) -> Action:
             _has_bare_newline = bool(re.search(r'"[^"]*\n[^"]*"', raw))
             # Detect split-structure: thought closed early, remaining fields dangle outside.
             _has_split_structure = bool(re.search(r'"\s*\}\s*,\s*"action"', raw))
+            # Detect single-quoted keys: {'key': ...}
+            _has_single_quote_key = bool(re.search(r"\{\s*'[^']+'", raw))
+            # Detect pure prose that happens to contain incidental '{' (code/URL/dict snippets).
+            # Heuristic: no '"action"' or '"thought"' key found anywhere in the raw text.
+            _looks_like_prose = (
+                '"action"' not in raw and '"thought"' not in raw
+                and "'action'" not in raw and "'thought'" not in raw
+            )
 
-            if "Invalid control character" in exc_str or ("control" in exc_str and _has_bare_newline):
+            if _looks_like_prose:
+                # The '{' is incidental (e.g. inside a code snippet or URL) — treat as pure text.
+                thought = (
+                    "你的上一条输出是纯文本（其中虽含有 '{' 字符，但没有合法的 JSON 结构）。\n"
+                    "无论任务是否完成，都必须通过 JSON 格式输出，不能直接输出纯文本。\n"
+                    "如果任务已完成，请使用：\n"
+                    '{"thought": "...", "action": "done", "final_answer": "..."}\n'
+                    "如果需要继续调用工具，请使用：\n"
+                    '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
+                )
+            elif "Invalid control character" in exc_str or _has_bare_newline:
                 thought = (
                     "JSON 格式错误：字符串内包含未转义的换行符。\n"
                     "原因：thought / final_answer / args 等字段的值中，多行文本必须把换行写成 \\n，"
@@ -425,6 +443,15 @@ def parse_response(raw: str) -> Action:
                     '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}\n'
                     f"原始输出(截断): {raw[:300]}"
                 )
+            elif _has_single_quote_key or "Expecting property name enclosed in double quotes" in exc_str:
+                thought = (
+                    "JSON 格式错误：key 必须用双引号，不能用单引号。\n"
+                    '  错误: {\'thought\': "..."}\n'
+                    '  正确: {"thought": "..."}\n'
+                    "另一种可能：JSON 字符串中包含未转义的换行符，导致解析器在错误位置尝试读取 key。\n"
+                    "请同时检查所有字符串值内的换行是否都转义成了 \\n。\n"
+                    f"原始输出(截断): {raw[:300]}"
+                )
             else:
                 thought = (
                     f"JSON 解析失败: {exc_str}\n"
@@ -433,6 +460,22 @@ def parse_response(raw: str) -> Action:
         return Action(type=ActionType.ERROR, thought=thought)
 
     # Defensive: some servers/models may emit `null` or a non-object JSON.
+    if not isinstance(data, dict):
+        pass  # handled below
+    # Heuristic: if the parsed dict has neither 'thought' nor 'action', it was likely
+    # spuriously extracted from incidental JSON inside plain prose (e.g. a code snippet).
+    elif "thought" not in data and "action" not in data:
+        return Action(
+            type=ActionType.ERROR,
+            thought=(
+                "你的上一条输出是纯文本（其中虽包含 JSON 片段，但不包含 thought / action 字段）。\n"
+                "无论任务是否完成，都必须通过 JSON 格式输出，不能直接输出纯文本。\n"
+                "如果任务已完成，请使用：\n"
+                '{"thought": "...", "action": "done", "final_answer": "..."}\n'
+                "如果需要继续调用工具，请使用：\n"
+                '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
+            ),
+        )
     if not isinstance(data, dict):
         return Action(
             type=ActionType.ERROR,
@@ -472,23 +515,33 @@ def parse_response(raw: str) -> Action:
     args = data.get("args", {})
 
     if not tool:
-        # Distinguish: split-structure (tool was present in raw but lost during parse)
-        # vs. genuinely omitted tool field.
+        # Case A: tool field was present in raw but lost during parse (split-structure).
         if re.search(r'"tool"\s*:\s*"[^"]+"', raw):
-            split_hint = (
+            hint = (
                 "注意：原始输出中包含 \"tool\" 字段，但解析后丢失了——"
                 "这通常是因为 thought 提前闭合（即 thought 自己构成了独立的 {}，"
                 "导致 tool/args 等字段脱落在外）。\n"
                 "请将所有字段写在同一个顶层 {} 内：\n"
+                '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
+            )
+        # Case B: JSON only contains 'thought', and the raw output has prose text after the
+        # JSON block — model tried to ask the user by writing the question as plain text.
+        elif '"action"' not in raw and re.search(r'[？?]', raw):
+            hint = (
+                "检测到你在 JSON 外面用纯文本向用户提问。\n"
+                "正确做法：使用 ask_user 工具，将问题放在 args.question 里：\n"
+                '{"thought": "...", "action": "tool_call", "tool": "ask_user", '
+                '"args": {"question": "你的问题"}}'
             )
         else:
-            split_hint = ""
+            hint = (
+                '正确格式：{"action":"tool_call","tool":"工具名","args":{...}}'
+            )
         return Action(
             type=ActionType.ERROR,
             thought=(
                 f"action=tool_call 但解析结果中缺少 tool 字段。\n"
-                f"{split_hint}"
-                f"正确格式：{{\"action\":\"tool_call\",\"tool\":\"工具名\",\"args\":{{...}}}}\n"
+                f"{hint}\n"
                 f"thought: {thought}"
             )
         )
