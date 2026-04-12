@@ -390,11 +390,46 @@ def parse_response(raw: str) -> Action:
                 '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
             )
         else:
-            # JSON-like content found but failed to parse.
-            thought = (
-                f"JSON 解析失败: {exc}\n"
-                f"原始输出(截断): {raw[:300]}"
-            )
+            # JSON-like content found but failed to parse — diagnose the root cause.
+            exc_str = str(exc)
+            # Detect literal (unescaped) newlines inside a JSON string value.
+            _has_bare_newline = bool(re.search(r'"[^"]*\n[^"]*"', raw))
+            # Detect split-structure: thought closed early, remaining fields dangle outside.
+            _has_split_structure = bool(re.search(r'"\s*\}\s*,\s*"action"', raw))
+
+            if "Invalid control character" in exc_str or ("control" in exc_str and _has_bare_newline):
+                thought = (
+                    "JSON 格式错误：字符串内包含未转义的换行符。\n"
+                    "原因：thought / final_answer / args 等字段的值中，多行文本必须把换行写成 \\n，"
+                    "不能直接按回车换行。\n"
+                    "错误修复示例：\n"
+                    '  错误: {"thought": "第一行\n第二行"}\n'
+                    '  正确: {"thought": "第一行\\n第二行"}\n'
+                    f"原始输出(截断): {raw[:300]}"
+                )
+            elif "Unterminated string" in exc_str:
+                thought = (
+                    "JSON 格式错误：字符串未闭合，输出很可能被截断。\n"
+                    "原因：final_answer 或 args 中的内容过长，超出了单次输出上限，导致 JSON 在中途被切断。\n"
+                    "解决方法：① 大幅缩短 final_answer / args 的内容；"
+                    "② 将长内容先用工具写入文件，final_answer 只写摘要和文件路径。\n"
+                    f"截断位置: {exc_str}\n"
+                    f"原始输出(截断): {raw[:300]}"
+                )
+            elif _has_split_structure:
+                thought = (
+                    "JSON 结构错误：thought 字段提前闭合，导致 action/tool/args 等字段脱落在顶层对象之外。\n"
+                    "原因：输出中出现了 {...}, \"action\": ... 的结构，"
+                    "即 thought 自己构成了一个独立的 {} 对象，后续字段无法被解析。\n"
+                    "所有字段必须在同一个顶层 {} 内，正确格式：\n"
+                    '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}\n'
+                    f"原始输出(截断): {raw[:300]}"
+                )
+            else:
+                thought = (
+                    f"JSON 解析失败: {exc_str}\n"
+                    f"原始输出(截断): {raw[:300]}"
+                )
         return Action(type=ActionType.ERROR, thought=thought)
 
     # Defensive: some servers/models may emit `null` or a non-object JSON.
@@ -437,10 +472,22 @@ def parse_response(raw: str) -> Action:
     args = data.get("args", {})
 
     if not tool:
+        # Distinguish: split-structure (tool was present in raw but lost during parse)
+        # vs. genuinely omitted tool field.
+        if re.search(r'"tool"\s*:\s*"[^"]+"', raw):
+            split_hint = (
+                "注意：原始输出中包含 \"tool\" 字段，但解析后丢失了——"
+                "这通常是因为 thought 提前闭合（即 thought 自己构成了独立的 {}，"
+                "导致 tool/args 等字段脱落在外）。\n"
+                "请将所有字段写在同一个顶层 {} 内：\n"
+            )
+        else:
+            split_hint = ""
         return Action(
             type=ActionType.ERROR,
             thought=(
-                f"action=tool_call 但未指定 tool 字段。\n"
+                f"action=tool_call 但解析结果中缺少 tool 字段。\n"
+                f"{split_hint}"
                 f"正确格式：{{\"action\":\"tool_call\",\"tool\":\"工具名\",\"args\":{{...}}}}\n"
                 f"thought: {thought}"
             )
