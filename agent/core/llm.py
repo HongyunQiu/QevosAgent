@@ -423,6 +423,9 @@ def parse_response(raw: str) -> Action:
                     "错误修复示例：\n"
                     '  错误: {"thought": "第一行\n第二行"}\n'
                     '  正确: {"thought": "第一行\\n第二行"}\n'
+                    "特别提示：如果 args.command 或 args.content 中包含超长内容（如 base64 编码、代码脚本），\n"
+                    "不要在字符串中间折行——建议先用 write_file 工具将内容写入临时文件，\n"
+                    "再在命令中引用该文件路径（如 python3 /tmp/script.py），可彻底避免此类问题。\n"
                     f"原始输出(截断): {raw[:300]}"
                 )
             elif "Unterminated string" in exc_str:
