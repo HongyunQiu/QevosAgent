@@ -78,3 +78,20 @@ class AgentState:
 
     # 运行期持久化器（可选），用于把 short_term/meta/final_answer 等实时落盘
     persistence: Any = None
+
+
+# ── 回调钩子（用于观测/调试，不影响核心逻辑）─────────────────────────────────
+# 放在 types.py 而非 loop.py，使 compression 模块可以直接引用而不产生循环依赖。
+
+@dataclass
+class AgentHooks:
+    on_iteration_start: Optional[Callable[[int, AgentState], None]] = None
+    on_thought:         Optional[Callable[[str], None]] = None
+    on_tool_call:       Optional[Callable[[str, dict], None]] = None
+    on_tool_result:     Optional[Callable[["ToolResult"], None]] = None
+    on_done:            Optional[Callable[[str], None]] = None
+    on_error:           Optional[Callable[[str], None]] = None
+    # 草稿本自动笔记（tool 名、提炼出的笔记文字）
+    on_note:            Optional[Callable[[str, str], None]] = None
+    # 上下文重建（被封锁的工具名、重建后的消息数量）
+    on_rebuild:         Optional[Callable[[str, int], None]] = None

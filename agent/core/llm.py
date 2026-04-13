@@ -277,6 +277,26 @@ def build_system_prompt(
 {memory_section}
 {scratchpad_section}
 
+## 完成任务前的必要步骤（重要！）
+
+在调用 action='done' 之前，你必须完成以下两个步骤：
+
+1. **提交完成报告**：调用 submit_completion_report 工具，提供详细的完成报告，包括：
+   - goal_understanding: 你对任务目标的理解
+   - completed_work: 已完成的工作列表
+   - remaining_gaps: 未完成的工作列表（如果有）
+   - evidence_type: 证据类型（artifact/tool_result/observation/none）
+   - evidence: 证据列表（根据 evidence_type 提供）
+   - outcome: 完成状态（done/done_partial/done_blocked）
+   - confidence: 完成信心（low/medium/high）
+
+2. **记录情景记忆**：调用 append_episodic 工具，记录本次执行的关键信息，包括：
+   - path: 记忆文件路径（默认 ./memory_episodic.jsonl）
+   - summary: 一段话概括（100-300 字），包含关键操作、重要发现、最终结果
+   - tags: 逗号分隔的关键词，便于日后检索
+
+**重要提示**：仅仅在 final_answer 中声称"已提交完成报告并记录情景记忆"是无效的。你必须真正调用相应的工具，否则验收会失败，任务会继续循环直到你正确提交。
+
 ## 行为准则
 1. 每次只做一个动作（一次工具调用）
 2. 用 thought 展示完整推理，不要跳过
@@ -303,6 +323,29 @@ def build_system_prompt(
 
 # ── 响应解析器 ────────────────────────────────────────────────────────────────
 
+def _strip_thinking_tags(text: str) -> str:
+    """Remove inline thinking blocks emitted by reasoning models.
+
+    Handles:
+    - DeepSeek R1 / Qwen QwQ style: ``<think>...</think>``
+    - Variant spelling: ``<thinking>...</thinking>``
+    - Unclosed tags (model output cut off mid-think): strip from tag to end-of-block
+      or to the first ``{`` that looks like the real JSON payload.
+
+    Anthropic extended-thinking blocks are already stripped at the API layer
+    (``_extract_text`` keeps only ``type=="text"`` content blocks), so they
+    never reach this function.
+    """
+    # Remove fully closed blocks (DOTALL so thinking can span multiple lines).
+    text = re.sub(r"<think(?:ing)?>.*?</think(?:ing)?>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove unclosed opening tag and everything up to the first '{' of the JSON payload.
+    # Pattern: <think> ... { → keep from '{' onward.
+    text = re.sub(r"<think(?:ing)?>[^{]*(?=\{)", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # If there's still a dangling <think> with no following '{', drop it entirely.
+    text = re.sub(r"<think(?:ing)?>.*$", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return text
+
+
 def _extract_json(text: str) -> tuple:
     """Extract the first JSON *object* from *text* using three strategies.
 
@@ -324,6 +367,10 @@ def _extract_json(text: str) -> tuple:
     inside ``final_answer``) do not fool a fence regex into extracting non-JSON
     content as the payload.
     """
+    # Pre-process: strip thinking-model inline reasoning blocks before any JSON extraction.
+    # This handles DeepSeek R1 / Qwen QwQ <think>...</think> style output.
+    text = _strip_thinking_tags(text)
+
     dec = json.JSONDecoder()
     stripped = text.strip()
 
@@ -345,8 +392,14 @@ def _extract_json(text: str) -> tuple:
             except Exception:
                 pass
 
-    # 3) Generic brace scan — tries each ``{`` until one yields a complete object.
+    # 3) Generic brace scan — tries each ``{`` until one yields a complete agent response.
+    #
+    # IMPORTANT: only return immediately when the parsed object looks like an agent
+    # response (has "thought" or "action").  If we return an inner dict that happens
+    # to be valid JSON (e.g. the ``args`` sub-object), the caller will mis-classify
+    # the output as "prose without thought/action" and never retry with json_repair.
     parse_error: Exception = json.JSONDecodeError("No JSON object found", stripped, 0)
+    _brace_fallback = None  # best non-agent dict found, used only as last resort
     search_from = 0
     while True:
         idx = stripped.find("{", search_from)
@@ -354,12 +407,17 @@ def _extract_json(text: str) -> tuple:
             break
         try:
             obj, _ = dec.raw_decode(stripped[idx:])
-            return obj, None
+            if isinstance(obj, dict) and ("thought" in obj or "action" in obj):
+                return obj, None
+            if _brace_fallback is None:
+                _brace_fallback = obj  # save but keep scanning
         except Exception as e:
             parse_error = e
-            search_from = idx + 1
+        search_from = idx + 1
 
-    # 4) json_repair — handles malformed JSON from complex string escaping.
+    # 4) json_repair — handles malformed JSON (e.g. missing opening quote on a value).
+    #    Placed BEFORE returning the brace-scan fallback so that a mis-parsed inner
+    #    sub-object does not shadow a repairable outer response object.
     try:
         from json_repair import repair_json  # type: ignore
         repaired = repair_json(stripped, return_objects=True)
@@ -367,6 +425,10 @@ def _extract_json(text: str) -> tuple:
             return repaired, None
     except Exception:
         pass
+
+    # 5) Last resort: return whatever the brace scan found, even if not an agent dict.
+    if _brace_fallback is not None:
+        return _brace_fallback, None
 
     return None, parse_error
 
