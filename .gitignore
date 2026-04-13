@@ -41,3 +41,6 @@ raw_memory.ndjson
 
 # Memory files
 memory_macro.md
+
+# python environment
+venv/
