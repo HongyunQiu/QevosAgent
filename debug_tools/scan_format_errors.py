@@ -40,6 +40,12 @@ def iter_errors(runs_dir: Path, run_filter: str | None, last_n_runs: int = 0):
             except json.JSONDecodeError:
                 error_entry = {"role": "?", "content": raw}
 
+            # Only real system-injected format errors have role=="user".
+            # Skip assistant messages and tool results that happen to contain
+            # the marker string (e.g. a tool result returning this file's source code).
+            if error_entry.get("role") not in ("user", "?"):
+                continue
+
             prev_entry = None
             if i > 0:
                 try:

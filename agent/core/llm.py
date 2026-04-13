@@ -398,6 +398,10 @@ def parse_response(raw: str) -> Action:
             _has_split_structure = bool(re.search(r'"\s*\}\s*,\s*"action"', raw))
             # Detect single-quoted keys: {'key': ...}
             _has_single_quote_key = bool(re.search(r"\{\s*'[^']+'", raw))
+            # Detect unescaped Windows backslash paths, e.g. runs\20260413 or C:\Users.
+            # Valid JSON escape chars after '\': " \ / b f n r t u
+            # Anything else (digits, uppercase letters, etc.) is illegal.
+            _has_unescaped_backslash = bool(re.search(r'\\[^"\\/bfnrtu]', raw))
             # Detect pure prose that happens to contain incidental '{' (code/URL/dict snippets).
             # Heuristic: no '"action"' or '"thought"' key found anywhere in the raw text.
             _looks_like_prose = (
@@ -414,6 +418,18 @@ def parse_response(raw: str) -> Action:
                     '{"thought": "...", "action": "done", "final_answer": "..."}\n'
                     "如果需要继续调用工具，请使用：\n"
                     '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
+                )
+            elif _has_unescaped_backslash and not _has_bare_newline:
+                thought = (
+                    "JSON 格式错误：字符串内包含未转义的反斜杠。\n"
+                    "原因：Windows 路径（如 C:\\Users\\foo 或 runs\\20260413）中的 \\ 在 JSON 字符串里"
+                    "必须写成 \\\\，否则解析器会把 \\U、\\2 等当成非法的转义序列。\n"
+                    "错误修复示例：\n"
+                    '  错误: {"thought": "路径是 C:\\Users\\92680"}\n'
+                    '  正确: {"thought": "路径是 C:\\\\Users\\\\92680"}\n'
+                    "提示：在 thought / final_answer 中引用路径时，可以改用正斜杠（/）来避免此问题，"
+                    "例如 runs/20260413-140101 或 C:/Users/92680。\n"
+                    f"原始输出(截断): {raw[:300]}"
                 )
             elif "Invalid control character" in exc_str or _has_bare_newline:
                 thought = (
@@ -466,18 +482,34 @@ def parse_response(raw: str) -> Action:
     if not isinstance(data, dict):
         pass  # handled below
     # Heuristic: if the parsed dict has neither 'thought' nor 'action', it was likely
-    # spuriously extracted from incidental JSON inside plain prose (e.g. a code snippet).
+    # spuriously extracted from incidental JSON inside plain prose (e.g. a code snippet),
+    # OR the real JSON was mis-parsed due to unescaped backslashes stripping key fields.
     elif "thought" not in data and "action" not in data:
-        return Action(
-            type=ActionType.ERROR,
-            thought=(
+        _has_unescaped_backslash = bool(re.search(r'\\[^"\\/bfnrtu\n]', raw))
+        if _has_unescaped_backslash:
+            _prose_thought = (
+                "JSON 格式错误：字符串内包含未转义的反斜杠。\n"
+                "原因：Windows 路径（如 C:\\Users\\foo 或 runs\\20260413）中的 \\ 在 JSON 字符串里"
+                "必须写成 \\\\，否则解析器会把 \\U、\\2 等当成非法的转义序列并丢失字段。\n"
+                "错误修复示例：\n"
+                '  错误: {"thought": "路径是 C:\\Users\\92680"}\n'
+                '  正确: {"thought": "路径是 C:\\\\Users\\\\92680"}\n'
+                "提示：在 thought / final_answer 中引用路径时，可以改用正斜杠（/）来避免此问题，"
+                "例如 runs/20260413-140101 或 C:/Users/92680。\n"
+                f"原始输出(截断): {raw[:300]}"
+            )
+        else:
+            _prose_thought = (
                 "你的上一条输出是纯文本（其中虽包含 JSON 片段，但不包含 thought / action 字段）。\n"
                 "无论任务是否完成，都必须通过 JSON 格式输出，不能直接输出纯文本。\n"
                 "如果任务已完成，请使用：\n"
                 '{"thought": "...", "action": "done", "final_answer": "..."}\n'
                 "如果需要继续调用工具，请使用：\n"
                 '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
-            ),
+            )
+        return Action(
+            type=ActionType.ERROR,
+            thought=_prose_thought,
         )
     if not isinstance(data, dict):
         return Action(
