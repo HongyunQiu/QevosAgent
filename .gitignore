@@ -44,3 +44,6 @@ memory_macro.md
 
 # python environment
 venv/
+
+# others
+config/
