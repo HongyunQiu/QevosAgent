@@ -1,0 +1,45 @@
+{
+  "name": "simpleagent-desktop",
+  "version": "0.1.0",
+  "description": "simpleAgent Desktop App",
+  "main": "main.js",
+  "scripts": {
+    "start":     "electron .",
+    "setup":     "node scripts/setup_python.js",
+    "build":     "electron-builder --win",
+    "build:dir": "electron-builder --win --dir"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron":         "^34.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId":       "com.simpleagent.desktop",
+    "productName": "simpleAgent",
+    "asar":        false,
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick":                        false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine":                      false,
+      "deleteAppDataOnUninstall":        false
+    },
+    "files": [
+      "**/*",
+      "!scripts/**",
+      "!dist/**"
+    ],
+    "directories": {
+      "output": "dist"
+    }
+  }
+}

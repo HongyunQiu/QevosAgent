@@ -39,7 +39,11 @@ class ToolResult:
     def to_str(self) -> str:
         if self.success:
             return str(self.output)
-        return f"[TOOL ERROR] {self.error}"
+        # 失败时也返回 output 内容，便于调试
+        result_parts = [f"[TOOL ERROR] {self.error}"]
+        if self.output:
+            result_parts.append("Output:\n" + str(self.output))
+        return "\n\n".join(result_parts)
 
 
 # ── 工具描述（用于构建 system prompt）────────────────────────────────────────

@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>simpleAgent — 设置</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 32px 16px;
+      -webkit-app-region: drag;
+    }
+
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 36px 40px;
+      width: 100%;
+      max-width: 480px;
+      -webkit-app-region: no-drag;
+    }
+
+    /* ── Header ── */
+    .header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .logo {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+    .logo span { color: #388bfd; }
+    .subtitle {
+      font-size: 13px;
+      color: #7d8590;
+    }
+
+    /* ── Form ── */
+    .form-group {
+      margin-bottom: 18px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      color: #cdd9e5;
+      margin-bottom: 6px;
+    }
+    .required-mark { color: #f85149; margin-left: 2px; }
+
+    .input-wrap {
+      position: relative;
+    }
+    input[type="text"],
+    input[type="password"],
+    input[type="number"] {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #e6edf3;
+      font-size: 13px;
+      padding: 8px 12px;
+      outline: none;
+      transition: border-color 0.15s;
+      font-family: inherit;
+    }
+    input:focus { border-color: #388bfd; }
+    input.error  { border-color: #f85149; }
+    input::placeholder { color: #484f58; }
+
+    /* password toggle */
+    .toggle-pw {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #7d8590;
+      padding: 2px;
+      font-size: 12px;
+      line-height: 1;
+    }
+    .toggle-pw:hover { color: #cdd9e5; }
+    input[type="password"] { padding-right: 36px; }
+
+    .hint {
+      margin-top: 4px;
+      font-size: 11px;
+      color: #7d8590;
+    }
+    .hint code {
+      background: #21262d;
+      border-radius: 3px;
+      padding: 1px 4px;
+      font-family: 'SF Mono', Consolas, monospace;
+      font-size: 11px;
+      color: #cdd9e5;
+    }
+
+    /* ── Divider ── */
+    .divider {
+      border: none;
+      border-top: 1px solid #21262d;
+      margin: 22px 0;
+    }
+
+    /* ── Buttons ── */
+    .btn-primary {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      background: #238636;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      border: 1px solid rgba(240,246,252,0.1);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+      font-family: inherit;
+    }
+    .btn-primary:hover:not(:disabled) { background: #2ea043; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-secondary {
+      display: block;
+      width: 100%;
+      padding: 8px;
+      background: transparent;
+      color: #7d8590;
+      font-size: 13px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-top: 10px;
+      transition: color 0.15s, border-color 0.15s;
+      font-family: inherit;
+    }
+    .btn-secondary:hover { color: #cdd9e5; border-color: #6e7681; }
+
+    /* ── Messages ── */
+    .msg {
+      display: none;
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 12px;
+      margin-bottom: 16px;
+      line-height: 1.5;
+    }
+    .msg.error   { display: block; background: #1a0a0a; border: 1px solid #6e2b2b; color: #f85149; }
+    .msg.success { display: block; background: #0a1a0e; border: 1px solid #2d5a2d; color: #3fb950; }
+    .msg.info    { display: block; background: #0d1b2a; border: 1px solid #1f4068; color: #79c0ff; }
+  </style>
+</head>
+<body>
+  <div class="card">
+
+    <div class="header">
+      <div class="logo">simple<span>Agent</span></div>
+      <div class="subtitle">首次使用需要配置 LLM 服务连接</div>
+    </div>
+
+    <div id="msg-box" class="msg"></div>
+
+    <form id="settings-form" autocomplete="off">
+
+      <!-- API 服务地址 -->
+      <div class="form-group">
+        <label for="base-url">API 服务地址<span class="required-mark">*</span></label>
+        <input type="text" id="base-url" name="OPENAI_BASE_URL"
+               placeholder="http://127.0.0.1:8080/v1" required>
+        <div class="hint">OpenAI 兼容接口的 base URL，例如本地 Ollama、LM Studio、vLLM 等</div>
+      </div>
+
+      <!-- API 密钥 -->
+      <div class="form-group">
+        <label for="api-key">API 密钥</label>
+        <div class="input-wrap">
+          <input type="password" id="api-key" name="OPENAI_API_KEY"
+                 placeholder="sk-… 或 local（本地服务）">
+          <button type="button" class="toggle-pw" id="toggle-key" title="显示/隐藏">👁</button>
+        </div>
+        <div class="hint">本地服务留空或填 <code>local</code>；云端服务填对应 API Key</div>
+      </div>
+
+      <!-- 模型名称 -->
+      <div class="form-group">
+        <label for="model">模型名称<span class="required-mark">*</span></label>
+        <input type="text" id="model" name="OPENAI_MODEL"
+               placeholder="gpt-4o / qwen3-72b / deepseek-chat" required>
+        <div class="hint">与服务端返回的 model id 保持一致</div>
+      </div>
+
+      <!-- 最大迭代次数 -->
+      <div class="form-group">
+        <label for="max-iters">最大迭代次数</label>
+        <input type="number" id="max-iters" name="MAX_ITERS"
+               placeholder="100" min="1" max="500" value="100">
+        <div class="hint">Agent 单次任务最多执行的步骤数，默认 100</div>
+      </div>
+
+      <hr class="divider">
+
+      <button type="submit" class="btn-primary" id="btn-save">保存并启动</button>
+      <button type="button" class="btn-secondary" id="btn-skip">已配置，直接进入</button>
+
+    </form>
+  </div>
+
+  <script>
+    const form     = document.getElementById('settings-form');
+    const msgBox   = document.getElementById('msg-box');
+    const btnSave  = document.getElementById('btn-save');
+    const btnSkip  = document.getElementById('btn-skip');
+    const keyInput = document.getElementById('api-key');
+    const togglePw = document.getElementById('toggle-key');
+
+    // ── Show password toggle ──────────────────────────────────────────────
+    togglePw.addEventListener('click', () => {
+      const isPassword = keyInput.type === 'password';
+      keyInput.type = isPassword ? 'text' : 'password';
+      togglePw.textContent = isPassword ? '🙈' : '👁';
+    });
+
+    // ── Pre-fill from existing .env ───────────────────────────────────────
+    async function prefill() {
+      try {
+        const env = await window.electronAPI.readEnv();
+        if (env.OPENAI_BASE_URL) document.getElementById('base-url').value  = env.OPENAI_BASE_URL;
+        if (env.OPENAI_API_KEY)  document.getElementById('api-key').value   = env.OPENAI_API_KEY;
+        if (env.OPENAI_MODEL)    document.getElementById('model').value     = env.OPENAI_MODEL;
+        if (env.MAX_ITERS)       document.getElementById('max-iters').value = env.MAX_ITERS;
+      } catch (e) { /* first run, no .env yet */ }
+    }
+    prefill();
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+    function showMsg(type, text) {
+      msgBox.className = `msg ${type}`;
+      msgBox.textContent = text;
+    }
+
+    function setLoading(on) {
+      btnSave.disabled = on;
+      btnSave.textContent = on ? '正在启动…' : '保存并启动';
+    }
+
+    async function launchDashboard() {
+      showMsg('info', '正在启动 Dashboard，请稍候…');
+      await window.electronAPI.openDashboard();
+    }
+
+    // ── Save form ─────────────────────────────────────────────────────────
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      msgBox.className = 'msg'; // hide
+
+      const baseUrl = document.getElementById('base-url').value.trim();
+      const model   = document.getElementById('model').value.trim();
+      if (!baseUrl) { showMsg('error', 'API 服务地址不能为空'); return; }
+      if (!model)   { showMsg('error', '模型名称不能为空'); return; }
+
+      setLoading(true);
+      try {
+        const data = {
+          OPENAI_BASE_URL: baseUrl,
+          OPENAI_API_KEY:  document.getElementById('api-key').value.trim() || 'local',
+          OPENAI_MODEL:    model,
+          MAX_ITERS:       document.getElementById('max-iters').value.trim() || '100',
+        };
+        await window.electronAPI.saveEnv(data);
+        await launchDashboard();
+      } catch (err) {
+        showMsg('error', '保存失败：' + err.message);
+        setLoading(false);
+      }
+    });
+
+    // ── Skip (already configured) ─────────────────────────────────────────
+    btnSkip.addEventListener('click', async () => {
+      btnSkip.disabled = true;
+      btnSkip.textContent = '正在进入…';
+      try {
+        await launchDashboard();
+      } catch (err) {
+        showMsg('error', '启动失败：' + err.message);
+        btnSkip.disabled = false;
+        btnSkip.textContent = '已配置，直接进入';
+      }
+    });
+  </script>
+</body>
+</html>
