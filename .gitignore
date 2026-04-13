@@ -38,3 +38,6 @@ raw_memory.ndjson
 
 # Misc
 .DS_Store
+
+# Memory files
+memory_macro.md
