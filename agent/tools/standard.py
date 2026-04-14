@@ -251,13 +251,25 @@ def _find_python_executable() -> str:
     if env_exec and _os.path.isfile(env_exec):
         return env_exec
 
-    # 3. Windows 常见路径（按优先级）
-    candidates = [
-        r"C:\Users\92680\Anaconda3\envs\nanoGPT\python.exe",
-        r"C:\Users\92680\Anaconda3\python.exe",
-        r"C:\Python311\python.exe",
-        r"C:\Python310\python.exe",
-    ]
+    # 3. Windows 常见路径（动态检测，不硬编码个人路径）
+    user_home = _os.path.expanduser("~")
+    candidates = []
+    # Anaconda / Miniconda（当前用户下的常见位置）
+    for conda_dir in ("Anaconda3", "Miniconda3"):
+        conda_base = _os.path.join(user_home, conda_dir)
+        if _os.path.isdir(conda_base):
+            candidates.append(_os.path.join(conda_base, "python.exe"))
+            # 也检查 envs 下的子环境
+            envs_dir = _os.path.join(conda_base, "envs")
+            if _os.path.isdir(envs_dir):
+                try:
+                    for env_name in sorted(_os.listdir(envs_dir)):
+                        candidates.append(_os.path.join(envs_dir, env_name, "python.exe"))
+                except OSError:
+                    pass
+    # 系统级安装
+    for ver in ("313", "312", "311", "310", "39"):
+        candidates.append(f"C:\\Python{ver}\\python.exe")
     for c in candidates:
         if _os.path.isfile(c):
             return c
@@ -1550,6 +1562,47 @@ def tool_jobs_list(state: AgentState) -> ToolResult:
     return ToolResult(success=True, output=jobs)
 
 
+# ── 网络搜索 ────────────────────────────────────────────────────────────────
+
+
+def tool_web_search(state: AgentState, query: str, max_results: int = 5) -> ToolResult:
+    """使用 DuckDuckGo 搜索引擎进行网络搜索并返回结果摘要。"""
+    if not query or not query.strip():
+        return ToolResult(success=False, output=None, error="query 不能为空")
+    try:
+        max_results = int(max_results)
+    except (TypeError, ValueError):
+        max_results = 5
+    max_results = max(1, min(max_results, 20))
+
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        try:
+            from duckduckgo_search import DDGS
+        except ImportError:
+            return ToolResult(
+                success=False, output=None,
+                error="ddgs 未安装。请运行: pip install ddgs",
+            )
+
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        if not results:
+            return ToolResult(success=True, output={"query": query, "results": [], "count": 0})
+        formatted = []
+        for r in results:
+            formatted.append({
+                "title": r.get("title", ""),
+                "url": r.get("href", ""),
+                "snippet": r.get("body", ""),
+            })
+        return ToolResult(success=True, output={"query": query, "results": formatted, "count": len(formatted)})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=f"搜索失败: {e}")
+
+
 def get_standard_tools() -> dict[str, ToolSpec]:
     """返回标准工具集（直接传给 agent.run()）。"""
     specs = [
@@ -1699,6 +1752,18 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "replace_all": "（可选，默认 false）true = 替换文件中所有匹配项；false = 仅替换第一处（若出现多次则报错）",
             },
             fn=tool_edit_file,
+        ),
+        ToolSpec(
+            name="web_search",
+            description=(
+                "使用 DuckDuckGo 搜索引擎进行网络搜索。"
+                "返回标题、URL 和摘要。适合查找技术文档、解决方案、最新资讯等。"
+            ),
+            args_schema={
+                "query": "搜索关键词（字符串）",
+                "max_results": "（可选）最多返回结果数，默认 5，最大 20",
+            },
+            fn=tool_web_search,
         ),
         ToolSpec(
             name="set_goal",
