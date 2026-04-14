@@ -124,6 +124,31 @@ input, textarea { font-family: inherit; font-size: inherit; }
 .ws-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
 .ws-dot.ok { background: var(--green); }
 
+/* ── Font size toggle ────────────────────────────────────────────────── */
+.font-size-btn {
+  display: flex; align-items: center; gap: 3px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 20px; padding: 3px 9px;
+  transition: border-color 0.15s; cursor: pointer;
+}
+.font-size-btn:hover { border-color: var(--blue); }
+.fs-a { color: var(--muted); transition: color 0.15s; font-weight: 700; line-height: 1; }
+.fs-a-sm { font-size: 10px; }
+.fs-a-lg { font-size: 15px; }
+body:not(.large-font) .fs-a-sm { color: var(--text); }
+body:not(.large-font) .fs-a-lg { color: var(--muted); opacity: 0.45; }
+body.large-font .fs-a-sm { color: var(--muted); opacity: 0.45; }
+body.large-font .fs-a-lg { color: var(--blue); }
+body.large-font .font-size-btn { border-color: rgba(88,166,255,0.35); }
+
+/* Large font mode — scale entire app 1.5× */
+body.large-font .app {
+  transform: scale(1.5);
+  transform-origin: top left;
+  width: calc(100vw / 1.5);
+  height: calc(100vh / 1.5);
+}
+
 /* ── Sidebar ─────────────────────────────────────────────────────────── */
 .sidebar {
   grid-area: sidebar;
@@ -283,6 +308,12 @@ input, textarea { font-family: inherit; font-size: inherit; }
 .ev-ask-user .ev-ask-q { font-size:12.5px; color:var(--text); line-height:1.6; white-space:pre-wrap; word-break:break-word; }
 .ev-user-answer { padding:7px 12px; background:rgba(88,166,255,0.05); border-left:3px solid rgba(88,166,255,0.4); }
 .ev-user-answer .ev-body { font-size:11.5px; color:var(--blue); line-height:1.5; }
+
+.ev-advisor { background:rgba(192,132,252,0.07); border:1px solid rgba(192,132,252,0.35); border-radius:5px; padding:10px 13px; }
+.ev-advisor-header { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.ev-advisor-label { font-size:11px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:#c084fc; }
+.ev-advisor-reason { font-size:11px; color:rgba(192,132,252,0.65); font-family:var(--mono); }
+.ev-advisor .ev-body { font-size:12.5px; color:var(--text); line-height:1.65; white-space:pre-wrap; word-break:break-word; }
 
 .ev-stream-output {
   background: rgba(255,166,87,0.04); border-left: 3px solid rgba(255,166,87,0.4);
@@ -628,6 +659,11 @@ input, textarea { font-family: inherit; font-size: inherit; }
     </div>
     <button class="kill-btn" id="killBtn" onclick="killAgent()" title="Terminate agent process">⏹ Kill</button>
     <div class="topbar-gap"></div>
+    <button class="font-size-btn" id="fontSizeBtn" onclick="toggleFontSize()" title="切换字号 / Toggle font size">
+      <span class="fs-a fs-a-sm">A</span>
+      <span class="fs-a fs-a-lg">A</span>
+    </button>
+    <div class="topbar-sep"></div>
     <div class="ws-pill">
       <div class="ws-dot" id="wsDot"></div>
       <span id="wsLabel">Connecting…</span>
@@ -676,6 +712,7 @@ input, textarea { font-family: inherit; font-size: inherit; }
       <span class="count-badge" id="evCount">0</span>
       <div class="ctab-sep"></div>
       <button class="center-tab" id="ctab-agentsmd" onclick="setCenterTab('agentsmd')">AGENTS.md</button>
+      <button class="center-tab" id="ctab-advisormd" onclick="setCenterTab('advisormd')">ADVISOR.md</button>
       <button class="center-tab" id="ctab-files" onclick="setCenterTab('files')">Run Files</button>
       <button class="center-tab" id="ctab-memory" onclick="setCenterTab('memory')">Memory</button>
       <div class="bar-gap"></div>
@@ -707,6 +744,22 @@ input, textarea { font-family: inherit; font-size: inherit; }
       <div class="agents-body">
         <div class="md-render agents-view" id="agentsMdView"></div>
         <textarea class="agents-edit" id="agentsMdEdit" style="display:none" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <!-- ADVISOR.md pane -->
+    <div class="center-pane" id="cpane-advisormd">
+      <div class="agents-toolbar">
+        <span class="agents-title">ADVISOR.md</span>
+        <span class="agents-hint" id="advisorMdHint"></span>
+        <div class="bar-gap"></div>
+        <button class="icon-btn" id="advisorMdEditBtn" onclick="enterAdvisorMdEdit()">✎ Edit</button>
+        <button class="icon-btn" id="advisorMdSaveBtn" style="display:none" onclick="saveAdvisorMd()">✓ Save</button>
+        <button class="icon-btn" id="advisorMdCancelBtn" style="display:none" onclick="cancelAdvisorMdEdit()">✕ Cancel</button>
+      </div>
+      <div class="agents-body">
+        <div class="md-render agents-view" id="advisorMdView"></div>
+        <textarea class="agents-edit" id="advisorMdEdit" style="display:none" spellcheck="false"></textarea>
       </div>
     </div>
 
@@ -1151,6 +1204,14 @@ function renderEvent(ev) {
       return `<div class="ev ev-done"><div class="ev-label">✓ Task complete</div><div class="ev-body">${esc(ev.answer || '')}</div></div>`;
     case 'error':
       return `<div class="ev ev-error"><div class="ev-body">✗ ${esc(ev.text || 'Error occurred')}</div></div>`;
+    case 'advisor':
+      return `<div class="ev ev-advisor">
+        <div class="ev-advisor-header">
+          <span class="ev-advisor-label">🔮 Senior Advisor</span>
+          <span class="ev-advisor-reason">${esc(ev.reason || '')}</span>
+        </div>
+        <div class="ev-body">${esc(ev.text || '')}</div>
+      </div>`;
     case 'injected':
       return `<div class="ev ev-injected"><span class="arrow">→</span><span class="cmd">${esc(ev.text)}</span></div>`;
     case 'user_answer':
@@ -1450,18 +1511,20 @@ function toast(msg) {
 // ── Center tabs ───────────────────────────────────────────────────────────
 let gCenterTab     = 'events';
 let gAgentsMdOrig  = '';
+let gAdvisorMdOrig = '';
 let gSelectedFile  = null;
 
 function setCenterTab(name) {
   gCenterTab = name;
-  ['events', 'agentsmd', 'files', 'memory'].forEach(n => {
+  ['events', 'agentsmd', 'advisormd', 'files', 'memory'].forEach(n => {
     document.getElementById('ctab-' + n).className  = 'center-tab' + (n === name ? ' active' : '');
     document.getElementById('cpane-' + n).className = 'center-pane' + (n === name ? ' active' : '');
   });
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
-  if (name === 'agentsmd') loadAgentsMd();
-  if (name === 'files')    loadRunFiles();
-  if (name === 'memory')   loadMemory();
+  if (name === 'agentsmd')  loadAgentsMd();
+  if (name === 'advisormd') loadAdvisorMd();
+  if (name === 'files')     loadRunFiles();
+  if (name === 'memory')    loadMemory();
 }
 
 // ── AGENTS.md ─────────────────────────────────────────────────────────────
@@ -1509,6 +1572,57 @@ async function saveAgentsMd() {
       document.getElementById('agentsMdHint').textContent = (content.length / 1024).toFixed(1) + ' KB';
       cancelAgentsMdEdit();
       toast('✓ AGENTS.md saved');
+    } else {
+      toast('✗ Save failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ Network error: ' + e.message); }
+}
+
+// ── ADVISOR.md ────────────────────────────────────────────────────────────
+async function loadAdvisorMd() {
+  try {
+    const data = await fetch('/api/advisor-md').then(r => r.json());
+    gAdvisorMdOrig = data.content || '';
+    document.getElementById('advisorMdView').innerHTML = typeof marked !== 'undefined' ? marked.parse(gAdvisorMdOrig) : `<pre>${gAdvisorMdOrig}</pre>`;
+    document.getElementById('advisorMdHint').textContent = (gAdvisorMdOrig.length / 1024).toFixed(1) + ' KB';
+  } catch (e) {
+    document.getElementById('advisorMdView').textContent = 'Error loading ADVISOR.md: ' + e.message;
+  }
+}
+
+function enterAdvisorMdEdit() {
+  const edit = document.getElementById('advisorMdEdit');
+  edit.value = gAdvisorMdOrig;
+  document.getElementById('advisorMdView').style.display     = 'none';
+  edit.style.display                                         = '';
+  document.getElementById('advisorMdEditBtn').style.display  = 'none';
+  document.getElementById('advisorMdSaveBtn').style.display  = '';
+  document.getElementById('advisorMdCancelBtn').style.display = '';
+  edit.focus();
+}
+
+function cancelAdvisorMdEdit() {
+  document.getElementById('advisorMdView').style.display     = '';
+  document.getElementById('advisorMdEdit').style.display     = 'none';
+  document.getElementById('advisorMdEditBtn').style.display  = '';
+  document.getElementById('advisorMdSaveBtn').style.display  = 'none';
+  document.getElementById('advisorMdCancelBtn').style.display = 'none';
+}
+
+async function saveAdvisorMd() {
+  const content = document.getElementById('advisorMdEdit').value;
+  try {
+    const res  = await fetch('/api/advisor-md', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      gAdvisorMdOrig = content;
+      document.getElementById('advisorMdView').innerHTML = typeof marked !== 'undefined' ? marked.parse(content) : `<pre>${content}</pre>`;
+      document.getElementById('advisorMdHint').textContent = (content.length / 1024).toFixed(1) + ' KB';
+      cancelAdvisorMdEdit();
+      toast('✓ ADVISOR.md saved');
     } else {
       toast('✗ Save failed: ' + (data.error || 'unknown'));
     }
@@ -1833,6 +1947,15 @@ function fmtSize(bytes) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
+// ── Font size toggle ──────────────────────────────────────────────────────
+function toggleFontSize() {
+  const large = document.body.classList.toggle('large-font');
+  localStorage.setItem('largeFontMode', large ? '1' : '');
+}
+if (localStorage.getItem('largeFontMode')) {
+  document.body.classList.add('large-font');
+}
+
 connectWs();
 </script>
 </body>

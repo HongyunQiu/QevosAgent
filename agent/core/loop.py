@@ -22,6 +22,7 @@ from .compression import (
     _auto_scratchpad_note,
     _rebuild_context_on_hard_block,
 )
+from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice
 
 
 
@@ -329,6 +330,19 @@ def console_hooks() -> AgentHooks:
         print(f"{ORANGE}   原因: 反复忽略循环警告，已清除污染上下文并注入新起点{RESET}")
         print(f"{ORANGE}{BOLD}{bar}{RESET}\n")
 
+    PURPLE = "\033[35m"
+
+    def on_advisor(reason: str, advice: str):
+        """高级指导员介入时的提示（紫色边框）。"""
+        bar = "─" * 60
+        preview = advice[:200].replace("\n", " ")
+        if len(advice) > 200:
+            preview += "…"
+        print(f"\n{PURPLE}{bar}{RESET}")
+        print(f"{PURPLE}[高级指导员 · {reason}]{RESET}")
+        print(f"{PURPLE}{preview}{RESET}")
+        print(f"{PURPLE}{bar}{RESET}\n")
+
     return AgentHooks(
         on_iteration_start=on_iter,
         on_thought=on_thought,
@@ -338,6 +352,7 @@ def console_hooks() -> AgentHooks:
         on_error=on_error,
         on_note=on_note,
         on_rebuild=on_rebuild,
+        on_advisor=on_advisor,
     )
 
 
@@ -456,6 +471,21 @@ def run(
                     state.meta['user_stopped'] = True
                     break
             # ─────────────────────────────────────────────────────────────────────
+
+            # ── 高级指导员：定期 + 主动请求触发 ─────────────────────────────────
+            _advisor_sys = state.meta.get("_advisor_system", "")
+            if _advisor_sys:
+                _should_advise, _advise_reason = should_trigger_advisor(
+                    state,
+                    interval=int(os.environ.get("ADVISOR_INTERVAL", "10")),
+                )
+                if _should_advise:
+                    _advice = run_advisor(state, llm, _advisor_sys, trigger_reason=_advise_reason)
+                    if _advice:
+                        inject_advisor_advice(state, _advice, _advise_reason)
+                        if hooks.on_advisor:
+                            hooks.on_advisor(_advise_reason, _advice)
+            # ─────────────────────────────────────────────────────────────────
 
             system = build_system_prompt(state.tools, state.long_term, scratchpad=state.meta.get("scratchpad", ""), concept_memory=state.meta.get("concept_memory", ""))
             messages = build_context_messages(state)
@@ -775,17 +805,36 @@ def run(
                         },
                     )
 
-                # ── 循环升级：自动向用户求助 ──────────────────────────────────
-                # _build_feedback 检测到循环次数超阈值时会设置此标志，
-                # 此处自动暂停并等待用户指导（替代原有的硬封锁机制）
+                # ── 循环升级：高级指导员介入 → 用户求助 ──────────────────────
+                # _build_feedback 检测到循环次数超阈值时会设置此标志。
+                # 若 advisor 可用且尚未为本次循环介入过，先让 advisor 尝试打破死局；
+                # advisor 介入后给 agent 一次机会继续执行，若仍循环则暂停求助用户。
                 need_help = state.meta.pop("_need_user_help", None)
                 if need_help:
+                    _advisor_sys = state.meta.get("_advisor_system", "")
+                    if _advisor_sys and not state.meta.get("_advisor_tried_for_loop"):
+                        _advice = run_advisor(
+                            state, llm, _advisor_sys, trigger_reason="loop_detected"
+                        )
+                        if _advice:
+                            inject_advisor_advice(state, _advice, "loop_detected")
+                            state.meta["_advisor_tried_for_loop"] = True
+                            if hooks.on_advisor:
+                                hooks.on_advisor("loop_detected", _advice)
+                            _checkpoint_state(state)
+                            state.iteration += 1
+                            continue  # 给 agent 一次机会，看是否能凭建议突破循环
+                    # advisor 已尝试或不可用：暂停等待用户指导
+                    state.meta.pop("_advisor_tried_for_loop", None)
                     state.meta["awaiting_input"] = need_help
                     state.meta["paused"] = True
                     if hooks.on_error:
                         hooks.on_error(f"[循环检测→用户求助] 自动暂停，等待用户指导")
                     _checkpoint_state(state, status="paused")
                     break
+                else:
+                    # 本轮未触发循环检测，重置 advisor 介入标志
+                    state.meta.pop("_advisor_tried_for_loop", None)
 
                 if os.environ.get("AUTO_RAW_LOG", "0") == "1":
                     try:

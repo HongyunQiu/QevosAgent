@@ -165,6 +165,13 @@ function parseLine(raw, lineIdx) {
         .trim();
       return { ...base, type: 'tool_result', tool: toolName, success, output: raw_out };
     }
+    if (content.startsWith('[高级指导员')) {
+      const reasonMatch = content.match(/\[高级指导员[^\]]*触发:\s*([^\]]+)\]/);
+      const reason = reasonMatch ? reasonMatch[1].trim() : 'unknown';
+      const bodyMatch = content.match(/^\[[^\]]+\]\s*\n\n([\s\S]*?)(?:\n\n---\n[\s\S]*)?$/);
+      const text = bodyMatch ? bodyMatch[1].trim() : content.replace(/^\[[^\]]+\]\s*\n?/, '').trim();
+      return { ...base, type: 'advisor', reason, text };
+    }
     if (content.startsWith('[用户干预注入]') || content.startsWith('[Web看板]')) {
       return { ...base, type: 'injected', text: content.replace(/^\[[^\]]+\]\s*\n?/, '').trim() };
     }
@@ -522,6 +529,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/advisor-md  ─────────────────────────────────────────────────
+  if (req.method === 'GET' && req.url === '/api/advisor-md') {
+    const content = readText(path.join(AGENT_DIR, 'ADVISOR.md')) || '';
+    json(200, { content });
+    return;
+  }
+
   // ── GET /api/memory-concept  ─────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/memory-concept') {
     const fp = path.join(AGENT_DIR, 'memory_macro.md');
@@ -568,6 +582,17 @@ const server = http.createServer(async (req, res) => {
       const { content } = JSON.parse(await readBody(req));
       if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
       fs.writeFileSync(path.join(AGENT_DIR, 'AGENTS.md'), content, 'utf8');
+      json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── POST /api/advisor-md  ────────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/api/advisor-md') {
+    try {
+      const { content } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      fs.writeFileSync(path.join(AGENT_DIR, 'ADVISOR.md'), content, 'utf8');
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;

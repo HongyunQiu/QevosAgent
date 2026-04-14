@@ -1603,6 +1603,19 @@ def tool_web_search(state: AgentState, query: str, max_results: int = 5) -> Tool
         return ToolResult(success=False, output=None, error=f"搜索失败: {e}")
 
 
+def tool_request_advisor(state: AgentState, reason: str = "") -> ToolResult:
+    """主动请求高级指导员在本轮结束后立即介入。"""
+    state.meta["_advisor_requested"] = True
+    state.meta["_advisor_request_reason"] = reason or "agent_requested"
+    return ToolResult(
+        success=True,
+        output={
+            "status": "advisor_scheduled",
+            "note": "高级指导员将在下一轮开始前介入，提供独立视角的战略性审视。",
+        },
+    )
+
+
 def get_standard_tools() -> dict[str, ToolSpec]:
     """返回标准工具集（直接传给 agent.run()）。"""
     specs = [
@@ -1792,6 +1805,17 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "confidence": "完成信心: low | medium | high（默认 medium）",
             },
             fn=tool_submit_completion_report,
+        ),
+        ToolSpec(
+            name="request_advisor",
+            description=(
+                "主动请求高级指导员在下一轮立即介入，提供独立视角的战略性审视意见。"
+                "当你感到迷失方向、陷入局部思维、或需要外部视角时使用。"
+            ),
+            args_schema={
+                "reason": "请求指导的原因（可选）：例如 '完成了阶段一，想确认方向' 或 '对下一步没有把握'",
+            },
+            fn=tool_request_advisor,
         ),
         ToolSpec(
             name="ask_user",

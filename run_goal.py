@@ -259,6 +259,20 @@ def main():
     initial_meta["_episodic_path"] = str(episodic_path)
     initial_meta["_concept_path"]  = str(concept_path)
 
+    # ── (4) 预加载高级指导员系统提示词 ────────────────────────────────────────
+    advisor_system = ""
+    advisor_path = Path("./ADVISOR.md")
+    if advisor_path.exists():
+        try:
+            advisor_system = advisor_path.read_text(encoding="utf-8").strip()
+            print(f"[run_goal] advisor: ADVISOR.md loaded ({len(advisor_system)} chars)")
+        except Exception as _ae:
+            print(f"[run_goal] advisor: failed to load ADVISOR.md: {_ae}")
+    else:
+        print("[run_goal] advisor: no ADVISOR.md found, senior advisor disabled")
+    initial_meta["_advisor_system"]   = advisor_system
+    initial_meta["_advisor_log_path"] = str(run_dir / "advisor_log.jsonl")
+
     # ── 目标前缀 ──────────────────────────────────────────────────────────────
     # 工具和记忆已由 Python 层预加载，无需 LLM 主动调用恢复命令。
     # 结束时告知 LLM 应调用 append_episodic 记录本次摘要。

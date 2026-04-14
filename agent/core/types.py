@@ -95,3 +95,5 @@ class AgentHooks:
     on_note:            Optional[Callable[[str, str], None]] = None
     # 上下文重建（被封锁的工具名、重建后的消息数量）
     on_rebuild:         Optional[Callable[[str, int], None]] = None
+    # 高级指导员（触发原因、指导意见文字）
+    on_advisor:         Optional[Callable[[str, str], None]] = None
