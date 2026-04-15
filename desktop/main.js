@@ -270,6 +270,7 @@ function createWindow() {
     minWidth:        800,
     minHeight:       600,
     title:           'simpleAgent',
+    icon:            path.join(__dirname, 'build', 'icon.ico'),
     backgroundColor: '#0d1117',
     webPreferences: {
       nodeIntegration:  false,
