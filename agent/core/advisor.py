@@ -172,7 +172,7 @@ def should_trigger_advisor(
     if iteration == 0:
         return False, ""
 
-    last_advised = state.meta.get("_advisor_last_iter", -interval)
+    last_advised = state.meta.get("_advisor_last_iter", 0)
     if iteration - last_advised >= interval:
         return True, f"periodic (iter={iteration})"
 

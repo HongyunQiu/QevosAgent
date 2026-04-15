@@ -473,6 +473,7 @@ def run(
             # ─────────────────────────────────────────────────────────────────────
 
             # ── 高级指导员：定期 + 主动请求触发 ─────────────────────────────────
+            import os
             _advisor_sys = state.meta.get("_advisor_system", "")
             if _advisor_sys:
                 _should_advise, _advise_reason = should_trigger_advisor(
