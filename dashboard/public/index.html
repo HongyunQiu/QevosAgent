@@ -34,7 +34,7 @@ input, textarea { font-family: inherit; font-size: inherit; }
 /* ── Layout ──────────────────────────────────────────────────────────── */
 .app {
   display: grid;
-  height: 100vh;
+  height: 100dvh;
   grid-template-rows: 33px 1fr 54px;
   grid-template-columns: 230px 1fr 310px;
   grid-template-areas:
@@ -146,7 +146,7 @@ body.large-font .app {
   transform: scale(1.5);
   transform-origin: top left;
   width: calc(100vw / 1.5);
-  height: calc(100vh / 1.5);
+  height: calc(100dvh / 1.5);
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────── */
@@ -642,6 +642,91 @@ body.large-font .app {
   background: var(--bg2); border: 1px solid var(--orange);
   border-radius: 4px; padding: 6px 10px; font-size: 11px; color: var(--orange);
 }
+
+/* ── Mobile buttons (hidden on desktop) ──────────────────────────────────── */
+.mobile-menu-btn,
+.mobile-panel-btn {
+  display: none;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 9px; font-size: 15px; color: var(--muted);
+  align-items: center; justify-content: center; flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+.mobile-menu-btn:hover,  .mobile-panel-btn:hover  { border-color: var(--blue); color: var(--blue); }
+.mobile-menu-btn.open,   .mobile-panel-btn.open   { border-color: rgba(88,166,255,0.5); color: var(--blue); }
+
+/* ── Mobile overlay backdrop ─────────────────────────────────────────────── */
+.mobile-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.55); z-index: 99;
+}
+.mobile-overlay.visible { display: block; }
+
+/* ── Mobile layout (≤ 768px portrait) ───────────────────────────────────── */
+@media (max-width: 768px), (orientation: portrait) {
+  /* Single-column grid — sidebar and right panel removed from flow */
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 44px 1fr 54px;
+    grid-template-areas:
+      "topbar"
+      "events"
+      "cmdbar";
+    height: 100dvh;
+  }
+
+  /* Topbar: taller for touch, hide desktop-only items */
+  .topbar         { height: 44px; padding: 0 12px; gap: 8px; }
+  .font-size-btn  { display: none; }
+  .topbar-sep     { display: none; }
+  .ws-pill        { display: none; }
+
+  /* Show mobile toggle buttons */
+  .mobile-menu-btn,
+  .mobile-panel-btn { display: flex; }
+
+  /* Sidebar: left drawer */
+  .sidebar {
+    position: fixed;
+    top: 44px; bottom: 54px; left: 0;
+    width: 80vw; max-width: 300px;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.4);
+  }
+  .sidebar.open { transform: translateX(0); }
+
+  /* Right panel: right drawer */
+  .right-panel {
+    position: fixed;
+    top: 44px; bottom: 54px; right: 0;
+    width: 85vw; max-width: 320px;
+    z-index: 100;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    box-shadow: -4px 0 20px rgba(0,0,0,0.4);
+  }
+  .right-panel.open { transform: translateX(0); }
+
+  /* Command bar: larger touch targets */
+  .cmd-input { padding: 10px 13px; }
+  .cmd-send  { padding: 10px 16px; }
+
+  /* Run Files: stack tree above content instead of side-by-side */
+  .files-body { flex-direction: column; }
+  .files-tree {
+    width: 100%; height: 150px; flex-shrink: 0;
+    border-right: none; border-bottom: 1px solid var(--border);
+  }
+
+  /* Large-font mode: disable scale transform on mobile */
+  body.large-font .app {
+    transform: none;
+    width: 100%;
+    height: 100dvh;
+  }
+}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 </head>
@@ -650,6 +735,7 @@ body.large-font .app {
 
   <!-- ── Top Bar ─────────────────────────────────────────────────── -->
   <header class="topbar">
+    <button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleMobileSidebar()" title="Sidebar">☰</button>
     <div class="logo">
       <div class="logo-icon">⚡</div>
       simpleAgent
@@ -670,6 +756,7 @@ body.large-font .app {
       <div class="ws-dot" id="wsDot"></div>
       <span id="wsLabel">Connecting…</span>
     </div>
+    <button class="mobile-panel-btn" id="mobilePanelBtn" onclick="toggleMobileRightPanel()" title="Panel">⊞</button>
   </header>
 
   <!-- ── Sidebar ────────────────────────────────────────────────── -->
@@ -871,6 +958,9 @@ body.large-font .app {
     <button class="cmd-send" id="cmdSendBtn" onclick="sendCmd()">Send</button>
   </div>
 </div>
+
+<!-- Mobile overlay backdrop (closes drawers on tap) -->
+<div class="mobile-overlay" id="mobileOverlay" onclick="closeMobilePanels()"></div>
 
 <div id="toast"></div>
 
@@ -1946,6 +2036,35 @@ function fmtSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+// ── Mobile panel toggles ──────────────────────────────────────────────────
+function closeMobilePanels() {
+  document.querySelector('.sidebar').classList.remove('open');
+  document.querySelector('.right-panel').classList.remove('open');
+  document.getElementById('mobileOverlay').classList.remove('visible');
+  document.getElementById('mobileMenuBtn').classList.remove('open');
+  document.getElementById('mobilePanelBtn').classList.remove('open');
+}
+
+function toggleMobileSidebar() {
+  const isOpen = document.querySelector('.sidebar').classList.contains('open');
+  closeMobilePanels();
+  if (!isOpen) {
+    document.querySelector('.sidebar').classList.add('open');
+    document.getElementById('mobileOverlay').classList.add('visible');
+    document.getElementById('mobileMenuBtn').classList.add('open');
+  }
+}
+
+function toggleMobileRightPanel() {
+  const isOpen = document.querySelector('.right-panel').classList.contains('open');
+  closeMobilePanels();
+  if (!isOpen) {
+    document.querySelector('.right-panel').classList.add('open');
+    document.getElementById('mobileOverlay').classList.add('visible');
+    document.getElementById('mobilePanelBtn').classList.add('open');
+  }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
