@@ -65,7 +65,9 @@ loadDotenv();
 // vendor/python/python.exe is created by `npm run setup`.
 // It takes priority over any PYTHON_CMD in .env.
 
-const EMBEDDED_PYTHON = path.join(__dirname, 'vendor', 'python', 'python.exe');
+const EMBEDDED_PYTHON = process.platform === 'win32'
+  ? path.join(__dirname, 'vendor', 'python', 'python.exe')
+  : path.join(__dirname, 'vendor', 'python', 'bin', 'python3');
 if (fs.existsSync(EMBEDDED_PYTHON)) {
   process.env.PYTHON_CMD = EMBEDDED_PYTHON;
   console.log('[desktop] Embedded Python:', EMBEDDED_PYTHON);
@@ -270,7 +272,10 @@ function createWindow() {
     minWidth:        800,
     minHeight:       600,
     title:           'simpleAgent',
-    icon:            path.join(__dirname, 'build', 'icon.ico'),
+    icon:            path.join(__dirname, 'build',
+                       process.platform === 'darwin' ? 'icon.icns'
+                     : process.platform === 'linux'  ? 'icon.png'
+                     : 'icon.ico'),
     backgroundColor: '#0d1117',
     webPreferences: {
       nodeIntegration:  false,
