@@ -350,11 +350,13 @@ body.large-font .app {
 .tab-pane.active { display:flex; }
 
 .sp-hint { padding:4px 14px; font-size:10.5px; color:var(--muted); border-bottom:1px solid var(--border); flex-shrink:0; }
-.sp-body { flex:1; overflow-y:auto; padding:12px 14px; font-family:var(--mono); font-size:11.5px; line-height:1.75; color:#c5d0db; white-space:pre-wrap; word-break:break-word; }
+.sp-body { flex:1; overflow-y:auto; padding:12px 14px; font-family:var(--mono); font-size:11.5px; line-height:1.45; color:#c5d0db; white-space:pre-wrap; word-break:break-word; }
 .sp-empty { color:var(--muted); font-style:italic; }
 
 .jobs-list { flex:1; overflow-y:auto; padding:10px; }
-.job-card { background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:10px 12px; margin-bottom:8px; }
+.job-card { background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:10px 12px; margin-bottom:8px; cursor:pointer; user-select:none; transition:border-color 0.15s; }
+.job-card:hover { border-color:var(--muted); }
+.job-card.expanded { border-color:var(--blue); }
 .job-top { display:flex; align-items:center; gap:8px; margin-bottom:5px; }
 .job-id { font-family:var(--mono); font-size:11px; color:var(--muted); }
 .job-badge { font-size:10px; font-weight:700; padding:1px 6px; border-radius:3px; text-transform:uppercase; letter-spacing:0.5px; }
@@ -363,6 +365,11 @@ body.large-font .app {
 .job-badge.FAILED   { background:rgba(248,81,73,0.18); color:var(--red); }
 .job-badge.CANCELLED{ background:rgba(125,133,144,0.15); color:var(--muted); }
 .job-cmd { font-family:var(--mono); font-size:11px; color:var(--cyan); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.job-toggle { font-size:10px; color:var(--muted); margin-left:auto; flex-shrink:0; }
+.job-output-wrap { display:none; margin-top:8px; }
+.job-card.expanded .job-output-wrap { display:block; }
+.job-output { background:var(--bg); border-radius:4px; padding:8px 10px; font-family:var(--mono); font-size:10.5px; line-height:1.65; color:#b8c8d8; white-space:pre-wrap; word-break:break-word; max-height:220px; overflow-y:auto; border:1px solid var(--border); }
+.job-output-empty { color:var(--muted); font-style:italic; }
 .jobs-empty { color:var(--muted); font-size:12px; text-align:center; padding:20px; }
 
 /* Console tab */
@@ -978,6 +985,8 @@ let gIsLaunching   = false;
 let gStreamBuf     = [];          // stdout lines buffered while a tool_call is pending
 const STREAM_MAX   = 300;
 let gPendingToolIdx = null;       // idx of the tool_call we're currently streaming for
+const gJobExpanded = {};          // { jobId: boolean } — which job cards are expanded
+const gJobPollers  = {};          // { jobId: intervalId } — polling timers for running jobs
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
 function connectWs() {
@@ -1341,11 +1350,85 @@ function renderJobs(events) {
   const list  = document.getElementById('jobsList');
   const items = Object.values(jobs);
   if (!items.length) { list.innerHTML = '<div class="jobs-empty">No background jobs detected</div>'; return; }
-  list.innerHTML = items.map(j => `
-    <div class="job-card">
-      <div class="job-top"><span class="job-id">${esc(j.id)}</span><span class="job-badge ${j.status}">${j.status}</span></div>
+
+  const runId = gViewRunId || '';
+  list.innerHTML = items.map(j => {
+    const expanded  = !!gJobExpanded[j.id];
+    const isRunning = j.status === 'running' || j.status === 'RUNNING';
+    return `
+    <div class="job-card${expanded ? ' expanded' : ''}" onclick="toggleJobCard('${j.id}','${runId}')">
+      <div class="job-top">
+        <span class="job-id">${esc(j.id)}</span>
+        <span class="job-badge ${j.status}">${j.status}</span>
+        ${isRunning ? '<span class="job-badge RUNNING" style="font-size:9px;padding:1px 4px;margin-left:2px;">LIVE</span>' : ''}
+        <span class="job-toggle">${expanded ? '▲' : '▼'}</span>
+      </div>
       ${j.command ? `<div class="job-cmd" title="${esc(j.command)}">${esc(j.command)}</div>` : ''}
-    </div>`).join('');
+      <div class="job-output-wrap">
+        <div class="job-output" id="job-output-${j.id}"><span class="job-output-empty">Loading…</span></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // For already-expanded jobs: fetch output and manage polling
+  items.forEach(j => {
+    if (!gJobExpanded[j.id]) return;
+    fetchJobOutput(j.id, runId);
+    const isRunning = j.status === 'running' || j.status === 'RUNNING';
+    if (isRunning && !gJobPollers[j.id]) {
+      gJobPollers[j.id] = setInterval(() => {
+        if (gJobExpanded[j.id]) fetchJobOutput(j.id, runId);
+        else { clearInterval(gJobPollers[j.id]); delete gJobPollers[j.id]; }
+      }, 1000);
+    } else if (!isRunning && gJobPollers[j.id]) {
+      clearInterval(gJobPollers[j.id]);
+      delete gJobPollers[j.id];
+    }
+  });
+}
+
+function toggleJobCard(jobId, runId) {
+  gJobExpanded[jobId] = !gJobExpanded[jobId];
+  const outputEl = document.getElementById(`job-output-${jobId}`);
+  if (!outputEl) return;
+  const card   = outputEl.closest('.job-card');
+  const toggle = card && card.querySelector('.job-toggle');
+
+  if (gJobExpanded[jobId]) {
+    card && card.classList.add('expanded');
+    if (toggle) toggle.textContent = '▲';
+    fetchJobOutput(jobId, runId);
+    // Start 1 s polling if job is still running
+    const badge = card && card.querySelector('.job-badge.RUNNING');
+    if (badge && !gJobPollers[jobId]) {
+      gJobPollers[jobId] = setInterval(() => {
+        if (gJobExpanded[jobId]) fetchJobOutput(jobId, runId);
+        else { clearInterval(gJobPollers[jobId]); delete gJobPollers[jobId]; }
+      }, 1000);
+    }
+  } else {
+    card && card.classList.remove('expanded');
+    if (toggle) toggle.textContent = '▼';
+    clearInterval(gJobPollers[jobId]);
+    delete gJobPollers[jobId];
+  }
+}
+
+function fetchJobOutput(jobId, runId) {
+  if (!runId) return;
+  fetch(`/api/job-output/${encodeURIComponent(runId)}/${encodeURIComponent(jobId)}`)
+    .then(r => r.json())
+    .then(data => {
+      const el = document.getElementById(`job-output-${jobId}`);
+      if (!el) return;
+      if (!data.exists || !data.content) {
+        el.innerHTML = '<span class="job-output-empty">No output yet…</span>';
+      } else {
+        el.textContent = data.content;
+        el.scrollTop = el.scrollHeight;
+      }
+    })
+    .catch(() => {});
 }
 
 // ── Console ───────────────────────────────────────────────────────────────

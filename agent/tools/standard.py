@@ -1484,10 +1484,20 @@ def tool_submit_completion_report(
 
 def _get_async_manager(state: AgentState):
     """懒加载 AsyncJobManager 单例（绑定在 state.meta["_async_manager"]）。"""
+    from pathlib import Path
     from ..core.async_manager import AsyncJobManager
     mgr = state.meta.get("_async_manager")
     if mgr is None:
-        mgr = AsyncJobManager()
+        jobs_dir = None
+        persistence = getattr(state, "persistence", None)
+        if persistence is not None and hasattr(persistence, "run_dir"):
+            jobs_dir = Path(persistence.run_dir) / "jobs"
+        else:
+            import os as _os
+            rd = _os.environ.get("RUN_DIR")
+            if rd:
+                jobs_dir = Path(rd) / "jobs"
+        mgr = AsyncJobManager(jobs_dir=jobs_dir)
         state.meta["_async_manager"] = mgr
     return mgr
 

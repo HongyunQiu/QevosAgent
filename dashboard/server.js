@@ -641,6 +641,25 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/job-output/:runId/:jobId  ────────────────────────────────────
+  const jobOutputMatch = req.url.match(/^\/api\/job-output\/([^/]+)\/([^/?]+)/);
+  if (req.method === 'GET' && jobOutputMatch) {
+    const runDir = path.resolve(path.join(RUNS_DIR, jobOutputMatch[1]));
+    const jobId  = jobOutputMatch[2];
+    if (!/^job_[0-9a-f]+$/.test(jobId)) { json(400, { error: 'invalid job id' }); return; }
+    const jobFile = path.join(runDir, 'jobs', jobId + '.txt');
+    const rel = path.relative(runDir, jobFile);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) { json(403, { error: 'forbidden' }); return; }
+    try {
+      const content = fs.readFileSync(jobFile, 'utf8');
+      json(200, { content, exists: true });
+    } catch (e) {
+      if (e.code === 'ENOENT') { json(200, { content: '', exists: false }); return; }
+      json(500, { error: String(e) });
+    }
+    return;
+  }
+
   // ── GET /api/run-file/:runId/*  ───────────────────────────────────────────
   const runFileMatch = req.url.match(/^\/api\/run-file\/([^/]+)\/(.+)/);
   if (req.method === 'GET' && runFileMatch) {

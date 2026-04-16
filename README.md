@@ -1,5 +1,13 @@
 # simpleAgent
 
+[![Stars](https://img.shields.io/github/stars/HongyunQiu/simpleAgent?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent/stargazers)
+[![Last Commit](https://img.shields.io/github/last-commit/HongyunQiu/simpleAgent?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent/commits/main)
+[![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-412991?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
+[![Anthropic](https://img.shields.io/badge/Anthropic-Supported-black?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
+[![Web Dashboard](https://img.shields.io/badge/Web-Dashboard-0A7CFF?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
+[![Tool Repair](https://img.shields.io/badge/Tool-Repair-orange?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
+
+
 `simpleAgent` 是一个偏运行时视角的极简自主智能体框架。
 
 它保留了最小闭环 `LLM -> tool_call -> feedback -> done`，但在这个基础上补上了几件对真实运行更重要的东西：

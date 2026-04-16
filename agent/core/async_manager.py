@@ -17,7 +17,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from pathlib import Path
+from typing import IO, Optional
 
 
 class JobStatus(str, Enum):
@@ -93,9 +94,12 @@ class AsyncJobManager:
             print(info["output"])
     """
 
-    def __init__(self) -> None:
+    def __init__(self, jobs_dir: Optional[Path] = None) -> None:
         self._jobs: dict[str, Job] = {}
         self._global_lock = threading.Lock()
+        self._jobs_dir: Optional[Path] = Path(jobs_dir) if jobs_dir else None
+        if self._jobs_dir:
+            self._jobs_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 启动 ──────────────────────────────────────────────────────────────────
 
@@ -167,23 +171,42 @@ class AsyncJobManager:
         """
         同时用两个子线程读 stdout / stderr，避免一个管道满导致另一个阻塞。
         父线程等两者都结束后调用 proc.wait() 获取 returncode。
+        如果 _jobs_dir 已设置，同时将输出实时写入 {jobs_dir}/{job_id}.txt。
         """
-        def _drain(stream, lines, lock):
+        job_file: Optional[IO[str]] = None
+        if self._jobs_dir:
+            try:
+                job_file = open(
+                    self._jobs_dir / f"{job.job_id}.txt",
+                    "w", encoding="utf-8", errors="replace", buffering=1,
+                )
+                job_file.write(f"$ {job.command}\n")
+                job_file.flush()
+            except Exception:
+                job_file = None
+
+        def _drain(stream, lines, lock, prefix: str = ""):
             try:
                 for line in stream:
                     with lock:
                         lines.append(line)
+                        if job_file:
+                            try:
+                                job_file.write(prefix + line)
+                                job_file.flush()
+                            except Exception:
+                                pass
             except Exception:
                 pass
 
         t_out = threading.Thread(
             target=_drain,
-            args=(job.proc.stdout, job._stdout_lines, job._lock),
+            args=(job.proc.stdout, job._stdout_lines, job._lock, ""),
             daemon=True,
         )
         t_err = threading.Thread(
             target=_drain,
-            args=(job.proc.stderr, job._stderr_lines, job._lock),
+            args=(job.proc.stderr, job._stderr_lines, job._lock, "[STDERR] "),
             daemon=True,
         )
         t_out.start()
@@ -200,6 +223,13 @@ class AsyncJobManager:
                     JobStatus.DONE if job.returncode == 0 else JobStatus.FAILED
                 )
             job.end_time = time.time()
+
+        if job_file:
+            try:
+                job_file.write(f"\n[Exit {job.returncode}]\n")
+                job_file.close()
+            except Exception:
+                pass
 
         # 如果命令已自然结束，取消超时定时器
         if job._timeout_timer:
