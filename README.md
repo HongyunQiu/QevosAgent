@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/simpleAgent-banner-light.png" alt="simpleAgent banner" width="100%" />
+</p>
+
 # simpleAgent
 
 [![Stars](https://img.shields.io/github/stars/HongyunQiu/simpleAgent?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent/stargazers)
@@ -7,37 +11,106 @@
 [![Web Dashboard](https://img.shields.io/badge/Web-Dashboard-0A7CFF?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
 [![Tool Repair](https://img.shields.io/badge/Tool-Repair-orange?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
 
-![simpleAgent banner](./assets/simpleAgentBanner.png)
+`simpleAgent` is a minimalist agent runtime for real tool-calling workflows with persistent artifacts, recoverable memory, and observable execution.
 
+`simpleAgent` 是一个极简但完整的 Agent Runtime，重点不只是“调用模型和工具”，而是把运行过程、状态恢复、工具修复和可观察性一起做完整。
 
-`simpleAgent` 是一个偏运行时视角的极简自主智能体框架。
+It keeps the core loop small: `LLM -> tool_call -> feedback -> done`.
 
-它保留了最小闭环 `LLM -> tool_call -> feedback -> done`，但在这个基础上补上了几件对真实运行更重要的东西：
+What makes it different is everything around that loop: persistent runs, recoverable snapshots, built-in scratchpad, explicit tool repair, human intervention, and a lightweight dashboard you can actually use.
 
-- 可恢复的长期记忆与工具快照
-- 运行中持续落盘，而不是只在最后输出结果
-- 对工具演化和工具修复的显式支持
-- 对上下文膨胀、JSON 解析失败、重复调用循环等常见问题的自恢复
-- 一个可直接启动任务、观察状态、查看历史 run 的 Web Dashboard
+## Why simpleAgent?
 
-这个仓库适合拿来做两类事情：
+- Minimal closed-loop agent runtime
+- Persistent run artifacts on disk
+- Recoverable snapshot memory
+- Explicit tool repair and evolution
+- Built-in scratchpad for multi-step tasks
+- Lightweight web dashboard
+- Human intervention during execution
 
-- 研究一个小而完整的 agent runtime
-- 作为本地模型驱动的实验底座继续迭代
+## Quick Start
 
-## 当前能力
+Copy, fill in your model settings, and run:
 
-当前已跟踪代码覆盖的能力主要有：
+```powershell
+Copy-Item .env.example .env
+python -m pip install -r requirements.txt
+python run_goal.py "分析当前目录并总结问题"
+```
 
-- `OpenAI-compatible` 后端支持，可通过 `OPENAI_BASE_URL` 接入本地或远端兼容服务
-- `Anthropic` 后端支持
-- 默认标准工具集，包括文件读写、shell、Python 执行、草稿本、长期记忆、快照、后台任务
-- 运行期 `scratchpad` 机制，要求模型在多步任务中维护计划和验收记录
-- `agent_snapshot_meta.json` 快照恢复，保存长期记忆、进化工具和修复候选
-- 工具修复链路：`validate_tool_recipe -> repair_tool_candidate -> promote_tool_candidate`
-- 运行期持久化：`short_term.jsonl`、`status.json`、`meta.json`、`final_answer.md` 等持续写盘
-- 用户干预机制：命令行输入 `/inject`、`/stop`、`/status`、`/+N` 等命令
-- Web Dashboard：启动任务、停止任务、注入命令、查看 run 文件、编辑 `AGENTS.md` 和快照
+If you want the dashboard too:
+
+```powershell
+cd dashboard
+npm install
+npm start
+```
+
+## Demo
+
+The dashboard is already included in the repo, and it can launch runs, stop tasks, inject commands, inspect history, and browse run artifacts.
+
+Dashboard screenshot / GIF: coming soon.
+
+## What makes it different?
+
+Many "simple agent" repos stop at:
+
+- model call
+- tool execution
+- final answer
+
+`simpleAgent` also emphasizes:
+
+- persistent artifacts for every run
+- recoverable snapshots across runs
+- explicit tool repair instead of endless tool sprawl
+- recovery from loop stalls and JSON parsing failures
+- human intervention while the agent is running
+- dashboard-based observability
+
+This makes it more useful as a runtime you can study, debug, modify, and extend, not just a minimal demo.
+
+## Use Cases
+
+- Build and study a small but complete agent runtime
+- Run local-model-driven autonomous tasks
+- Experiment with tool evolution and repair
+- Inspect persistent run artifacts for debugging
+- Add a lightweight dashboard to agent workflows
+- Explore scratchpad-driven multi-step execution
+
+## Observable By Default
+
+Every run writes artifacts to disk.
+
+That means you do not just get a final answer. You also keep the logs, scratchpad, summaries, reflections, metadata, and large raw outputs needed to audit, replay, and debug what happened.
+
+Typical run outputs include:
+
+- `short_term.jsonl`
+- `status.json`
+- `meta.json`
+- `scratchpad.md`
+- `execution_summary.md`
+- `reflection.md`
+- `final_answer.md`
+- `artifacts/` for large tool outputs
+
+## Core Capabilities
+
+Current tracked capabilities include:
+
+- `OpenAI-compatible` backends via `OPENAI_BASE_URL`
+- `Anthropic` backend support
+- Standard tools for files, shell, Python, scratchpad, memory, snapshots, and background jobs
+- Runtime `scratchpad` requirements for plan tracking and acceptance evidence
+- `agent_snapshot_meta.json` snapshot recovery for memory, evolved tools, and repair candidates
+- Explicit repair flow: `validate_tool_recipe -> repair_tool_candidate -> promote_tool_candidate`
+- Persistent runtime outputs such as `short_term.jsonl`, `status.json`, `meta.json`, and `final_answer.md`
+- User intervention commands such as `/inject`, `/stop`, `/status`, and `/+N`
+- A web dashboard for launching runs, inspecting files, and editing `AGENTS.md` and snapshots
 
 ## 仓库结构
 
@@ -126,36 +199,36 @@ agent_snapshot_meta.json # 默认快照文件（最小合法 JSON）
 
 其中 `register_tool` 用于新增工具，`repair_tool_candidate` 和 `promote_tool_candidate` 用于修复已有工具而不是无限注册同义新工具。
 
-## 安装
+## Installation
 
-### Python 依赖
+### Python dependencies
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-当前 `requirements.txt` 只包含三个依赖：
+The current `requirements.txt` stays intentionally small:
 
 - `openai`
 - `anthropic`
 - `tiktoken`
 
-### Dashboard 依赖
+### Dashboard dependencies
 
-如果你要使用 Web Dashboard，再安装 Node 侧依赖：
+If you want the web dashboard, install the Node-side dependencies too:
 
 ```powershell
 cd dashboard
 npm install
 ```
 
-Dashboard 需要 Node.js 18 或更高版本。
+The dashboard requires Node.js 18 or later.
 
-## 配置
+## Configuration
 
-项目提供了 `.env.example`，`run_goal.py` 会在启动时自动尝试读取当前目录下的 `.env`。
+The project includes `.env.example`, and `run_goal.py` automatically attempts to load `.env` from the current directory.
 
-最常用的环境变量是：
+The most commonly used environment variables are:
 
 - `OPENAI_PROFILE`
 - `OPENAI_PROFILE_OSS120B_BASE_URL`
@@ -169,38 +242,38 @@ Dashboard 需要 Node.js 18 或更高版本。
 - `AUTO_REMEMBER_ON_DONE`
 - `AUTO_SAVE_SNAPSHOT_ON_EXIT`
 
-默认行为有几点值得注意：
+Useful defaults to know:
 
-- 如果没有显式设置 `OPENAI_BASE_URL`，启动器会尝试根据 `OPENAI_PROFILE` 选择对应的 profile base URL
-- 启动时会先探测模型服务；如果服务端只返回一个模型，会自动把 `OPENAI_MODEL` 切到该模型
-- 默认启用 `AUTO_REMEMBER_ON_DONE=1` 和 `AUTO_SAVE_SNAPSHOT_ON_EXIT=1`
-- 默认快照文件是仓库根目录的 `agent_snapshot_meta.json`
+- If `OPENAI_BASE_URL` is not set, the launcher tries to derive it from `OPENAI_PROFILE`
+- On startup it probes the model service; if only one model is returned, it auto-selects that model as `OPENAI_MODEL`
+- `AUTO_REMEMBER_ON_DONE=1` and `AUTO_SAVE_SNAPSHOT_ON_EXIT=1` are enabled by default
+- The default snapshot file is the repo-root `agent_snapshot_meta.json`
 
-## 快速开始
+## Running from CLI
 
-### 1. 准备环境变量
+### 1. Prepare `.env`
 
-在仓库根目录创建 `.env`，至少填好模型服务地址和 API key。可以直接参考 `.env.example`。
+Create `.env` in the repo root and fill in at least your model endpoint and API key. `.env.example` is the starting point.
 
-### 2. 从命令行运行
+### 2. Run a task
 
 ```powershell
 python run_goal.py "分析当前目录并总结问题"
 ```
 
-`run_goal.py` 启动时会做几件事：
+`run_goal.py` does a few useful things automatically:
 
-- 自动读取 `.env`
-- 检查并探测模型服务
-- 创建 `runs/<timestamp>/` 作为本次运行目录
-- 设置 `RUN_DIR` 和默认 `RAW_MEMORY_PATH`
-- 如果 `agent_snapshot_meta.json` 存在，则要求优先加载快照
-- 如果仓库根目录存在 `AGENTS.md`，则把它作为本次运行的额外规范注入
-- 在结束后自动保存快照
+- loads `.env`
+- probes the model service
+- creates `runs/<timestamp>/` for the current run
+- sets `RUN_DIR` and the default `RAW_MEMORY_PATH`
+- loads the snapshot first when `agent_snapshot_meta.json` exists
+- injects repo-root `AGENTS.md` when present
+- saves the snapshot again on exit
 
-### 3. 运行中人工干预
+### 3. Human intervention during execution
 
-命令行模式下，可以在运行期间输入以下命令：
+In CLI mode, you can type these commands while the agent is running:
 
 - `/help`
 - `/stop`
@@ -211,18 +284,18 @@ python run_goal.py "分析当前目录并总结问题"
 - `/log [N]`
 - `/+N` 形式的迭代扩容命令，例如 `/+50`
 
-这些命令由 [`agent/runtime/user_interrupt.py`](./agent/runtime/user_interrupt.py) 处理。
+These commands are handled by [`agent/runtime/user_interrupt.py`](./agent/runtime/user_interrupt.py).
 
 ## Dashboard
 
-启动方式：
+Start it with:
 
 ```powershell
 cd dashboard
 npm start
 ```
 
-默认访问地址是 `http://localhost:8765`。可通过环境变量调整：
+The default address is `http://localhost:8765`. You can customize it with:
 
 - `DASHBOARD_PORT`
 - `RUNS_DIR`
@@ -230,19 +303,19 @@ npm start
 - `POLL_MS`
 - `PYTHON_CMD`
 
-当前 Dashboard 支持：
+The current dashboard supports:
 
-- 启动一个新的 `run_goal.py` 任务
-- 停止正在运行的任务
-- 向运行中的任务注入 `/inject` 等命令
-- 查看当前运行状态和历史 runs
-- 浏览某次 run 下的文件
-- 查看和编辑仓库根目录的 `AGENTS.md`
-- 查看和编辑 `agent_snapshot_meta.json`
+- launching a new `run_goal.py` task
+- stopping a running task
+- injecting `/inject` and related commands into a live run
+- viewing current status and run history
+- browsing files for a specific run
+- viewing and editing repo-root `AGENTS.md`
+- viewing and editing `agent_snapshot_meta.json`
 
-## 运行产物
+## Run Artifacts
 
-每次运行默认会在 `runs/<timestamp>/` 下生成一组文件。当前持久化逻辑会写入：
+Each run creates a directory under `runs/<timestamp>/`. The current persistence flow writes files such as:
 
 - `short_term.jsonl`
 - `meta.json`
@@ -253,13 +326,13 @@ npm start
 - `issues.json`
 - `reflection.md`
 
-如果工具输出过大，主循环还会把原始输出写入 `artifacts/` 目录，避免信息因为上下文截断而丢失。
+If a tool output is too large, the main loop writes the raw content into `artifacts/` so the result is preserved instead of being lost to context trimming.
 
-## 快照机制
+## Snapshot Mechanism
 
-默认快照文件是仓库根目录的 `agent_snapshot_meta.json`。
+The default snapshot file is the repo-root `agent_snapshot_meta.json`.
 
-当前快照会保存这些内容：
+The snapshot currently stores:
 
 - `long_term`
 - `evolved_tools`
@@ -268,13 +341,13 @@ npm start
 - `tool_repair_history`
 - `scratchpad`
 
-不过加载时默认只恢复长期记忆、正式进化工具和修复候选，不会直接恢复旧草稿本内容，避免把过期中间态带入新任务。
+By default, loading restores long-term memory, promoted evolved tools, and repair candidates. It does not directly restore old scratchpad content, which helps avoid carrying stale intermediate state into a new task.
 
-仓库中自带的 `agent_snapshot_meta.json` 是一个最小合法 JSON 占位文件，这样即使某些流程显式调用 `load_snapshot_meta`，也不会因为“文件不存在”或“空文件不是合法 JSON”而直接失败。
+The repository ships with a minimal valid `agent_snapshot_meta.json` placeholder so flows that explicitly call `load_snapshot_meta` do not fail on a missing or empty file.
 
-## 作为库使用
+## Use as a Library
 
-### 最简单的用法
+### Simplest usage
 
 ```python
 from agent import Agent
@@ -290,7 +363,7 @@ state = agent.run("帮我分析一个目录结构")
 print(state.meta.get("final_answer"))
 ```
 
-### 手动添加工具
+### Add a custom tool
 
 ```python
 from agent import Agent
@@ -310,7 +383,7 @@ agent.add_tool(
 )
 ```
 
-### 更底层的组装方式
+### Lower-level assembly
 
 ```python
 from agent.core.loop import run, console_hooks
@@ -327,37 +400,45 @@ state = run(
 )
 ```
 
-更多示例可以看 `demo.py`。
+For more examples, see `demo.py`.
 
-## 测试
+## Tests
 
-当前仓库里有两个直接可运行的测试入口：
+The repository currently includes two directly runnable test entry points:
 
 ```powershell
 python tests_parse_response.py
 python tests_runtime_regressions.py
 ```
 
-覆盖重点包括：
+Coverage focuses on:
 
-- 响应解析鲁棒性
-- 快照恢复与无效进化工具过滤
-- 工具修复链路
-- 验收证据解析
-- `run_goal.py` 的环境变量默认值与服务探测
-- 运行期持久化
+- response parsing robustness
+- snapshot restoration and invalid evolved tool filtering
+- tool repair flows
+- acceptance evidence parsing
+- `run_goal.py` environment defaults and service probing
+- runtime persistence
 
-## 设计边界
+## Scope and Boundaries
 
-这个项目当前的定位仍然是“简单但完整”，所以也保留了一些明确边界：
+`simpleAgent` is not trying to be everything.
 
-- 依赖管理仍然是 `requirements.txt`，还不是完整的 Python 包发布结构
-- `shell` 和 `run_python` 权限很强，没有做额外沙箱隔离
-- 验收门禁只校验最基本的证据形式，不保证答案在语义上一定正确
-- 长期记忆目前是轻量的字符串列表，不是完整检索系统
-- Dashboard 是轻量 Node 服务，不是完整的多用户任务平台
+It is not a fully sandboxed platform.
+It is not a production-grade multi-user orchestration system.
+It is not yet a fully packaged PyPI framework.
 
-## 相关文件
+What it is: a compact but complete runtime you can study, run, inspect, modify, and extend.
+
+Current practical boundaries include:
+
+- dependency management is still based on `requirements.txt`
+- `shell` and `run_python` are intentionally powerful and are not sandboxed further
+- acceptance checks validate evidence shape, not semantic correctness
+- long-term memory is currently a lightweight string-list design, not a full retrieval system
+- the dashboard is intentionally lightweight, not a full multi-tenant control plane
+
+## Key Files
 
 - [`run_goal.py`](./run_goal.py)
 - [`agent/core/loop.py`](./agent/core/loop.py)
