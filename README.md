@@ -7,6 +7,8 @@
 [![Web Dashboard](https://img.shields.io/badge/Web-Dashboard-0A7CFF?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
 [![Tool Repair](https://img.shields.io/badge/Tool-Repair-orange?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
 
+![simpleAgent banner](./assets/simpleAgentBanner.png)
+
 
 `simpleAgent` 是一个偏运行时视角的极简自主智能体框架。
 
