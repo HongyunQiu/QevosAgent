@@ -7,6 +7,7 @@ LLM 接口层
 import json
 import re
 from abc import ABC, abstractmethod
+from urllib.parse import urlparse
 from typing import Optional, Iterable
 
 from .types import Action, ActionType, AgentState, ToolSpec
@@ -91,7 +92,9 @@ class OpenAIBackend(LLMBackend):
         # openai>=1.x uses `base_url` for OpenAI-compatible endpoints.
         self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
-        self._use_response_format = not bool(base_url)
+        self.base_url = base_url
+        self._is_official_openai = self._detect_official_openai_endpoint(base_url)
+        self._use_response_format = self._is_official_openai
         # vLLM/OpenAI-compatible servers may compute a negative default max_tokens when
         # the prompt is long; set an explicit positive value.
         if max_tokens is None:
@@ -100,6 +103,17 @@ class OpenAIBackend(LLMBackend):
             max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "16384"))
         self.max_tokens = max(1, int(max_tokens))
 
+    @staticmethod
+    def _detect_official_openai_endpoint(base_url: Optional[str]) -> bool:
+        """Return True for the default client endpoint or api.openai.com-style URLs."""
+        if not base_url:
+            return True
+        try:
+            hostname = (urlparse(base_url).hostname or "").lower()
+        except Exception:
+            return False
+        return hostname in {"api.openai.com", "openai.com"}
+
     def _call_api(self, messages: list[dict], system: str, max_tokens: int, use_json_format: bool) -> str:
         """Internal helper: raw API call with explicit format and token controls."""
         full_messages = [{"role": "system", "content": system}] + messages
@@ -107,14 +121,15 @@ class OpenAIBackend(LLMBackend):
             "model": self.model,
             "messages": full_messages,
             "temperature": 0.3,
-            "max_tokens": max_tokens,
         }
+        if self._is_official_openai:
+            kwargs["max_completion_tokens"] = max_tokens
+        else:
+            kwargs["max_tokens"] = max_tokens
         if use_json_format and self._use_response_format:
             kwargs["response_format"] = {"type": "json_object"}
-        elif not use_json_format and self._use_response_format:
-            kwargs["response_format"] = {"type": "text"}
 
-        if not self._use_response_format:
+        if not self._is_official_openai:
             kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
 
         resp = self.client.chat.completions.create(**kwargs)

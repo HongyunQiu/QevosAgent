@@ -41,8 +41,18 @@ def _write_text_atomic(path: Path, content: str) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
+class _SafeEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, set):
+            return list(o)
+        try:
+            return super().default(o)
+        except TypeError:
+            return repr(o)
+
+
 def _write_json_atomic(path: Path, payload: dict) -> None:
-    _write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    _write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2, cls=_SafeEncoder) + "\n")
 
 
 class RunPersistence:

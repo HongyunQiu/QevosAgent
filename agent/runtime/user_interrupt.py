@@ -31,6 +31,7 @@ HELP_TEXT = """\
   /stop              终止当前正在执行的工具，Agent 继续下一步
   /exit              退出整个 Agent 程序
   /inject <消息>     将消息注入 Agent 上下文，下轮 LLM 可感知
+  /newtask <目标>    注入新任务目标（nostop 模式专用，解除等待并开始新一轮）
   /compress [N]      下次 LLM 调用前压缩上下文（保留最近 N 条，默认 8）
   /status            显示当前状态：迭代号、正在执行的工具、草稿本
   /log [N]           显示最近 N 条执行记录（默认 5 条）
@@ -373,6 +374,16 @@ class UserInterruptHandler:
         if name in ("/exit", "/quit"):
             print(f"\n{BLUE}[用户干预] /exit：Agent 即将退出。{RESET}", flush=True)
             return "stop"
+
+        if name == "/newtask":
+            if not arg:
+                print(f"\n{BLUE}[用户干预] 用法: /newtask <新任务目标>{RESET}", flush=True)
+                return "continue"
+            # 路由到 _input_queue（而非 _cmd_queue），解除 get_user_input() 阻塞
+            # nostop idle 等待时，外层循环将其视为新目标并开始新一轮
+            self._input_queue.put(arg.strip())
+            print(f"\n{BLUE}[用户干预] 新目标已注入：{arg.strip()[:80]}{RESET}", flush=True)
+            return "continue"
 
         if name == "/inject":
             if not arg:

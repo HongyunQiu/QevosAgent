@@ -449,6 +449,52 @@ body.large-font .app {
 }
 .cmd-send.awaiting:hover { background: linear-gradient(135deg, #b88a00, #f0c040); }
 
+/* ── Nostop toggle button ────────────────────────────────────────────── */
+.nostop-btn {
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--muted); border-radius: 6px; padding: 6px 10px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+  transition: all 0.15s; flex-shrink: 0; white-space: nowrap;
+}
+.nostop-btn:hover { border-color: var(--green); color: var(--green); }
+.nostop-btn.on {
+  border-color: var(--green); color: var(--green);
+  background: rgba(63,185,80,0.08);
+  box-shadow: 0 0 0 1px rgba(63,185,80,0.2);
+}
+
+/* ── Nostop-idle state (green theme, distinct from ask_user yellow) ───── */
+.ask-banner.nostop-idle {
+  background: rgba(5, 30, 10, 0.97);
+  border-color: rgba(63,185,80,0.5);
+  color: var(--green);
+}
+.ask-banner.nostop-idle .ask-banner-label { color: rgba(63,185,80,0.7); }
+.cmd-input.nostop-idle { border-color: var(--green); }
+.cmd-input.nostop-idle:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(63,185,80,0.15);
+}
+.cmd-send.nostop-idle {
+  background: linear-gradient(135deg, #1a6b2a, #3fb950);
+  box-shadow: 0 1px 4px rgba(63,185,80,0.35);
+}
+.cmd-send.nostop-idle:hover { background: linear-gradient(135deg, #1f8035, #4dca60); }
+.cmdbar.nostop-idle {
+  border-top-color: rgba(63,185,80,0.4);
+  animation: cmdbar-nostop-pulse 3s ease-in-out infinite;
+}
+@keyframes cmdbar-nostop-pulse {
+  0%,100% { border-top-color: rgba(63,185,80,0.25); }
+  50%      { border-top-color: rgba(63,185,80,0.6); }
+}
+
+/* ── Topbar status dot — idle state (nostop between tasks) ──────────── */
+.status-dot.idle {
+  background: var(--green); opacity: 0.65;
+  animation: pulse 3s ease-in-out infinite;
+}
+
 /* ── Toast ───────────────────────────────────────────────────────────── */
 #toast {
   position:fixed; bottom:64px; right:20px;
@@ -963,6 +1009,7 @@ body.large-font .app {
            placeholder="/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20"
            onkeydown="onCmdKey(event)">
     <button class="cmd-send" id="cmdSendBtn" onclick="sendCmd()">Send</button>
+    <button class="nostop-btn" id="nostopBtn" onclick="toggleNostop()" title="持续对话模式：完成任务后不退出，等待下一个目标">⟳ nostop</button>
   </div>
 </div>
 
@@ -987,6 +1034,7 @@ const STREAM_MAX   = 300;
 let gPendingToolIdx = null;       // idx of the tool_call we're currently streaming for
 const gJobExpanded = {};          // { jobId: boolean } — which job cards are expanded
 const gJobPollers  = {};          // { jobId: intervalId } — polling timers for running jobs
+let gNostop        = false;       // whether to launch agent in --nostop (continuous) mode
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
 function connectWs() {
@@ -1066,6 +1114,21 @@ function isAwaitingInput(data) {
             && data.meta && data.meta.awaiting_input);
 }
 
+/** True when agent is in nostop idle state — alive but between tasks. */
+function isNostopIdle(data) {
+  return !!(data && data.agentAlive
+            && data.meta && data.meta.nostop_idle
+            && data.status && data.status.status === 'idle');
+}
+
+/** Toggle the nostop launch mode and update the button UI. */
+function toggleNostop() {
+  gNostop = !gNostop;
+  const btn = document.getElementById('nostopBtn');
+  if (btn) btn.className = 'nostop-btn' + (gNostop ? ' on' : '');
+  toast(gNostop ? '⟳ Nostop mode ON — agent will persist between tasks' : '⟳ Nostop mode OFF');
+}
+
 function renderTopBar(data, rid) {
   const pill  = document.getElementById('runPill');
   const dot   = document.getElementById('statusDot');
@@ -1089,10 +1152,12 @@ function renderTopBar(data, rid) {
   }
 
   const s = (data.status && data.status.status) || 'unknown';
-  pill.className = 'run-pill' + (s === 'running' ? ' live' : '');
+  // Use agentAlive (process liveness) for the "live" pill highlight — accurate
+  // even in nostop-idle state where status may be "idle" but process is running.
+  pill.className = 'run-pill' + (data.agentAlive ? ' live' : '');
   dot.className  = 'status-dot ' + s;
   label.textContent = fmtRunId(rid);
-  kill.className = (s === 'running' && data.agentPid) ? 'kill-btn visible' : 'kill-btn';
+  kill.className = (data.agentAlive && data.agentPid) ? 'kill-btn visible' : 'kill-btn';
 }
 
 function renderSidebar(data, rid) {
@@ -1134,11 +1199,14 @@ function renderRunsList(runs, activeId) {
   }
   list.innerHTML = [...runs].reverse().map(r => {
     const isActive   = r === (gState && gState.activeRunId);
+    // Green dot only when the run is active AND the process is confirmed alive
+    const isLive     = isActive && !!(gState && gState.agentAlive);
     const isSelected = r === activeId;
+    const tag        = isActive ? (isLive ? '<span class="run-tag">live</span>' : '<span class="run-tag">latest</span>') : '';
     return `<div class="run-item ${isSelected ? 'selected' : ''}" onclick="selectRun('${r}')">
-      <div class="run-dot ${isActive ? 'active' : ''}"></div>
+      <div class="run-dot ${isLive ? 'active' : ''}"></div>
       <span class="run-id">${fmtRunId(r)}</span>
-      ${isActive ? '<span class="run-tag">live</span>' : ''}
+      ${tag}
     </div>`;
   }).join('');
 }
@@ -1161,13 +1229,26 @@ function renderMainArea(data) {
 function updateCmdBarMode(data) {
   const active   = isAgentActive(data);
   const awaiting = isAwaitingInput(data);
+  const nostopIdle = isNostopIdle(data);
   const input    = document.getElementById('cmdInput');
   const sendBtn  = document.getElementById('cmdSendBtn');
   const banner   = document.getElementById('askBanner');
   const bannerQ  = document.getElementById('askBannerQ');
   const cmdbar   = document.getElementById('cmdbar');
 
-  if (awaiting) {
+  if (nostopIdle) {
+    // Nostop idle: agent is alive and waiting for next goal
+    input.placeholder   = 'Type the next goal and press Enter…';
+    input.className     = 'cmd-input nostop-idle';
+    sendBtn.className   = 'cmd-send nostop-idle';
+    sendBtn.textContent = 'Send Goal';
+    cmdbar.classList.add('nostop-idle');
+    cmdbar.classList.remove('awaiting');
+    bannerQ.textContent = (data.meta && data.meta.awaiting_input) || '任务完成 — 请输入下一个目标';
+    banner.className    = 'ask-banner nostop-idle visible';
+    // Auto-focus for quick re-entry
+    if (document.activeElement !== input) input.focus();
+  } else if (awaiting) {
     // Paused: agent is waiting for ask_user answer
     const q = data.meta.awaiting_input;
     input.placeholder   = 'Type your answer here and press Enter…';
@@ -1175,8 +1256,9 @@ function updateCmdBarMode(data) {
     sendBtn.className   = 'cmd-send awaiting';
     sendBtn.textContent = 'Answer';
     cmdbar.classList.add('awaiting');
+    cmdbar.classList.remove('nostop-idle');
     bannerQ.textContent = q;
-    banner.classList.add('visible');
+    banner.className    = 'ask-banner visible';
     // Auto-focus so user can type immediately
     if (document.activeElement !== input) input.focus();
   } else {
@@ -1184,7 +1266,8 @@ function updateCmdBarMode(data) {
     sendBtn.className   = 'cmd-send';
     sendBtn.textContent = 'Send';
     cmdbar.classList.remove('awaiting');
-    banner.classList.remove('visible');
+    cmdbar.classList.remove('nostop-idle');
+    banner.className    = 'ask-banner';
     input.placeholder = active
       ? '/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20'
       : 'No agent running — type a goal to start a new run, or use /command';
@@ -1500,11 +1583,11 @@ async function launchAgent(goal) {
     const res  = await fetch('/api/launch', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ goal: goal.trim() }),
+      body:    JSON.stringify({ goal: goal.trim(), nostop: gNostop }),
     });
     const data = await res.json();
     if (res.ok && data.ok) {
-      toast('▶ Agent launched!');
+      toast(gNostop ? '▶ Agent launched (nostop mode)' : '▶ Agent launched!');
     } else {
       toast(`✗ ${data.error || 'Launch failed'}`);
       gIsLaunching = false;
@@ -1542,6 +1625,26 @@ async function sendCmd() {
   const input = document.getElementById('cmdInput');
   const raw   = input.value.trim();
   if (!raw) return;
+
+  // Nostop idle: agent is alive waiting for next goal — plain text goes as raw
+  // (unblocks get_user_input() in the nostop idle loop), slash commands route normally
+  if (gState && isNostopIdle(gState)) {
+    if (!raw.startsWith('/')) {
+      const runId = (gState && gState.activeRunId) || gViewRunId;
+      if (!runId) { toast('⚠ No active run'); return; }
+      try {
+        const res = await fetch('/api/inject', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ command: raw, runId }),
+        });
+        if (res.ok) { input.value = ''; toast(`▶ New goal sent`); }
+        else toast('✗ Server rejected');
+      } catch { toast('✗ Network error'); }
+      return;
+    }
+    // Slash commands fall through to normal handling below
+  }
 
   // If no agent running: non-slash input → launch directly with the typed goal
   if (gState && !isAgentActive(gState)) {

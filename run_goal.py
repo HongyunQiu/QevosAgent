@@ -192,7 +192,16 @@ def main():
     # Default raw memory path per run
     os.environ.setdefault("RAW_MEMORY_PATH", str(run_dir / "raw_memory.ndjson"))
 
-    goal = " ".join(sys.argv[1:]).strip() if len(sys.argv) > 1 else ""
+    import argparse as _ap
+    _parser = _ap.ArgumentParser(description="Run simpleAgent with a goal.")
+    _parser.add_argument("goal", nargs="*", help="Goal/task for the agent")
+    _parser.add_argument(
+        "--nostop", action="store_true",
+        help="完成任务后不退出，持续等待下一个目标（持续对话模式）",
+    )
+    _pargs = _parser.parse_args()
+    goal   = " ".join(_pargs.goal).strip()
+    nostop = _pargs.nostop
     # Expose the raw user goal (without injected prefixes) for scratchpad seeding.
     os.environ["USER_GOAL"] = goal
     if not goal:
@@ -258,6 +267,7 @@ def main():
     # 把文件路径传入 state.meta，供 episodic 验收门反馈消息使用
     initial_meta["_episodic_path"] = str(episodic_path)
     initial_meta["_concept_path"]  = str(concept_path)
+    initial_meta["nostop"]         = nostop  # expose mode flag to agent state
 
     # ── (4) 预加载高级指导员系统提示词 ────────────────────────────────────────
     advisor_system = ""
@@ -320,105 +330,173 @@ def main():
     interrupt_handler = UserInterruptHandler()
     agent.hooks.interrupt_handler = interrupt_handler  # 挂载到 hooks，loop.py 会检查
 
+    GREEN = "\033[92m"
     BLUE  = "\033[94m"
     RESET = "\033[0m"
+    _nostop_hint = (
+        f"  /newtask <目标>  注入新目标（nostop 模式专用）\n"
+        f"  [nostop 模式已启用] 任务完成后将持续等待下一个目标。\n"
+    ) if nostop else ""
     print(
         f"{BLUE}[提示] Agent 运行期间可随时输入干预命令（以 / 开头）：\n"
         f"  /help   显示所有命令    /stop   停止当前工具\n"
         f"  /exit   退出程序        /inject <消息>  注入上下文\n"
-        f"  /status 查看当前状态   /+N  增加 N 次迭代{RESET}"
+        f"  /status 查看当前状态   /+N  增加 N 次迭代\n"
+        f"{_nostop_hint}{RESET}"
     )
 
     persistence = RunPersistence(run_dir)
     state = None
     run_error = None
 
+    # ── nostop: keys cleared between tasks ───────────────────────────────
+    _NOSTOP_RESET_KEYS = (
+        "final_answer", "completion_report", "completion_review",
+        "acceptance_failures", "_episodic_appended",
+        "nostop_idle", "paused", "awaiting_input",
+    )
+
+    current_goal = full_goal
     interrupt_handler.start()
     try:
-        state = agent.run(full_goal)
+        state = None  # created on first agent.run(); re-used in subsequent rounds
 
-        # If the agent paused for input, prompt the user and resume.
-        while state.meta.get("paused") and state.meta.get("awaiting_input"):
+        while True:
+            state = agent.run(current_goal, state=state)
 
-            if state.meta.get("user_stopped"):
-                # /exit：不再询问，直接退出循环
+            # ── /exit or timeout → stop unconditionally ──────────────────────
+            if state.meta.get("user_stopped") or state.meta.get("timeout"):
                 break
 
-            if state.meta.get("user_typing_pause"):
-                # 用户按下 / 触发的暂停：等待完整命令或纯文本（自动包装为 /inject）
-                print(
-                    f"\n{BLUE}─── 干预模式 ────────────────────────────────────────{RESET}\n"
-                    f"{BLUE}输入 /命令（如 /stop /exit /inject <消息>）\n"
-                    f"或直接输入文字，将自动注入到 Agent 上下文（效果等同 /inject）：{RESET}"
-                )
-                cmd = None
-                import time as _time
-                _deadline = _time.time() + 120.0  # 最多等 2 分钟
-                while _time.time() < _deadline:
-                    # 优先检查命令队列（/ 开头）
-                    cmd = interrupt_handler.wait_command(timeout=0.2)
-                    if cmd is not None:
-                        # /__pause__ 是"用户按了/"的哨兵，干预模式下已无意义，丢弃继续等待
-                        if cmd == "/__pause__":
-                            cmd = None
-                            continue
-                        break
-                    # 再检查纯文本队列（用户直接输入文字，自动包装为 /inject）
-                    try:
-                        text = interrupt_handler._input_queue.get_nowait()
-                        if text is not None and text.strip():
-                            cmd = f"/inject {text.strip()}"
-                        break
-                    except Exception:
-                        pass
+            # ── paused: ask_user / weak_pass / user_typing_pause / loop_help ─
+            if state.meta.get("paused") and state.meta.get("awaiting_input"):
 
-                if cmd is None:
-                    # 超时，没有任何输入 → 恢复执行
-                    print(f"{BLUE}[干预] 未收到输入，恢复执行。{RESET}")
+                if state.meta.get("user_typing_pause"):
+                    # 用户按下 / 触发的暂停：等待完整命令或纯文本（自动包装为 /inject）
+                    print(
+                        f"\n{BLUE}─── 干预模式 ────────────────────────────────────────{RESET}\n"
+                        f"{BLUE}输入 /命令（如 /stop /exit /inject <消息>）\n"
+                        f"或直接输入文字，将自动注入到 Agent 上下文（效果等同 /inject）：{RESET}"
+                    )
+                    cmd = None
+                    import time as _time
+                    _deadline = _time.time() + 120.0  # 最多等 2 分钟
+                    while _time.time() < _deadline:
+                        # 优先检查命令队列（/ 开头）
+                        cmd = interrupt_handler.wait_command(timeout=0.2)
+                        if cmd is not None:
+                            # /__pause__ 是"用户按了/"的哨兵，干预模式下已无意义，丢弃继续等待
+                            if cmd == "/__pause__":
+                                cmd = None
+                                continue
+                            break
+                        # 再检查纯文本队列（用户直接输入文字，自动包装为 /inject）
+                        try:
+                            text = interrupt_handler._input_queue.get_nowait()
+                            if text is not None and text.strip():
+                                cmd = f"/inject {text.strip()}"
+                            break
+                        except Exception:
+                            pass
+
+                    if cmd is None:
+                        # 超时，没有任何输入 → 恢复执行
+                        print(f"{BLUE}[干预] 未收到输入，恢复执行。{RESET}")
+                        state.meta.pop("paused", None)
+                        state.meta.pop("awaiting_input", None)
+                        state.meta.pop("user_typing_pause", None)
+                        continue
+
+                    result = interrupt_handler.process_command(cmd, state)
+                    if result == "pause":
+                        # 不应出现（/__pause__ 已过滤），若出现则继续等待
+                        continue
                     state.meta.pop("paused", None)
                     state.meta.pop("awaiting_input", None)
                     state.meta.pop("user_typing_pause", None)
-                    state = agent.run(goal, state=state)
+                    if result == "stop":
+                        state.meta["user_stopped"] = True
+                        break
+                    # /inject 已注入 or /status 已显示 → 恢复执行
+                    if state.persistence is not None:
+                        state.persistence.checkpoint(state)
                     continue
 
-                result = interrupt_handler.process_command(cmd, state)
-                if result == "pause":
-                    # 不应出现（/__pause__ 已过滤），若出现则继续等待
-                    continue
-                state.meta.pop("paused", None)
-                state.meta.pop("awaiting_input", None)
-                state.meta.pop("user_typing_pause", None)
-                if result == "stop":
-                    state.meta["user_stopped"] = True
+                # 普通 ask_user / weak_pass 暂停：Agent 提问，等待用户文字回答
+                q = state.meta.get("awaiting_input")
+                print("\n=== NEED INPUT ===")
+                print(q)
+                # 通过 interrupt_handler 读取，与后台线程共享 stdin 不冲突
+                user_input = interrupt_handler.get_user_input("\nYour answer> ")
+                if user_input is None:  # EOF
+                    print("\n[run_goal] No interactive stdin available (EOF). Please rerun in a real terminal to answer.")
                     break
-                # /inject 已注入 or /status 已显示 → 恢复执行
+                user_input = user_input.strip()
+                if not user_input:
+                    print("No input provided; exiting.")
+                    break
+
+                state.short_term.append({
+                    "role": "user",
+                    "content": f"[用户补充信息]\n{user_input}",
+                })
                 if state.persistence is not None:
+                    state.persistence.append_short_term(state.short_term[-1])
                     state.persistence.checkpoint(state)
-                state = agent.run(goal, state=state)
                 continue
 
-            # 普通 ask_user 暂停：Agent 提问，等待用户文字回答
-            q = state.meta.get("awaiting_input")
-            print("\n=== NEED INPUT ===")
-            print(q)
-            # 通过 interrupt_handler 读取，与后台线程共享 stdin 不冲突
-            user_input = interrupt_handler.get_user_input("\nYour answer> ")
-            if user_input is None:  # EOF
-                print("\n[run_goal] No interactive stdin available (EOF). Please rerun in a real terminal to answer.")
-                break
-            user_input = user_input.strip()
-            if not user_input:
-                print("No input provided; exiting.")
+            # ── 正常完成（pass verdict，no paused flag）──────────────────────
+            if not nostop:
+                break  # 原有行为：直接退出
+
+            # ── nostop idle：等待下一个目标 ──────────────────────────────────
+            _final   = state.meta.get("final_answer") or ""
+            _round_n = state.meta.get("_nostop_round", 1)
+            print(f"\n{GREEN}{'='*60}{RESET}")
+            print(f"{GREEN}[nostop] ✅ 第 {_round_n} 轮任务完成。{RESET}")
+            if _final:
+                _preview = _final[:300] + ("…" if len(_final) > 300 else "")
+                print(f"{GREEN}{_preview}{RESET}")
+            print(f"{GREEN}{'='*60}{RESET}")
+
+            # 追加 session_answers.md 记录此轮成果
+            _pers = state.persistence
+            if _pers is not None and _final:
+                try:
+                    from datetime import datetime as _dt
+                    _sa_path = _pers.run_dir / "session_answers.md"
+                    _block = (
+                        f"\n## Round {_round_n} — {_dt.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"**Goal:** {current_goal[:200]}\n\n"
+                        f"{_final}\n\n---"
+                    )
+                    with _sa_path.open("a", encoding="utf-8") as _f:
+                        _f.write(_block)
+                except Exception:
+                    pass
+
+            # 写 idle 状态供看板感知
+            state.meta["nostop_idle"]    = True
+            state.meta["awaiting_input"] = (
+                "任务完成，进入持续对话模式。请输入下一个目标，或 /exit 退出："
+            )
+            if state.persistence is not None:
+                state.persistence.checkpoint(state, status="idle")
+
+            print(
+                f"\n{BLUE}[nostop] 请输入下一个目标（/exit 退出）：{RESET}",
+                end="", flush=True,
+            )
+            next_input = interrupt_handler.get_user_input("")
+            if next_input is None or not next_input.strip():
                 break
 
-            state.short_term.append({
-                "role": "user",
-                "content": f"[用户补充信息]\n{user_input}",
-            })
-            if state.persistence is not None:
-                state.persistence.append_short_term(state.short_term[-1])
-                state.persistence.checkpoint(state)
-            state = agent.run(goal, state=state)
+            # 清除上一轮的一次性完成状态，开始新一轮
+            for _k in _NOSTOP_RESET_KEYS:
+                state.meta.pop(_k, None)
+            state.meta["_nostop_round"] = _round_n + 1
+            current_goal = next_input.strip()
+            # continue → 回到 while True 顶部，以新 goal 继续
 
     except Exception as e:
         run_error = e

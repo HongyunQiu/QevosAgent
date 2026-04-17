@@ -13,7 +13,7 @@
 
 `simpleAgent` is a minimalist agent runtime for real tool-calling workflows with persistent artifacts, recoverable memory, and observable execution.
 
-`simpleAgent` 是一个极简但完整的 Agent Runtime，重点不只是“调用模型和工具”，而是把运行过程、状态恢复、工具修复和可观察性一起做完整。
+`simpleAgent` 是一个极简但完整的 Agent Runtime，重点不只是“调用模型和工具”，而是把运行过程、状态恢复、工具修复和可观察性一起做完整。除了闭源模型以外，本项目还特别适合对接本地运行的开源模型，如QWEN3.5 27b,Gemma4等。实现免TOKEN成本运行。本项目还提供开箱即用的可执行文件，一键安装运行，免于复杂的配置，支持WINDOWS,LINUX,MACOS。特别是在WINDOWS下也可以开箱即用，无需WSL和复杂的设置。
 
 It keeps the core loop small: `LLM -> tool_call -> feedback -> done`.
 

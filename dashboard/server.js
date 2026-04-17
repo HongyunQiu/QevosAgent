@@ -319,9 +319,11 @@ function isAgentRunning() {
 
 /**
  * Spawn a new agent process with the given goal string.
+ * @param {string}  goal    - Natural language goal for the agent.
+ * @param {boolean} nostop  - If true, pass --nostop flag (continuous conversation mode).
  * Returns { ok, error? }.
  */
-function launchAgent(goal) {
+function launchAgent(goal, nostop = false) {
   if (isAgentRunning()) {
     return { ok: false, error: 'An agent process is already running.' };
   }
@@ -333,14 +335,17 @@ function launchAgent(goal) {
   state.launching = true;
   broadcast();
 
-  broadcastConsole('system', `▶ Launching: ${PYTHON_CMD} run_goal.py "${goal.slice(0, 80)}${goal.length > 80 ? '…' : ''}"`);
+  const nostopLabel = nostop ? ' --nostop' : '';
+  broadcastConsole('system', `▶ Launching: ${PYTHON_CMD} run_goal.py${nostopLabel} "${goal.slice(0, 80)}${goal.length > 80 ? '…' : ''}"`);
   broadcastConsole('system', `  Working dir: ${AGENT_DIR}`);
 
   // On Windows, PYTHON_CMD may be a multi-word string like "conda run -n myenv python".
   // Split into command + args so spawn works correctly on all platforms.
   const parts    = PYTHON_CMD.trim().split(/\s+/);
   const cmd      = parts[0];
-  const cmdArgs  = [...parts.slice(1), 'run_goal.py', goal];
+  const cmdArgs  = [...parts.slice(1), 'run_goal.py'];
+  if (nostop) cmdArgs.push('--nostop');
+  cmdArgs.push(goal);
 
   agentProc = spawn(cmd, cmdArgs, {
     cwd:         AGENT_DIR,
@@ -478,9 +483,9 @@ const server = http.createServer(async (req, res) => {
   // ── POST /api/launch  ─────────────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/api/launch') {
     try {
-      const { goal } = JSON.parse(await readBody(req));
+      const { goal, nostop } = JSON.parse(await readBody(req));
       if (!goal || !goal.trim()) { json(400, { error: 'goal is required' }); return; }
-      const result = launchAgent(goal.trim());
+      const result = launchAgent(goal.trim(), !!nostop);
       json(result.ok ? 200 : 409, result);
     } catch (e) { json(500, { error: String(e) }); }
     return;
