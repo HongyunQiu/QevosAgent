@@ -41,8 +41,16 @@ def _write_text_atomic(path: Path, content: str) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
+class SetEncoder(json.JSONEncoder):
+    """JSON 编码器，支持 set 类型的序列化"""
+    def default(self, obj):
+        if isinstance(obj, set):
+            return {"__set__": True, "items": list(obj)}
+        return super().default(obj)
+
+
 def _write_json_atomic(path: Path, payload: dict) -> None:
-    _write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    _write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2, cls=SetEncoder) + "\n")
 
 
 class RunPersistence:
