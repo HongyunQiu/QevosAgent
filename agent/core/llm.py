@@ -311,6 +311,13 @@ def build_system_prompt(
    - tags: 逗号分隔的关键词，便于日后检索
 
 **重要提示**：仅仅在 final_answer 中声称"已提交完成报告并记录情景记忆"是无效的。你必须真正调用相应的工具，否则验收会失败，任务会继续循环直到你正确提交。
+    
+**强烈建议**：在每次任务结束时，按以下顺序操作：
+    1. 先调用 submit_completion_report 提交完成报告
+    2. 再调用 append_episodic 记录情景记忆
+    3. 最后才调用 action='done' 结束任务
+    
+**记住**：系统会严格检查这两个步骤，缺一不可！
 
 ## 行为准则
 1. 每次只做一个动作（一次工具调用）
@@ -392,7 +399,18 @@ def _extract_json(text: str) -> tuple:
     # 1) Direct parse.
     try:
         return json.loads(stripped), None
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        # 如果解析失败且错误信息包含 newline，尝试转义换行符
+        error_msg = str(e).lower()
+        if 'newline' in error_msg:
+            # 尝试将字符串中的换行符转义为\n
+            # 这是一个启发式修复，用于处理 LLM 输出的未转义换行符
+            try:
+                # 将字符串中的换行符替换为\n
+                escaped_text = stripped.replace('\n', '\\n')
+                return json.loads(escaped_text), None
+            except json.JSONDecodeError:
+                pass
         pass
 
     # 2) Explicit ```json marker → raw_decode.

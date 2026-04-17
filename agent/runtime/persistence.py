@@ -42,13 +42,15 @@ def _write_text_atomic(path: Path, content: str) -> None:
 
 
 class _SafeEncoder(json.JSONEncoder):
-    def default(self, o):
-        if isinstance(o, set):
-            return list(o)
+    """JSON encoder with stable set handling and a best-effort fallback."""
+
+    def default(self, obj):
+        if isinstance(obj, set):
+            return list(obj)
         try:
-            return super().default(o)
+            return super().default(obj)
         except TypeError:
-            return repr(o)
+            return repr(obj)
 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
