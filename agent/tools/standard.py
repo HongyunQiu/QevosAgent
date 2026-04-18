@@ -1421,6 +1421,34 @@ def tool_save_concept(state: AgentState, path: str, content: str) -> ToolResult:
         return ToolResult(success=False, output=None, error=str(e))
 
 
+def tool_persist_runtime_patches(state: AgentState, path: str = "./AGENTS.md") -> ToolResult:
+    """将本次运行积累的运行时格式规范写入 AGENTS.md，供后续运行持久使用。
+
+    只写入 meta['runtime_patches'] 中的规则；若无规则则什么也不做。
+    写入位置：AGENTS.md 末尾的 '## 运行时经验' 节（已有则替换）。
+    """
+    import re as _re
+    try:
+        patches: list[str] = state.meta.get("runtime_patches", [])
+        if not patches:
+            return ToolResult(success=True, output="无运行时补丁，跳过写入")
+        p = Path(path)
+        existing = p.read_text(encoding="utf-8") if p.exists() else ""
+        # 替换已有的自动生成节，或追加
+        section = "\n\n## 运行时经验（自动生成）\n" + "\n".join(f"- {rule}" for rule in patches) + "\n"
+        existing_stripped = _re.sub(
+            r"\n\n## 运行时经验（自动生成）\n.*",
+            "",
+            existing,
+            flags=_re.DOTALL,
+        )
+        new_content = existing_stripped.rstrip() + section
+        p.write_text(new_content, encoding="utf-8")
+        return ToolResult(success=True, output={"path": str(p.resolve()), "patches_written": len(patches), "rules": patches})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
 def tool_read_concept(state: AgentState, path: str) -> ToolResult:
     """读取宏观工作记忆文件并加载到 state，使其注入后续的 system prompt。"""
     try:
@@ -1903,6 +1931,17 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             ),
             args_schema={"path": "宏观工作记忆文件路径（如 ./memory_macro.md）"},
             fn=tool_read_concept,
+        ),
+        ToolSpec(
+            name="persist_runtime_patches",
+            description=(
+                "将本次运行中自动积累的 JSON 格式规范写入 AGENTS.md，持久化供后续运行使用。"
+                "通常在任务结束前调用一次即可；无规则时自动跳过。"
+            ),
+            args_schema={
+                "path": "（可选）AGENTS.md 的路径，默认 ./AGENTS.md",
+            },
+            fn=tool_persist_runtime_patches,
         ),
         ToolSpec(
             name="validate_tool_recipe",

@@ -19,6 +19,11 @@ It keeps the core loop small: `LLM -> tool_call -> feedback -> done`.
 
 What makes it different is everything around that loop: persistent runs, recoverable snapshots, built-in scratchpad, explicit tool repair, human intervention, and a lightweight dashboard you can actually use.
 
+<p align="center">
+  <img src="./assets/simpleAgent_dashboard.gif" alt="simpleAgent dashboard demo" width="100%" />
+</p>
+
+
 ## Why simpleAgent?
 
 - Minimal closed-loop agent runtime

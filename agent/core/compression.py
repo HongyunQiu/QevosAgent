@@ -168,7 +168,7 @@ def _maybe_compress_for_context(state: AgentState, llm: LLMBackend, system: str,
         )
         # After trimming, recompute once (best-effort)
         try:
-            system2 = build_system_prompt(state.tools, state.long_term, concept_memory=state.meta.get("concept_memory", ""))
+            system2 = build_system_prompt(state.tools, state.long_term, concept_memory=state.meta.get("concept_memory", ""), runtime_patches=state.meta.get("runtime_patches"))
             messages2 = build_context_messages(state)
             est2 = int(llm.estimate_tokens(messages2, system2))
             state.meta["prompt_tokens_est"] = est2
@@ -268,6 +268,90 @@ def _auto_scratchpad_note(
 
     except Exception:
         pass  # 自动追加失败不影响主流程
+
+
+# ── 运行时补丁 ────────────────────────────────────────────────────────────────
+
+# 已知 JSON 错误类型 → 补丁规则（静态映射）
+_JSON_ERROR_PATCH_RULES: dict[str, str] = {
+    "bare_newline":        "JSON字符串内的换行必须转义为\\n，禁止直接回车换行",
+    "unescaped_backslash": "Windows路径的反斜杠\\必须写成\\\\，或改用正斜杠/",
+    "unterminated_string": "超长内容先用write_file写入文件，args/final_answer只引用路径，避免截断",
+    "split_structure":     "thought/action/tool/args必须全部在同一个顶层{}内，thought不能单独成对象",
+    "single_quote_key":    "JSON的key必须用双引号\"\"，不能用单引号''",
+}
+
+# 每次运行最多触发多少次 mini LLM 诊断（针对未知类型）
+_PATCH_UNKNOWN_MAX = int(os.environ.get("RUNTIME_PATCH_UNKNOWN_MAX", "2"))
+# 候选规则出现多少次后升级为正式 patch
+_PATCH_CANDIDATE_THRESHOLD = 2
+
+
+def _apply_runtime_patch(
+    raw: str,
+    action: "Action",
+    state: AgentState,
+    llm: LLMBackend,
+) -> None:
+    """根据 JSON 错误类型，向 meta['runtime_patches'] 追加补丁规则。
+
+    - 已知类型：静态映射，去重后直接追加。
+    - 未知类型：触发 mini LLM 诊断（频控+候选晋升机制）。
+    """
+    error_type = getattr(action, "error_type", None)
+    if not error_type:
+        return
+
+    patches: list[str] = state.meta.setdefault("runtime_patches", [])
+
+    # ── 已知类型：静态规则 ────────────────────────────────────────────────────
+    rule = _JSON_ERROR_PATCH_RULES.get(error_type)
+    if rule:
+        if rule not in patches:
+            patches.append(rule)
+            state.long_term.append(f"[运行时补丁] 新增格式规范: {rule}")
+        return
+
+    # ── 未知类型：mini LLM 诊断 ──────────────────────────────────────────────
+    if error_type != "unknown":
+        return
+
+    diagnosed = state.meta.get("_patch_unknown_diagnosed", 0)
+    if diagnosed >= _PATCH_UNKNOWN_MAX:
+        return
+
+    try:
+        mini_system = (
+            "你是JSON格式错误分析助手。"
+            "根据以下错误信息和原始输出，输出一条简洁的格式规范（≤30字），"
+            "用于指导模型避免此类错误。直接输出规则文字，不要解释，不要编号。"
+        )
+        mini_user = (
+            f"错误信息: {action.thought[:200]}\n"
+            f"原始输出(截断): {raw[:300]}"
+        )
+        candidate = llm.complete_text(
+            messages=[{"role": "user", "content": mini_user}],
+            system=mini_system,
+            max_tokens=60,
+        ).strip()
+
+        if not candidate or len(candidate) > 80:
+            return
+
+        state.meta["_patch_unknown_diagnosed"] = diagnosed + 1
+
+        # 候选晋升：出现 >= 阈值次数才正式加入 patches
+        candidates: dict[str, int] = state.meta.setdefault("_patch_candidates", {})
+        candidates[candidate] = candidates.get(candidate, 0) + 1
+
+        if candidates[candidate] >= _PATCH_CANDIDATE_THRESHOLD:
+            if candidate not in patches:
+                patches.append(candidate)
+                state.long_term.append(f"[运行时补丁] 新增未知类型规范(已验证): {candidate}")
+
+    except Exception:
+        pass
 
 
 # ── 上下文重建 ────────────────────────────────────────────────────────────────

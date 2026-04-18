@@ -236,6 +236,7 @@ def build_system_prompt(
     long_term: list[str],
     scratchpad: str = "",
     concept_memory: str = "",
+    runtime_patches: Optional[list[str]] = None,
 ) -> str:
     """
     动态构建 system prompt。
@@ -266,6 +267,13 @@ def build_system_prompt(
             f"- {m}" for m in long_term
         )
 
+    patches_section = ""
+    if runtime_patches:
+        patches_section = (
+            "\n\n## 运行时格式规范（自动生成，必须严格遵守）\n"
+            + "\n".join(f"- {p}" for p in runtime_patches)
+        )
+
     scratchpad_section = ""
     if scratchpad and scratchpad.strip():
         scratchpad_section = (
@@ -290,6 +298,7 @@ def build_system_prompt(
 {tools_section}
 {concept_section}
 {memory_section}
+{patches_section}
 {scratchpad_section}
 
 ## 完成任务前的必要步骤（重要！）
@@ -492,6 +501,7 @@ def parse_response(raw: str) -> Action:
                 "如果需要继续调用工具，请使用：\n"
                 '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
             )
+            return Action(type=ActionType.ERROR, thought=thought, error_type="prose_no_json")
         else:
             # JSON-like content found but failed to parse — diagnose the root cause.
             exc_str = str(exc)
@@ -522,6 +532,7 @@ def parse_response(raw: str) -> Action:
                     "如果需要继续调用工具，请使用：\n"
                     '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
                 )
+                _error_type = "prose_with_json"
             elif _has_unescaped_backslash and not _has_bare_newline:
                 thought = (
                     "JSON 格式错误：字符串内包含未转义的反斜杠。\n"
@@ -534,6 +545,7 @@ def parse_response(raw: str) -> Action:
                     "例如 runs/20260413-140101 或 C:/Users/92680。\n"
                     f"原始输出(截断): {raw[:300]}"
                 )
+                _error_type = "unescaped_backslash"
             elif "Invalid control character" in exc_str or _has_bare_newline:
                 thought = (
                     "JSON 格式错误：字符串内包含未转义的换行符。\n"
@@ -547,6 +559,7 @@ def parse_response(raw: str) -> Action:
                     "再在命令中引用该文件路径（如 python3 /tmp/script.py），可彻底避免此类问题。\n"
                     f"原始输出(截断): {raw[:300]}"
                 )
+                _error_type = "bare_newline"
             elif "Unterminated string" in exc_str:
                 thought = (
                     "JSON 格式错误：字符串未闭合，输出很可能被截断。\n"
@@ -556,6 +569,7 @@ def parse_response(raw: str) -> Action:
                     f"截断位置: {exc_str}\n"
                     f"原始输出(截断): {raw[:300]}"
                 )
+                _error_type = "unterminated_string"
             elif _has_split_structure:
                 thought = (
                     "JSON 结构错误：thought 字段提前闭合，导致 action/tool/args 等字段脱落在顶层对象之外。\n"
@@ -565,6 +579,7 @@ def parse_response(raw: str) -> Action:
                     '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}\n'
                     f"原始输出(截断): {raw[:300]}"
                 )
+                _error_type = "split_structure"
             elif _has_single_quote_key or "Expecting property name enclosed in double quotes" in exc_str:
                 thought = (
                     "JSON 格式错误：key 必须用双引号，不能用单引号。\n"
@@ -574,12 +589,14 @@ def parse_response(raw: str) -> Action:
                     "请同时检查所有字符串值内的换行是否都转义成了 \\n。\n"
                     f"原始输出(截断): {raw[:300]}"
                 )
+                _error_type = "single_quote_key"
             else:
                 thought = (
                     f"JSON 解析失败: {exc_str}\n"
                     f"原始输出(截断): {raw[:300]}"
                 )
-        return Action(type=ActionType.ERROR, thought=thought)
+                _error_type = "unknown"
+        return Action(type=ActionType.ERROR, thought=thought, error_type=_error_type)
 
     # Defensive: some servers/models may emit `null` or a non-object JSON.
     if not isinstance(data, dict):
@@ -619,9 +636,11 @@ def parse_response(raw: str) -> Action:
                 "如果需要继续调用工具，请使用：\n"
                 '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
             )
+        _prose_error_type = "unescaped_backslash" if _has_unescaped_backslash else "prose_with_json"
         return Action(
             type=ActionType.ERROR,
             thought=_prose_thought,
+            error_type=_prose_error_type,
         )
     if not isinstance(data, dict):
         return Action(

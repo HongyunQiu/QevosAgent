@@ -21,6 +21,7 @@ from .compression import (
     _maybe_compress_for_context,
     _auto_scratchpad_note,
     _rebuild_context_on_hard_block,
+    _apply_runtime_patch,
 )
 from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice
 
@@ -488,7 +489,7 @@ def run(
                             hooks.on_advisor(_advise_reason, _advice)
             # ─────────────────────────────────────────────────────────────────
 
-            system = build_system_prompt(state.tools, state.long_term, scratchpad=state.meta.get("scratchpad", ""), concept_memory=state.meta.get("concept_memory", ""))
+            system = build_system_prompt(state.tools, state.long_term, scratchpad=state.meta.get("scratchpad", ""), concept_memory=state.meta.get("concept_memory", ""), runtime_patches=state.meta.get("runtime_patches"))
             messages = build_context_messages(state)
 
             pack = _maybe_compress_for_context(state, llm, system, messages)
@@ -743,6 +744,9 @@ def run(
                 else:
                     streak = 0
                     state.meta["_json_fail_streak"] = 0
+
+                # 运行时补丁：识别错误类型并写入 runtime_patches
+                _apply_runtime_patch(raw_response, action, state, llm)
 
                 # 超出重试上限后注入强提示，打破截断死循环
                 if is_json_parse_error and streak > retry_max:
