@@ -1654,6 +1654,102 @@ def tool_request_advisor(state: AgentState, reason: str = "") -> ToolResult:
     )
 
 
+def _get_run_dir(state: AgentState) -> Optional[str]:
+    """Return the current run directory path, or None if unavailable."""
+    persistence = getattr(state, "persistence", None)
+    if persistence is not None and hasattr(persistence, "run_dir"):
+        return str(persistence.run_dir)
+    return os.environ.get("RUN_DIR")
+
+
+def tool_web_show(
+    state: AgentState,
+    content: str,
+    content_type: str = "html",
+    display_id: str = "default",
+    title: str = "",
+    mode: str = "replace",
+) -> ToolResult:
+    """将内容写入 web_display_{display_id}.json，dashboard 监听后实时推送到浏览器。
+
+    content_type: html | markdown | table | chart | text | image
+    mode: replace（覆盖）| append（追加）
+    """
+    import time as _time
+
+    run_dir = _get_run_dir(state)
+    if not run_dir:
+        return ToolResult(success=False, output="", error="无法获取 run_dir，请确保 agent 通过持久化模式运行")
+
+    fp = Path(run_dir) / f"web_display_{display_id}.json"
+
+    if mode == "append" and fp.exists():
+        try:
+            existing = json.loads(fp.read_text(encoding="utf-8"))
+            existing["content"] = existing.get("content", "") + "\n" + content
+            existing["updated_at"] = _time.time()
+            fp.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            mode = "replace"
+
+    if mode != "append":
+        data = {
+            "display_id": display_id,
+            "content_type": content_type,
+            "title": title,
+            "content": content,
+            "created_at": _time.time(),
+            "updated_at": _time.time(),
+        }
+        fp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    port = os.environ.get("DASHBOARD_PORT", "8765")
+    run_id = Path(run_dir).name
+    url = f"http://localhost:{port}/view/{run_id}/{display_id}"
+
+    # 每个 display_id 只在首次创建时自动打开浏览器，append 不重复打开
+    opened_key = f"_web_show_opened_{display_id}"
+    if mode != "append" and not state.meta.get(opened_key):
+        import webbrowser
+        webbrowser.open(url)
+        state.meta[opened_key] = True
+
+    return ToolResult(
+        success=True,
+        output={
+            "url": url,
+            "display_id": display_id,
+            "content_type": content_type,
+        },
+    )
+
+
+def tool_web_notify(
+    state: AgentState,
+    message: str,
+    display_id: str = "*",
+) -> ToolResult:
+    """向 WEB 页面的悬浮聊天框推送一条消息（agent → 用户）。
+
+    display_id: 目标展示页面 ID，"*" 表示推送到所有页面（默认）。
+    """
+    import time as _time
+
+    run_dir = _get_run_dir(state)
+    if not run_dir:
+        return ToolResult(success=False, output="", error="无法获取 run_dir")
+
+    fp = Path(run_dir) / "web_chat.jsonl"
+    record = json.dumps(
+        {"role": "agent", "message": message, "display_id": display_id, "ts": _time.time()},
+        ensure_ascii=False,
+    )
+    with open(fp, "a", encoding="utf-8") as f:
+        f.write(record + "\n")
+
+    return ToolResult(success=True, output={"message": message, "display_id": display_id})
+
+
 def get_standard_tools() -> dict[str, ToolSpec]:
     """返回标准工具集（直接传给 agent.run()）。"""
     specs = [
@@ -2038,6 +2134,35 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description="列出所有后台任务及其状态（running/done/failed/cancelled）",
             args_schema={},
             fn=tool_jobs_list,
+        ),
+        # ── WEB 展示工具 ──────────────────────────────────────────────────────
+        ToolSpec(
+            name="web_show",
+            description=(
+                "在浏览器 WEB 页面中展示内容（图表、表格、HTML、Markdown 等）。"
+                "返回可访问的 URL，用户打开后实时接收更新，无需刷新。"
+                "支持多个独立展示面板（display_id），每个面板可独立更新。"
+            ),
+            args_schema={
+                "content": "要展示的内容字符串",
+                "content_type": "内容类型：html（默认）| markdown | table（JSON数组）| chart（ECharts option JSON）| text | image（URL或base64）",
+                "display_id": "（可选）展示面板 ID，默认 'default'；同一 run 内可有多个独立面板",
+                "title": "（可选）面板标题",
+                "mode": "（可选）replace（覆盖，默认）| append（追加，适合流式输出）",
+            },
+            fn=tool_web_show,
+        ),
+        ToolSpec(
+            name="web_notify",
+            description=(
+                "向 WEB 页面的悬浮聊天框推送一条消息，让用户在浏览器内看到 agent 的通知或问题。"
+                "配合 web_show 使用：展示内容后用 web_notify 告知用户去查看或回答问题。"
+            ),
+            args_schema={
+                "message": "要推送给用户的消息文本",
+                "display_id": "（可选）目标面板 ID，'*' 表示推送到所有面板（默认）",
+            },
+            fn=tool_web_notify,
         ),
     ]
     return {s.name: s for s in specs}

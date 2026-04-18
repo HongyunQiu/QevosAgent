@@ -48,11 +48,13 @@ let state = {
   launching:   false,   // agent is being spawned, not yet writing runs/
   agentPid:    null,
   agentAlive:  false,   // true iff the agent process is confirmed running right now
+  webDisplays: {},      // { display_id: { content_type, title, content, updated_at } }
 };
 
-let _linesProcessed = 0;
-let _mtimes         = {};
-let _iterCounter    = 0;
+let _linesProcessed        = 0;
+let _mtimes                = {};
+let _iterCounter           = 0;
+let _webChatLinesProcessed = 0;
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -227,9 +229,11 @@ function poll() {
     state.scratchpad  = '';
     state.events      = [];
     state.meta        = {};
-    _linesProcessed   = 0;
-    _iterCounter      = 0;
-    _mtimes           = {};
+    state.webDisplays = {};
+    _linesProcessed        = 0;
+    _iterCounter           = 0;
+    _mtimes                = {};
+    _webChatLinesProcessed = 0;
     dirty = true;
     // Once a new run directory appears, launching phase is over
     if (isLaunching) {
@@ -253,6 +257,35 @@ function poll() {
       if (m) { state.meta = m; dirty = true; }
     }
     if (updateShortTerm(dir)) dirty = true;
+
+    // ── web_display_*.json ───────────────────────────────────────────────────
+    let dispFiles;
+    try { dispFiles = fs.readdirSync(dir).filter(f => /^web_display_(.+)\.json$/.test(f)); }
+    catch { dispFiles = []; }
+    for (const fname of dispFiles) {
+      const fp = path.join(dir, fname);
+      if (changed(fp)) {
+        const data = readJSON(fp);
+        if (data && data.display_id) {
+          state.webDisplays[data.display_id] = data;
+          dirty = true;
+        }
+      }
+    }
+
+    // ── web_chat.jsonl ───────────────────────────────────────────────────────
+    const chatFp = path.join(dir, 'web_chat.jsonl');
+    if (changed(chatFp)) {
+      const raw = readText(chatFp);
+      if (raw) {
+        const lines = raw.split('\n').filter(l => l.trim());
+        const newLines = lines.slice(_webChatLinesProcessed);
+        for (const line of newLines) {
+          try { broadcastWebChat(JSON.parse(line)); } catch {}
+        }
+        _webChatLinesProcessed = lines.length;
+      }
+    }
   }
 
   // Keep launching / agentPid in sync
@@ -298,6 +331,14 @@ function broadcast() {
   const msg = JSON.stringify({ type: 'state', ...state });
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  }
+}
+
+/** Push a web_chat message (agent → user) to all WebSocket clients. */
+function broadcastWebChat(msg) {
+  const data = JSON.stringify({ type: 'web_chat', ...msg });
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
   }
 }
 
@@ -686,6 +727,20 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       if (e.code === 'ENOENT') { json(200, { content: null, exists: false }); return; }
       json(500, { error: String(e) });
+    }
+    return;
+  }
+
+  // ── GET /view/:runId  or  /view/:runId/:displayId  ───────────────────────
+  const viewMatch = req.url.match(/^\/view\/([^/?]+)(?:\/([^/?]+))?/);
+  if (req.method === 'GET' && viewMatch) {
+    const fp = path.join(PUBLIC, 'view.html');
+    try {
+      const content = fs.readFileSync(fp);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(content);
+    } catch {
+      res.writeHead(404); res.end('view.html not found — dashboard may need restart');
     }
     return;
   }
