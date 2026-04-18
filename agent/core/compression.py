@@ -1,15 +1,21 @@
 """
-上下文压缩模块
+上下文管理模块
 职责：管理 LLM 上下文窗口的空间，防止 prompt 超限。
 
-包含：
-  - _get_persistence          持久化器懒加载
-  - _summarize_large_text     JSON 感知的文本截断
-  - _compact_short_term_messages  消息体限长
-  - _trim_short_term          历史修剪 + 桥接消息
-  - _maybe_compress_for_context   Token 监控 + 自动触发
-  - _auto_scratchpad_note     工具执行后自动笔记提炼
-  - _rebuild_context_on_hard_block  硬封锁时上下文重建
+包含三类功能：
+
+【压缩/裁剪】在 loop 每轮迭代开始前调用，削减 short_term 体积：
+  - _get_persistence              持久化器懒加载（辅助）
+  - _summarize_large_text         JSON 感知的文本截断（辅助）
+  - _compact_short_term_messages  单条消息体限长
+  - _trim_short_term              删除中间历史 + 插入桥接消息
+  - _maybe_compress_for_context   Token 监控，超限时自动触发上面两个
+
+【上下文重建】工具反复失败时调用，打破模型的重复循环：
+  - _rebuild_context_on_hard_block  清空吸引子上下文，注入新起点指令
+
+【笔记提炼】每次工具执行完成后调用，非压缩，而是向草稿本增量写入：
+  - _auto_scratchpad_note  mini LLM call，从工具输出提炼关键发现
 
 依赖方向：types ← llm ← compression ← loop（无循环）
 """

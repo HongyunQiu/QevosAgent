@@ -476,6 +476,14 @@ def parse_response(raw: str) -> Action:
     if data is None:
         if "{" not in raw:
             # Pure text output — model forgot the JSON protocol entirely.
+            # Treat as a implicit done: the text itself is the final answer.
+            stripped_raw = raw.strip()
+            if stripped_raw:
+                return Action(
+                    type=ActionType.DONE,
+                    thought="(auto-wrapped plain text as final answer)",
+                    final_answer=stripped_raw,
+                )
             thought = (
                 "你的上一条输出是纯文本，没有任何 JSON 结构。\n"
                 "无论任务是否完成，都必须通过 JSON 格式输出，不能直接输出纯文本。\n"
@@ -580,6 +588,15 @@ def parse_response(raw: str) -> Action:
     # spuriously extracted from incidental JSON inside plain prose (e.g. a code snippet),
     # OR the real JSON was mis-parsed due to unescaped backslashes stripping key fields.
     elif "thought" not in data and "action" not in data:
+        # Handle LLM wrapping the agent response in a {"role":..., "content":"..."} envelope.
+        # The outer JSON is valid, but the real agent response is nested inside "content".
+        if "content" in data and isinstance(data["content"], str):
+            inner_data, _ = _extract_json(data["content"])
+            if (
+                isinstance(inner_data, dict)
+                and ("thought" in inner_data or "action" in inner_data)
+            ):
+                return parse_response(data["content"])
         _has_unescaped_backslash = bool(re.search(r'\\[^"\\/bfnrtu\n]', raw))
         if _has_unescaped_backslash:
             _prose_thought = (
@@ -622,24 +639,32 @@ def parse_response(raw: str) -> Action:
             final_answer=data.get("final_answer", ""),
         )
 
-    # 检测 LLM 把工具名写成了 action 值（如 action="ask_user"）
+    # 检测 LLM 把工具名写成了 action 值（如 action="shell"）
     if action_str not in ("tool_call",):
-        # 尝试将 action 值本身作为 tool 名自动修复
-        guessed_tool = action_str
-        guessed_args = {k: v for k, v in data.items()
-                        if k not in ("thought", "action", "tool", "args")}
-        if not guessed_args:
-            guessed_args = data.get("args", {})
-        return Action(
-            type=ActionType.ERROR,
-            thought=(
-                f"action='{action_str}' 不合法，action 只能是 'tool_call' 或 'done'。\n"
-                f"如需调用工具，请严格使用以下格式：\n"
-                f'{{"thought":"...","action":"tool_call","tool":"{guessed_tool}","args":{{...}}}}\n'
-                f"例如调用 ask_user：\n"
-                f'{{"thought":"...","action":"tool_call","tool":"ask_user","args":{{"question":"你的问题"}}}}'
+        existing_tool = data.get("tool", "")
+        guessed_tool = existing_tool or action_str
+        # If the tool field is already present (or can be inferred from action), silently fix
+        # action → "tool_call" rather than burning a retry round.
+        if guessed_tool:
+            data = dict(data)
+            data["action"] = "tool_call"
+            if not existing_tool:
+                data["tool"] = guessed_tool
+            if "args" not in data:
+                data["args"] = {k: v for k, v in data.items()
+                                if k not in ("thought", "action", "tool", "args")}
+            action_str = "tool_call"
+        else:
+            return Action(
+                type=ActionType.ERROR,
+                thought=(
+                    f"action='{action_str}' 不合法，action 只能是 'tool_call' 或 'done'。\n"
+                    f"如需调用工具，请严格使用以下格式：\n"
+                    f'{{"thought":"...","action":"tool_call","tool":"工具名","args":{{...}}}}\n'
+                    f"例如调用 ask_user：\n"
+                    f'{{"thought":"...","action":"tool_call","tool":"ask_user","args":{{"question":"你的问题"}}}}'
+                )
             )
-        )
 
     tool = data.get("tool", "")
     args = data.get("args", {})

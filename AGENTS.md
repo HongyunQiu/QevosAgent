@@ -91,6 +91,43 @@ dir /s /b C:\*程序名*
 
 1. 杜绝重复安装：安装前需要先查找一下是否已经安装。
 2. 安装软件前，最好能询问用户，征得用户同意方可安装。
+3. 安装GIT仓库的软件，必须先仔细阅读对应仓库的readme.md，作为安装方法的第一参考。
+
+---
+
+## 工具使用规范（重要）
+
+### 1. 优先使用 `register_tool` 注册新工具，禁止直接修改框架源码
+
+当需要扩展自身能力时，**必须**通过 `register_tool` 工具在运行时注册，而不是直接编辑 `agent/tools/standard.py` 或其他框架源文件。
+
+```
+需要新工具？
+├── 可用现有工具组合完成  →  直接使用，不必新建工具
+├── 需要全新能力          →  调用 register_tool 注册（存入用户工具集）
+└── 禁止直接编辑          →  agent/tools/standard.py、agent/core/*.py 等框架文件
+```
+
+**原因：** 直接修改源码会污染 git 仓库，且变更对所有后续实例永久生效，影响难以追踪。`register_tool` 注册的工具保存在独立 JSON 文件中，可审查、可回滚。
+
+### 2. `register_tool` 的适用边界
+
+- 工具代码中可以 `import` 任何已安装的第三方库，`exec()` 环境与正常 Python 一致。
+- 若依赖库未安装，应先通过 `shell` 工具安装，再注册工具，而不是将库代码写入源文件。
+- 注册的工具在当次运行的 `state.tools` 中立即生效；下次启动时由 `load_tools` 从 JSON 自动恢复。
+
+### 3. 不得修改的文件清单
+
+以下文件属于框架核心，**禁止在任务执行中自行修改**，除非用户明确要求：
+
+- `agent/tools/standard.py`
+- `agent/core/llm.py`
+- `agent/core/compression.py`
+- `agent/core/types.py`
+- `run_goal.py`
+- `AGENTS.md`
+
+如确实需要改动上述文件，必须先通过 `ask_user` 向用户说明原因并征得同意。
 
 ---
 

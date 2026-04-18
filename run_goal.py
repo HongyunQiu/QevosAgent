@@ -450,8 +450,10 @@ def main():
                 break  # 原有行为：直接退出
 
             # ── nostop idle：等待下一个目标 ──────────────────────────────────
-            _final   = state.meta.get("final_answer") or ""
-            _round_n = state.meta.get("_nostop_round", 1)
+            _final     = state.meta.get("final_answer") or ""
+            _round_n   = state.meta.get("_nostop_round", 1)
+            # session_answers.md 记录的目标使用原始用户输入（不含 prefix），可读性更佳
+            _raw_goal  = state.meta.get("_task_desc") or current_goal
             print(f"\n{GREEN}{'='*60}{RESET}")
             print(f"{GREEN}[nostop] ✅ 第 {_round_n} 轮任务完成。{RESET}")
             if _final:
@@ -467,7 +469,7 @@ def main():
                     _sa_path = _pers.run_dir / "session_answers.md"
                     _block = (
                         f"\n## Round {_round_n} — {_dt.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        f"**Goal:** {current_goal[:200]}\n\n"
+                        f"**Goal:** {_raw_goal[:200]}\n\n"
                         f"{_final}\n\n---"
                     )
                     with _sa_path.open("a", encoding="utf-8") as _f:
@@ -491,11 +493,35 @@ def main():
             if next_input is None or not next_input.strip():
                 break
 
+            _raw_next_goal = next_input.strip()
+
             # 清除上一轮的一次性完成状态，开始新一轮
             for _k in _NOSTOP_RESET_KEYS:
                 state.meta.pop(_k, None)
             state.meta["_nostop_round"] = _round_n + 1
-            current_goal = next_input.strip()
+
+            # ── 重置对话上下文，防止上轮历史（可能 200+ 条）污染新一轮 ────────────
+            # state.short_term 是发给 LLM 的对话历史，跨轮保留会导致：
+            #   1. 上下文爆炸（tokens 激增）
+            #   2. LLM 复用上一轮 final_answer（而非重新执行新目标）
+            #   3. 验收/acceptance 状态混淆
+            state.short_term.clear()
+            state.meta["scratchpad"]     = f"任务描述:\n{_raw_next_goal}\n"
+            state.meta["_task_desc"]     = _raw_next_goal
+            state.meta.pop("_loop_warn_counts", None)
+            state.meta.pop("_call_sig_history", None)
+            state.iteration = 0   # 重置迭代计数，新一轮可使用完整 max_iterations
+            os.environ["USER_GOAL"] = _raw_next_goal
+
+            # 重建完整目标（保留 prefix：工具已加载提示 + AGENTS.md 规范仍然有效）
+            current_goal = prefix + _raw_next_goal
+
+            # loop.py 的 else 分支（state 非 None）不会自动注入"请完成以下目标"消息，
+            # 此处手动补充，确保 LLM 第一条消息就是新一轮目标
+            state.short_term.append({
+                "role": "user",
+                "content": f"请完成以下目标：\n\n{current_goal}",
+            })
             # continue → 回到 while True 顶部，以新 goal 继续
 
     except Exception as e:
