@@ -331,6 +331,18 @@ def console_hooks() -> AgentHooks:
         print(f"{ORANGE}   原因: 反复忽略循环警告，已清除污染上下文并注入新起点{RESET}")
         print(f"{ORANGE}{BOLD}{bar}{RESET}\n")
 
+    TEAL   = "\033[36m"
+
+    _PATCH_EVENT_LABELS = {
+        "rule_added":          "新增规则",
+        "candidate_recorded":  "候选记录",
+        "candidate_promoted":  "候选晋升",
+    }
+
+    def on_patch(event: str, error_type: str, rule: str):
+        label = _PATCH_EVENT_LABELS.get(event, event)
+        print(f"{TEAL}🩹 运行时补丁 [{label}|{error_type}]: {rule}{RESET}")
+
     PURPLE = "\033[35m"
 
     def on_advisor(reason: str, advice: str):
@@ -354,6 +366,7 @@ def console_hooks() -> AgentHooks:
         on_note=on_note,
         on_rebuild=on_rebuild,
         on_advisor=on_advisor,
+        on_patch=on_patch,
     )
 
 
@@ -585,7 +598,18 @@ def run(
             )
 
             if action.type == ActionType.DONE:
-                verdict, verdict_dict = _review_completion_report(state, action.final_answer)
+                _nostop  = state.meta.get("nostop", False)
+                _final   = (action.final_answer or "").strip()
+
+                # ── 验收门 1：完成报告 ────────────────────────────────────────
+                # nostop 模式：人在回路，人就是质量门。
+                # 只要有 final_answer 就直接 pass，不再要求 submit_completion_report，
+                # 避免额外的 LLM iteration（agent 仍可自愿调用，调用了也正常计分）。
+                if _nostop and _final:
+                    verdict      = "pass"
+                    verdict_dict = {"status": "pass", "reason": "nostop_human_in_loop"}
+                else:
+                    verdict, verdict_dict = _review_completion_report(state, action.final_answer)
 
                 if verdict == "needs_more_work":
                     reason = verdict_dict.get("reason", "unknown")
@@ -626,27 +650,48 @@ def run(
                     state.iteration += 1
                     continue
 
-                # ── episodic 记忆验收门 ───────────────────────────────────────
+                # ── 验收门 2：episodic 记忆 ───────────────────────────────────
                 if not state.meta.get("_episodic_appended"):
                     episodic_path = state.meta.get("_episodic_path", "./memory_episodic.jsonl")
                     concept_path  = state.meta.get("_concept_path",  "./memory_macro.md")
-                    state.meta.setdefault("acceptance_failures", []).append(
-                        {"iteration": state.iteration, "failures": [{"reason": "missing_episodic"}]}
-                    )
-                    if hooks.on_error:
-                        hooks.on_error("[验收失败] 缺少 episodic 记忆记录，继续 loop 进行补救")
-                    feedback = (
-                        f"[系统][验收失败] 请在 done 之前调用 append_episodic 记录本次执行摘要。\n"
-                        f"  path='{episodic_path}'\n"
-                        f"  summary: 一段话概括（100–300 字），包含关键操作、重要发现、对未来有检索价值的信息\n"
-                        f"  tags: 逗号分隔关键词（如 'ssh,磁盘,linux'）\n\n"
-                        f"同时请判断本次任务是否带来了新的领域认知或经验规律——"
-                        f"如果是，请一并调用 save_concept(path='{concept_path}', content=...) 更新宏观工作记忆（按工作方向精简叙述，提及关键词即可，不写具体流程）。"
-                    )
-                    _append_short_term(state, {"role": "user", "content": feedback})
-                    _checkpoint_state(state)
-                    state.iteration += 1
-                    continue
+
+                    if _nostop:
+                        # nostop 模式：Python 层自动写入，零 LLM iteration
+                        # 用 final_answer 前 300 字作为摘要，goal 关键词作为 tags
+                        try:
+                            from .compression import _get_persistence as _gp  # noqa: F401
+                            from ..tools.standard import tool_append_episodic as _ae
+                            _summary = _final[:300] if _final else (state.goal[:200])
+                            _raw_goal = state.meta.get("_task_desc") or state.goal or ""
+                            # 从目标文字中提取简单 tags（取前几个词）
+                            _tag_words = [w for w in re.split(r"[\s，,、。；;]+", _raw_goal) if 2 <= len(w) <= 8]
+                            _tags = ",".join(_tag_words[:6])
+                            _ae(state, path=episodic_path, summary=_summary, tags=_tags)
+                            if hooks.on_error:
+                                hooks.on_error("[nostop] episodic 记忆已自动写入，跳过 LLM 验收门")
+                        except Exception as _ep_err:
+                            # 写入失败不阻塞完成，仅记录
+                            state.meta["_episodic_appended"] = True
+                            if hooks.on_error:
+                                hooks.on_error(f"[nostop] episodic 自动写入失败（已忽略）: {_ep_err}")
+                    else:
+                        state.meta.setdefault("acceptance_failures", []).append(
+                            {"iteration": state.iteration, "failures": [{"reason": "missing_episodic"}]}
+                        )
+                        if hooks.on_error:
+                            hooks.on_error("[验收失败] 缺少 episodic 记忆记录，继续 loop 进行补救")
+                        feedback = (
+                            f"[系统][验收失败] 请在 done 之前调用 append_episodic 记录本次执行摘要。\n"
+                            f"  path='{episodic_path}'\n"
+                            f"  summary: 一段话概括（100–300 字），包含关键操作、重要发现、对未来有检索价值的信息\n"
+                            f"  tags: 逗号分隔关键词（如 'ssh,磁盘,linux'）\n\n"
+                            f"同时请判断本次任务是否带来了新的领域认知或经验规律——"
+                            f"如果是，请一并调用 save_concept(path='{concept_path}', content=...) 更新宏观工作记忆（按工作方向精简叙述，提及关键词即可，不写具体流程）。"
+                        )
+                        _append_short_term(state, {"role": "user", "content": feedback})
+                        _checkpoint_state(state)
+                        state.iteration += 1
+                        continue
 
                 # weak_pass 或 pass：先保存最终答案和运行摘要
                 if hooks.on_done:
@@ -680,7 +725,8 @@ def run(
                         pass
 
                 # weak_pass：系统主动发起 ask_user，让用户决定是否在当前基础上继续
-                if verdict == "weak_pass":
+                # nostop 模式下不 pause：人用下一条指令自然跟进即可
+                if verdict == "weak_pass" and not _nostop:
                     report = verdict_dict.get("report", {})
                     outcome = report.get("outcome", "done_partial")
                     completed = report.get("completed_work", [])
@@ -709,7 +755,7 @@ def run(
                     _checkpoint_state(state, status="paused")
                     break
 
-                # 正常 pass：直接退出
+                # 正常 pass（或 nostop 下的 weak_pass 直接通过）：退出
                 break
 
             if action.type == ActionType.ERROR:
@@ -746,7 +792,7 @@ def run(
                     state.meta["_json_fail_streak"] = 0
 
                 # 运行时补丁：识别错误类型并写入 runtime_patches
-                _apply_runtime_patch(raw_response, action, state, llm)
+                _apply_runtime_patch(raw_response, action, state, llm, hooks=hooks)
 
                 # 超出重试上限后注入强提示，打破截断死循环
                 if is_json_parse_error and streak > retry_max:

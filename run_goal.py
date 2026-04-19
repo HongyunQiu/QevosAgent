@@ -282,6 +282,7 @@ def main():
         print("[run_goal] advisor: no ADVISOR.md found, senior advisor disabled")
     initial_meta["_advisor_system"]   = advisor_system
     initial_meta["_advisor_log_path"] = str(run_dir / "advisor_log.jsonl")
+    initial_meta["_patch_log_path"]   = str(run_dir / "patch_log.jsonl")
 
     # ── 目标前缀 ──────────────────────────────────────────────────────────────
     # 工具和记忆已由 Python 层预加载，无需 LLM 主动调用恢复命令。

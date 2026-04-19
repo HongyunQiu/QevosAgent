@@ -2145,7 +2145,16 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             ),
             args_schema={
                 "content": "要展示的内容字符串",
-                "content_type": "内容类型：html（默认）| markdown | table（JSON数组）| chart（ECharts option JSON）| text | image（URL或base64）",
+                "content_type": (
+                    "内容类型：\n"
+                    "  - html: HTML 片段（无 <html>/<body> 标签），适合简单布局；"
+                    "若需完整交互页面（游戏/复杂 JS），直接传入完整 <!DOCTYPE html> 文档也支持，会在 iframe 中隔离渲染\n"
+                    "  - markdown: Markdown 文本，自动渲染\n"
+                    "  - table: JSON 数组（如 [{列名:值,...}]），自动渲染为表格\n"
+                    "  - chart: ECharts option 的 JSON 字符串，自动渲染图表\n"
+                    "  - text: 纯文本/代码，等宽字体显示\n"
+                    "  - image: 图片 URL 或 base64"
+                ),
                 "display_id": "（可选）展示面板 ID，默认 'default'；同一 run 内可有多个独立面板",
                 "title": "（可选）面板标题",
                 "mode": "（可选）replace（覆盖，默认）| append（追加，适合流式输出）",

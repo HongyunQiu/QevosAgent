@@ -521,6 +521,12 @@ def parse_response(raw: str) -> Action:
                 '"action"' not in raw and '"thought"' not in raw
                 and "'action'" not in raw and "'thought'" not in raw
             )
+            # Detect unquoted string value: e.g. "thought": 用户要求... (missing opening ")
+            # Matches a known agent key followed by a colon and a non-JSON-value-start character.
+            _has_unquoted_string_value = bool(re.search(
+                r'"(?:thought|action|tool|final_answer|args)"\s*:\s*[^\s",\[\{0-9\-ntf\r\n\\]',
+                raw,
+            ))
 
             if _looks_like_prose:
                 # The '{' is incidental (e.g. inside a code snippet or URL) — treat as pure text.
@@ -590,6 +596,17 @@ def parse_response(raw: str) -> Action:
                     f"原始输出(截断): {raw[:300]}"
                 )
                 _error_type = "single_quote_key"
+            elif _has_unquoted_string_value:
+                thought = (
+                    "JSON 格式错误：字符串值缺少开头的双引号。\n"
+                    '原因：某字段的值直接写了内容，而没有先写开头的 "。\n'
+                    "错误示例：\n"
+                    '  错误: {"thought": 用户要求做一个游戏, "action": "tool_call"}\n'
+                    '  正确: {"thought": "用户要求做一个游戏", "action": "tool_call"}\n'
+                    "请确保每个字符串值都用双引号包裹，包括 thought、final_answer 等所有字段。\n"
+                    f"原始输出(截断): {raw[:300]}"
+                )
+                _error_type = "unquoted_string_value"
             else:
                 thought = (
                     f"JSON 解析失败: {exc_str}\n"
@@ -615,6 +632,10 @@ def parse_response(raw: str) -> Action:
             ):
                 return parse_response(data["content"])
         _has_unescaped_backslash = bool(re.search(r'\\[^"\\/bfnrtu\n]', raw))
+        _has_unquoted_string_value2 = bool(re.search(
+            r'"(?:thought|action|tool|final_answer|args)"\s*:\s*[^\s",\[\{0-9\-ntf\r\n\\]',
+            raw,
+        ))
         if _has_unescaped_backslash:
             _prose_thought = (
                 "JSON 格式错误：字符串内包含未转义的反斜杠。\n"
@@ -627,6 +648,18 @@ def parse_response(raw: str) -> Action:
                 "例如 runs/20260413-140101 或 C:/Users/92680。\n"
                 f"原始输出(截断): {raw[:300]}"
             )
+            _prose_error_type = "unescaped_backslash"
+        elif _has_unquoted_string_value2:
+            _prose_thought = (
+                "JSON 格式错误：字符串值缺少开头的双引号。\n"
+                '原因：某字段的值直接写了内容，而没有先写开头的 "。\n'
+                "错误示例：\n"
+                '  错误: {"thought": 用户要求做一个游戏, "action": "tool_call"}\n'
+                '  正确: {"thought": "用户要求做一个游戏", "action": "tool_call"}\n'
+                "请确保每个字符串值都用双引号包裹，包括 thought、final_answer 等所有字段。\n"
+                f"原始输出(截断): {raw[:300]}"
+            )
+            _prose_error_type = "unquoted_string_value"
         else:
             _prose_thought = (
                 "你的上一条输出是纯文本（其中虽包含 JSON 片段，但不包含 thought / action 字段）。\n"
@@ -636,7 +669,7 @@ def parse_response(raw: str) -> Action:
                 "如果需要继续调用工具，请使用：\n"
                 '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
             )
-        _prose_error_type = "unescaped_backslash" if _has_unescaped_backslash else "prose_with_json"
+            _prose_error_type = "prose_with_json"
         return Action(
             type=ActionType.ERROR,
             thought=_prose_thought,
@@ -645,7 +678,8 @@ def parse_response(raw: str) -> Action:
     if not isinstance(data, dict):
         return Action(
             type=ActionType.ERROR,
-            thought=f"JSON 顶层必须是 object，但得到: {type(data).__name__}={data!r}. 原始输出: {raw[:300]}"
+            thought=f"JSON 顶层必须是 object，但得到: {type(data).__name__}={data!r}. 原始输出: {raw[:300]}",
+            error_type="unknown",
         )
 
     thought = data.get("thought", "")
@@ -682,7 +716,8 @@ def parse_response(raw: str) -> Action:
                     f'{{"thought":"...","action":"tool_call","tool":"工具名","args":{{...}}}}\n'
                     f"例如调用 ask_user：\n"
                     f'{{"thought":"...","action":"tool_call","tool":"ask_user","args":{{"question":"你的问题"}}}}'
-                )
+                ),
+                error_type="unknown",
             )
 
     tool = data.get("tool", "")
@@ -717,7 +752,8 @@ def parse_response(raw: str) -> Action:
                 f"action=tool_call 但解析结果中缺少 tool 字段。\n"
                 f"{hint}\n"
                 f"thought: {thought}"
-            )
+            ),
+            error_type="unknown",
         )
 
     return Action(

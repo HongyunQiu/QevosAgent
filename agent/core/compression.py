@@ -22,6 +22,7 @@
 
 import json
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 from .types import Action, AgentHooks, AgentState, ToolResult
@@ -279,6 +280,8 @@ _JSON_ERROR_PATCH_RULES: dict[str, str] = {
     "unterminated_string": "超长内容先用write_file写入文件，args/final_answer只引用路径，避免截断",
     "split_structure":     "thought/action/tool/args必须全部在同一个顶层{}内，thought不能单独成对象",
     "single_quote_key":    "JSON的key必须用双引号\"\"，不能用单引号''",
+    "prose_with_json":        "禁止用```json```代码围栏包裹输出，必须直接输出裸JSON对象，不加任何前缀或围栏",
+    "unquoted_string_value":  "JSON字符串值必须用双引号括起来，例如 \"thought\": \"你的思考内容\" 而不是 \"thought\": 你的思考内容",
 }
 
 # 每次运行最多触发多少次 mini LLM 诊断（针对未知类型）
@@ -287,22 +290,63 @@ _PATCH_UNKNOWN_MAX = int(os.environ.get("RUNTIME_PATCH_UNKNOWN_MAX", "2"))
 _PATCH_CANDIDATE_THRESHOLD = 2
 
 
+def _log_patch_event(
+    state: AgentState,
+    event: str,
+    error_type: str,
+    rule: str,
+    raw_snippet: str = "",
+) -> None:
+    """将运行时补丁事件写入独立 JSONL 日志文件。
+
+    事件类型（event）:
+      rule_added        - 静态规则首次加入 runtime_patches
+      rule_skipped      - 静态规则已存在，跳过
+      candidate_recorded - unknown 类型候选规则记录，尚未晋升
+      candidate_promoted - 候选规则达到阈值，晋升为正式 patch
+      diagnosis_skipped  - unknown 类型因频控跳过诊断
+
+    写入失败时静默忽略，不影响主流程。
+    """
+    log_path = state.meta.get("_patch_log_path")
+    if not log_path:
+        return
+    try:
+        entry = {
+            "ts":        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "iteration": getattr(state, "iteration", 0),
+            "event":     event,
+            "error_type": error_type,
+            "rule":      rule,
+            "raw_snippet": raw_snippet[:200] if raw_snippet else "",
+        }
+        from pathlib import Path as _Path
+        _Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def _apply_runtime_patch(
     raw: str,
     action: "Action",
     state: AgentState,
     llm: LLMBackend,
+    hooks: Optional[AgentHooks] = None,
 ) -> None:
     """根据 JSON 错误类型，向 meta['runtime_patches'] 追加补丁规则。
 
     - 已知类型：静态映射，去重后直接追加。
     - 未知类型：触发 mini LLM 诊断（频控+候选晋升机制）。
+    每个事件均写入独立日志文件，并触发 hooks.on_patch 控制台回调。
     """
     error_type = getattr(action, "error_type", None)
     if not error_type:
         return
 
     patches: list[str] = state.meta.setdefault("runtime_patches", [])
+    raw_snippet = raw[:200]
 
     # ── 已知类型：静态规则 ────────────────────────────────────────────────────
     rule = _JSON_ERROR_PATCH_RULES.get(error_type)
@@ -310,6 +354,11 @@ def _apply_runtime_patch(
         if rule not in patches:
             patches.append(rule)
             state.long_term.append(f"[运行时补丁] 新增格式规范: {rule}")
+            _log_patch_event(state, "rule_added", error_type, rule, raw_snippet)
+            if hooks is not None and hooks.on_patch:
+                hooks.on_patch("rule_added", error_type, rule)
+        else:
+            _log_patch_event(state, "rule_skipped", error_type, rule, raw_snippet)
         return
 
     # ── 未知类型：mini LLM 诊断 ──────────────────────────────────────────────
@@ -318,6 +367,7 @@ def _apply_runtime_patch(
 
     diagnosed = state.meta.get("_patch_unknown_diagnosed", 0)
     if diagnosed >= _PATCH_UNKNOWN_MAX:
+        _log_patch_event(state, "diagnosis_skipped", error_type, "", raw_snippet)
         return
 
     try:
@@ -349,6 +399,13 @@ def _apply_runtime_patch(
             if candidate not in patches:
                 patches.append(candidate)
                 state.long_term.append(f"[运行时补丁] 新增未知类型规范(已验证): {candidate}")
+                _log_patch_event(state, "candidate_promoted", error_type, candidate, raw_snippet)
+                if hooks is not None and hooks.on_patch:
+                    hooks.on_patch("candidate_promoted", error_type, candidate)
+        else:
+            _log_patch_event(state, "candidate_recorded", error_type, candidate, raw_snippet)
+            if hooks is not None and hooks.on_patch:
+                hooks.on_patch("candidate_recorded", error_type, candidate)
 
     except Exception:
         pass

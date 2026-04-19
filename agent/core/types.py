@@ -98,3 +98,5 @@ class AgentHooks:
     on_rebuild:         Optional[Callable[[str, int], None]] = None
     # 高级指导员（触发原因、指导意见文字）
     on_advisor:         Optional[Callable[[str, str], None]] = None
+    # 运行时补丁（事件类型、error_type、规则文字）
+    on_patch:           Optional[Callable[[str, str, str], None]] = None
