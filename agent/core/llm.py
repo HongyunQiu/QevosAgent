@@ -636,6 +636,15 @@ def parse_response(raw: str) -> Action:
             r'"(?:thought|action|tool|final_answer|args)"\s*:\s*[^\s",\[\{0-9\-ntf\r\n\\]',
             raw,
         ))
+        # Detect unescaped double quote inside a string value: "thought": "text"more text
+        # Both "thought" and "action" appear in raw, meaning the model did output a proper
+        # JSON structure — but the extraction returned a sub-object (e.g. args dict) because
+        # an embedded unescaped " broke the outer JSON.
+        _has_unescaped_string_quote = (
+            '"thought"' in raw and '"action"' in raw
+            and not _has_unescaped_backslash
+            and not _has_unquoted_string_value2
+        )
         if _has_unescaped_backslash:
             _prose_thought = (
                 "JSON 格式错误：字符串内包含未转义的反斜杠。\n"
@@ -660,6 +669,17 @@ def parse_response(raw: str) -> Action:
                 f"原始输出(截断): {raw[:300]}"
             )
             _prose_error_type = "unquoted_string_value"
+        elif _has_unescaped_string_quote:
+            _prose_thought = (
+                "JSON 格式错误：字符串值内含有未转义的双引号。\n"
+                '原因：thought / final_answer 等字段的值中，如果内容本身含有 " 引号（如引用文字、英文名称），\n'
+                '必须将其写成 \\"，否则 JSON 解析器会误把它当作字符串结束符，导致后续字段全部丢失。\n'
+                "错误示例：\n"
+                '  错误: {"thought": "描述为"the open-source code"，这是重名"}\n'
+                '  正确: {"thought": "描述为\\"the open-source code\\"，这是重名"}\n'
+                f"原始输出(截断): {raw[:300]}"
+            )
+            _prose_error_type = "unescaped_string_quote"
         else:
             _prose_thought = (
                 "你的上一条输出是纯文本（其中虽包含 JSON 片段，但不包含 thought / action 字段）。\n"

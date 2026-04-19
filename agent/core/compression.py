@@ -281,7 +281,8 @@ _JSON_ERROR_PATCH_RULES: dict[str, str] = {
     "split_structure":     "thought/action/tool/args必须全部在同一个顶层{}内，thought不能单独成对象",
     "single_quote_key":    "JSON的key必须用双引号\"\"，不能用单引号''",
     "prose_with_json":        "禁止用```json```代码围栏包裹输出，必须直接输出裸JSON对象，不加任何前缀或围栏",
-    "unquoted_string_value":  "JSON字符串值必须用双引号括起来，例如 \"thought\": \"你的思考内容\" 而不是 \"thought\": 你的思考内容",
+    "unquoted_string_value":   "JSON字符串值必须用双引号括起来，例如 \"thought\": \"你的思考内容\" 而不是 \"thought\": 你的思考内容",
+    "unescaped_string_quote":  "JSON字符串值内的双引号必须转义为\\\"，例如 \"thought\": \"描述为\\\"引用文字\\\"\" 而非 \"thought\": \"描述为\"引用文字\"\"",
 }
 
 # 每次运行最多触发多少次 mini LLM 诊断（针对未知类型）
