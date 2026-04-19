@@ -481,6 +481,8 @@ def parse_response(raw: str) -> Action:
     Delegates JSON extraction to :func:`_extract_json` so the parsing strategy
     is defined in exactly one place.
     """
+    if not isinstance(raw, str):
+        raw = str(raw) if raw is not None else ""
     data, exc = _extract_json(raw)
     if data is None:
         if "{" not in raw:
