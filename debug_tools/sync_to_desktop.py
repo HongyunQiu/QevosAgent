@@ -2,7 +2,7 @@
 """
 sync_to_desktop.py
 ──────────────────
-将 simpleAgent 源码同步到已安装的桌面应用的 vendor/app/ 目录，
+将 QevosAgent 源码同步到已安装的桌面应用的 vendor/app/ 目录，
 用于在不重新打包的情况下快速测试代码改动。
 
 用法：
@@ -19,7 +19,7 @@ from pathlib import Path
 # ── 默认路径 ───────────────────────────────────────────────────────────────
 
 REPO_ROOT      = Path(__file__).resolve().parent.parent
-DEFAULT_TARGET = Path(r"D:\simpleagent-desktop\resources\app\vendor\app")
+DEFAULT_TARGET = Path(r"D:\qevosagent-desktop\resources\app\vendor\app")
 
 # 需要同步的条目：(源相对路径, 目标相对路径)
 SYNC_MAP = [
@@ -66,7 +66,7 @@ def sync_item(src: Path, dest: Path, dry_run: bool) -> int:
 # ── 主逻辑 ────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="同步 simpleAgent 源码到桌面应用 vendor/app/")
+    parser = argparse.ArgumentParser(description="同步 QevosAgent 源码到桌面应用 vendor/app/")
     parser.add_argument(
         "--target", default=str(DEFAULT_TARGET),
         help=f"目标 vendor/app 目录（默认：{DEFAULT_TARGET}）",
@@ -81,7 +81,7 @@ def main():
     dry_run: bool = args.dry_run
 
     print()
-    print("simpleAgent → Desktop 同步工具")
+    print("QevosAgent → Desktop 同步工具")
     print("═" * 40)
     print(f"  源目录  : {REPO_ROOT}")
     print(f"  目标目录: {target}")

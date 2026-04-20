@@ -4,7 +4,7 @@
 不关心工具的具体逻辑——那是各工具自己的事。
 """
 
-from .types import Action, AgentState, ToolResult
+from .types_def import Action, AgentState, ToolResult
 
 
 def execute(action: Action, state: AgentState) -> ToolResult:

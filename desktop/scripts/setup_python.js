@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * simpleAgent — Embedded Python Setup  (cross-platform)
+ * QevosAgent — Embedded Python Setup  (cross-platform)
  * ───────────────────────────────────────────────────────
  * Windows  : Downloads Python 3.11 Embeddable (python.org), bootstraps pip.
  * macOS    : Downloads python-build-standalone (includes pip & full stdlib).
@@ -114,7 +114,7 @@ function download(url, destPath, label) {
 
     function get(u, out) {
       const mod = u.startsWith('https://') ? https : http;
-      const req = mod.get(u, { headers: { 'User-Agent': 'simpleAgent-setup/1.0' } }, res => {
+      const req = mod.get(u, { headers: { 'User-Agent': 'QevosAgent-setup/1.0' } }, res => {
         if ([301, 302, 307, 308].includes(res.statusCode)) {
           res.resume();
           out.close();
@@ -232,7 +232,7 @@ async function main() {
   const { platform, arch } = process;
 
   console.log('');
-  console.log('  simpleAgent — Embedded Python Setup');
+  console.log('  QevosAgent — Embedded Python Setup');
   console.log('  ════════════════════════════════════');
   info(`Platform: ${platform} / ${arch}`);
   info(`Python  : ${PYTHON_VERSION}`);

@@ -1,10 +1,10 @@
 'use strict';
 
 /**
- * simpleAgent Desktop — Electron main process
+ * QevosAgent Desktop — Electron main process
  *
  * Startup flow:
- *   1. Load .env from resources/ (packaged) or simpleAgent/ (dev)
+ *   1. Load .env from resources/ (packaged) or QevosAgent/ (dev)
  *   2. If OPENAI_BASE_URL is not set → show setup.html (settings page)
  *      else → show loading.html → start dashboard → navigate to http://localhost:PORT
  *
@@ -14,7 +14,7 @@
  *   dashboard:open  → start server + navigate window to dashboard
  *
  * Application menu:
- *   simpleAgent > 设置  → reopen setup.html at any time
+ *   QevosAgent > 设置  → reopen setup.html at any time
  */
 
 const { app, BrowserWindow, ipcMain, Menu } = require('electron');
@@ -30,7 +30,7 @@ const VENDOR_APP  = path.join(__dirname, 'vendor', 'app');
 const APP_ROOT    = app.isPackaged ? VENDOR_APP : path.resolve(__dirname, '..');
 
 // .env lives one level above __dirname:
-//   dev      → simpleAgent/          (standard location)
+//   dev      → QevosAgent/          (standard location)
 //   packaged → resources/            (accessible after install)
 const DOT_ENV_DIR = path.resolve(__dirname, '..');
 
@@ -234,7 +234,7 @@ function registerIPC() {
 function buildMenu() {
   return Menu.buildFromTemplate([
     {
-      label: 'simpleAgent',
+      label: 'QevosAgent',
       submenu: [
         {
           label: '⚙  设置',
@@ -271,7 +271,7 @@ function createWindow() {
     height:          900,
     minWidth:        800,
     minHeight:       600,
-    title:           'simpleAgent',
+    title:           'QevosAgent',
     icon:            path.join(__dirname, 'build',
                        process.platform === 'darwin' ? 'icon.icns'
                      : process.platform === 'linux'  ? 'icon.png'

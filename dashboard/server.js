@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * simpleAgent Dashboard Server
+ * QevosAgent Dashboard Server
  * ─────────────────────────────
  * - Polls the runs/ directory every POLL_MS milliseconds
  * - Streams state updates to all WebSocket clients
@@ -789,7 +789,7 @@ poll();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('');
-  console.log('  ⚡ simpleAgent Dashboard');
+  console.log('  ⚡ QevosAgent Dashboard');
   console.log('  ─────────────────────────────────────');
   console.log(`  URL      : http://localhost:${PORT}`);
   console.log(`  Runs     : ${RUNS_DIR}`);

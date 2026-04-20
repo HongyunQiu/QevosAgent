@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
-from .types import AgentState
+from .types_def import AgentState
 from .llm import LLMBackend
 
 

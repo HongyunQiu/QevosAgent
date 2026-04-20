@@ -1,7 +1,7 @@
 {
-  "name": "simpleagent-dashboard",
+  "name": "qevosagent-dashboard",
   "version": "1.0.0",
-  "description": "Web dashboard for simpleAgent monitoring",
+  "description": "Web dashboard for QevosAgent monitoring",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

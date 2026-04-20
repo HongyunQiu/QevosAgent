@@ -1,6 +1,6 @@
 # JSON 错误处理机制
 
-本文档描述 simpleAgent 在 Agent 主循环中处理 LLM JSON 输出错误的完整机制。
+本文档描述 QevosAgent 在 Agent 主循环中处理 LLM JSON 输出错误的完整机制。
 
 ---
 

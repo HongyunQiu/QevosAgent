@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlparse
 from typing import Optional, Iterable
 
-from .types import Action, ActionType, AgentState, ToolSpec
+from .types_def import Action, ActionType, AgentState, ToolSpec
 
 
 def _estimate_tokens_heuristic(texts: Iterable[str]) -> int:
@@ -505,116 +505,10 @@ def parse_response(raw: str) -> Action:
             )
             return Action(type=ActionType.ERROR, thought=thought, error_type="prose_no_json")
         else:
-            # JSON-like content found but failed to parse — diagnose the root cause.
-            exc_str = str(exc)
-            # Detect literal (unescaped) newlines inside a JSON string value.
-            _has_bare_newline = bool(re.search(r'"[^"]*\n[^"]*"', raw))
-            # Detect split-structure: thought closed early, remaining fields dangle outside.
-            _has_split_structure = bool(re.search(r'"\s*\}\s*,\s*"action"', raw))
-            # Detect single-quoted keys: {'key': ...}
-            _has_single_quote_key = bool(re.search(r"\{\s*'[^']+'", raw))
-            # Detect unescaped Windows backslash paths, e.g. runs\20260413 or C:\Users.
-            # Valid JSON escape chars after '\': " \ / b f n r t u
-            # Anything else (digits, uppercase letters, etc.) is illegal.
-            _has_unescaped_backslash = bool(re.search(r'\\[^"\\/bfnrtu]', raw))
-            # Detect pure prose that happens to contain incidental '{' (code/URL/dict snippets).
-            # Heuristic: no '"action"' or '"thought"' key found anywhere in the raw text.
-            _looks_like_prose = (
-                '"action"' not in raw and '"thought"' not in raw
-                and "'action'" not in raw and "'thought'" not in raw
-            )
-            # Detect unquoted string value: e.g. "thought": 用户要求... (missing opening ")
-            # Matches a known agent key followed by a colon and a non-JSON-value-start character.
-            _has_unquoted_string_value = bool(re.search(
-                r'"(?:thought|action|tool|final_answer|args)"\s*:\s*[^\s",\[\{0-9\-ntf\r\n\\]',
-                raw,
-            ))
+            # JSON-like content found but failed to parse — use enhanced error feedback.
+            thought, _error_type = generate_error_feedback(raw, exc)
+            return Action(type=ActionType.ERROR, thought=thought, error_type=_error_type)
 
-            if _looks_like_prose:
-                # The '{' is incidental (e.g. inside a code snippet or URL) — treat as pure text.
-                thought = (
-                    "你的上一条输出是纯文本（其中虽含有 '{' 字符，但没有合法的 JSON 结构）。\n"
-                    "无论任务是否完成，都必须通过 JSON 格式输出，不能直接输出纯文本。\n"
-                    "如果任务已完成，请使用：\n"
-                    '{"thought": "...", "action": "done", "final_answer": "..."}\n'
-                    "如果需要继续调用工具，请使用：\n"
-                    '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
-                )
-                _error_type = "prose_with_json"
-            elif _has_unescaped_backslash and not _has_bare_newline:
-                thought = (
-                    "JSON 格式错误：字符串内包含未转义的反斜杠。\n"
-                    "原因：Windows 路径（如 C:\\Users\\foo 或 runs\\20260413）中的 \\ 在 JSON 字符串里"
-                    "必须写成 \\\\，否则解析器会把 \\U、\\2 等当成非法的转义序列。\n"
-                    "错误修复示例：\n"
-                    '  错误: {"thought": "路径是 C:\\Users\\92680"}\n'
-                    '  正确: {"thought": "路径是 C:\\\\Users\\\\92680"}\n'
-                    "提示：在 thought / final_answer 中引用路径时，可以改用正斜杠（/）来避免此问题，"
-                    "例如 runs/20260413-140101 或 C:/Users/92680。\n"
-                    f"原始输出(截断): {raw[:300]}"
-                )
-                _error_type = "unescaped_backslash"
-            elif "Invalid control character" in exc_str or _has_bare_newline:
-                thought = (
-                    "JSON 格式错误：字符串内包含未转义的换行符。\n"
-                    "原因：thought / final_answer / args 等字段的值中，多行文本必须把换行写成 \\n，"
-                    "不能直接按回车换行。\n"
-                    "错误修复示例：\n"
-                    '  错误: {"thought": "第一行\n第二行"}\n'
-                    '  正确: {"thought": "第一行\\n第二行"}\n'
-                    "特别提示：如果 args.command 或 args.content 中包含超长内容（如 base64 编码、代码脚本），\n"
-                    "不要在字符串中间折行——建议先用 write_file 工具将内容写入临时文件，\n"
-                    "再在命令中引用该文件路径（如 python3 /tmp/script.py），可彻底避免此类问题。\n"
-                    f"原始输出(截断): {raw[:300]}"
-                )
-                _error_type = "bare_newline"
-            elif "Unterminated string" in exc_str:
-                thought = (
-                    "JSON 格式错误：字符串未闭合，输出很可能被截断。\n"
-                    "原因：final_answer 或 args 中的内容过长，超出了单次输出上限，导致 JSON 在中途被切断。\n"
-                    "解决方法：① 大幅缩短 final_answer / args 的内容；"
-                    "② 将长内容先用工具写入文件，final_answer 只写摘要和文件路径。\n"
-                    f"截断位置: {exc_str}\n"
-                    f"原始输出(截断): {raw[:300]}"
-                )
-                _error_type = "unterminated_string"
-            elif _has_split_structure:
-                thought = (
-                    "JSON 结构错误：thought 字段提前闭合，导致 action/tool/args 等字段脱落在顶层对象之外。\n"
-                    "原因：输出中出现了 {...}, \"action\": ... 的结构，"
-                    "即 thought 自己构成了一个独立的 {} 对象，后续字段无法被解析。\n"
-                    "所有字段必须在同一个顶层 {} 内，正确格式：\n"
-                    '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}\n'
-                    f"原始输出(截断): {raw[:300]}"
-                )
-                _error_type = "split_structure"
-            elif _has_single_quote_key or "Expecting property name enclosed in double quotes" in exc_str:
-                thought = (
-                    "JSON 格式错误：key 必须用双引号，不能用单引号。\n"
-                    '  错误: {\'thought\': "..."}\n'
-                    '  正确: {"thought": "..."}\n'
-                    "另一种可能：JSON 字符串中包含未转义的换行符，导致解析器在错误位置尝试读取 key。\n"
-                    "请同时检查所有字符串值内的换行是否都转义成了 \\n。\n"
-                    f"原始输出(截断): {raw[:300]}"
-                )
-                _error_type = "single_quote_key"
-            elif _has_unquoted_string_value:
-                thought = (
-                    "JSON 格式错误：字符串值缺少开头的双引号。\n"
-                    '原因：某字段的值直接写了内容，而没有先写开头的 "。\n'
-                    "错误示例：\n"
-                    '  错误: {"thought": 用户要求做一个游戏, "action": "tool_call"}\n'
-                    '  正确: {"thought": "用户要求做一个游戏", "action": "tool_call"}\n'
-                    "请确保每个字符串值都用双引号包裹，包括 thought、final_answer 等所有字段。\n"
-                    f"原始输出(截断): {raw[:300]}"
-                )
-                _error_type = "unquoted_string_value"
-            else:
-                thought = (
-                    f"JSON 解析失败: {exc_str}\n"
-                    f"原始输出(截断): {raw[:300]}"
-                )
-                _error_type = "unknown"
         return Action(type=ActionType.ERROR, thought=thought, error_type=_error_type)
 
     # Defensive: some servers/models may emit `null` or a non-object JSON.

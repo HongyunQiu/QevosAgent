@@ -1,4 +1,4 @@
-# AGENTS.md — simpleAgent 运行规范（借鉴 OpenClaw 约定）
+# AGENTS.md — QevosAgent 运行规范（借鉴 OpenClaw 约定）
 
 这份文件是 **总规范**：每次运行都必须遵守。
 

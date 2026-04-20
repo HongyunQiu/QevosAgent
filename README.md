@@ -1,30 +1,30 @@
 <p align="center">
-  <img src="./assets/simpleAgent-banner-light.png" alt="simpleAgent banner" width="100%" />
+  <img src="./assets/QevosAgent-banner-light.png" alt="QevosAgent banner" width="100%" />
 </p>
 
-# simpleAgent
+# QevosAgent
 
-[![Stars](https://img.shields.io/github/stars/HongyunQiu/simpleAgent?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent/stargazers)
-[![Last Commit](https://img.shields.io/github/last-commit/HongyunQiu/simpleAgent?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent/commits/main)
-[![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-412991?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
-[![Anthropic](https://img.shields.io/badge/Anthropic-Supported-black?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
-[![Web Dashboard](https://img.shields.io/badge/Web-Dashboard-0A7CFF?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
-[![Tool Repair](https://img.shields.io/badge/Tool-Repair-orange?style=for-the-badge)](https://github.com/HongyunQiu/simpleAgent)
+[![Stars](https://img.shields.io/github/stars/HongyunQiu/QevosAgent?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent/stargazers)
+[![Last Commit](https://img.shields.io/github/last-commit/HongyunQiu/QevosAgent?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent/commits/main)
+[![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-412991?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
+[![Anthropic](https://img.shields.io/badge/Anthropic-Supported-black?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
+[![Web Dashboard](https://img.shields.io/badge/Web-Dashboard-0A7CFF?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
+[![Tool Repair](https://img.shields.io/badge/Tool-Repair-orange?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
 
-`simpleAgent` is a minimalist agent runtime for real tool-calling workflows with persistent artifacts, recoverable memory, and observable execution.
+`QevosAgent` is a minimalist agent runtime for real tool-calling workflows with persistent artifacts, recoverable memory, and observable execution.
 
-`simpleAgent` 是一个极简但完整的 Agent Runtime，重点不只是“调用模型和工具”，而是把运行过程、状态恢复、工具修复和可观察性一起做完整。除了闭源模型以外，本项目还特别适合对接本地运行的开源模型，如QWEN3.5 27b,Gemma4等。实现免TOKEN成本运行。本项目还提供基于浏览器的看板，用于在浏览器中实现交互。同时提供开箱即用的可执行文件，一键安装运行，免于复杂的配置，支持WINDOWS,LINUX,MACOS。特别是在WINDOWS下也可以开箱即用，无需WSL和复杂的设置。
+`QevosAgent` 是一个极简但完整的 Agent Runtime，重点不只是“调用模型和工具”，而是把运行过程、状态恢复、工具修复和可观察性一起做完整。除了闭源模型以外，本项目还特别适合对接本地运行的开源模型，如QWEN3.5 27b,Gemma4等。实现免TOKEN成本运行。本项目还提供基于浏览器的看板，用于在浏览器中实现交互。同时提供开箱即用的可执行文件，一键安装运行，免于复杂的配置，支持WINDOWS,LINUX,MACOS。特别是在WINDOWS下也可以开箱即用，无需WSL和复杂的设置。
 
 It keeps the core loop small: `LLM -> tool_call -> feedback -> done`.
 
 What makes it different is everything around that loop: persistent runs, recoverable snapshots, built-in scratchpad, explicit tool repair, human intervention, and a lightweight dashboard you can actually use.
 
 <p align="center">
-  <img src="./assets/simpleAgent_dashboard.gif" alt="simpleAgent dashboard demo" width="100%" />
+  <img src="./assets/QevosAgent_dashboard.gif" alt="QevosAgent dashboard demo" width="100%" />
 </p>
 
 
-## Why simpleAgent?
+## Why QevosAgent?
 
 - Minimal closed-loop agent runtime
 - Persistent run artifacts on disk
@@ -66,7 +66,7 @@ Many "simple agent" repos stop at:
 - tool execution
 - final answer
 
-`simpleAgent` also emphasizes:
+`QevosAgent` also emphasizes:
 
 - persistent artifacts for every run
 - recoverable snapshots across runs
@@ -427,7 +427,7 @@ Coverage focuses on:
 
 ## Scope and Boundaries
 
-`simpleAgent` is not trying to be everything.
+`QevosAgent` is not trying to be everything.
 
 It is not a fully sandboxed platform.
 It is not a production-grade multi-user orchestration system.

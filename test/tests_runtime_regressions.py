@@ -10,7 +10,7 @@ from agent.core.llm import LLMBackend
 from agent.core.loop import run
 from agent.core.executor import execute
 from agent.core.loop import _extract_claimed_artifact_paths, _parse_acceptance_evidence
-from agent.core.types import Action, ActionType, AgentState, ToolResult, ToolSpec
+from agent.core.types_def import Action, ActionType, AgentState, ToolResult, ToolSpec
 from agent.runtime.persistence import RunPersistence
 from agent.tools.standard import (
     get_standard_tools,

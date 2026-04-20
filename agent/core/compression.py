@@ -25,7 +25,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from .types import Action, AgentHooks, AgentState, ToolResult
+from .types_def import Action, AgentHooks, AgentState, ToolResult
 from .llm import LLMBackend, build_system_prompt, build_context_messages, _extract_json
 from ..runtime.persistence import RunPersistence
 

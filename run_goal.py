@@ -193,7 +193,7 @@ def main():
     os.environ.setdefault("RAW_MEMORY_PATH", str(run_dir / "raw_memory.ndjson"))
 
     import argparse as _ap
-    _parser = _ap.ArgumentParser(description="Run simpleAgent with a goal.")
+    _parser = _ap.ArgumentParser(description="Run QevosAgent with a goal.")
     _parser.add_argument("goal", nargs="*", help="Goal/task for the agent")
     _parser.add_argument(
         "--nostop", action="store_true",
@@ -217,7 +217,7 @@ def main():
     concept_path  = Path(os.environ.get("AGENT_CONCEPT",  DEFAULT_CONCEPT))
 
     from agent.tools.standard import get_standard_tools, tool_load_tools, tool_search_episodic
-    from agent.core.types import AgentState as _AgentState
+    from agent.core.types_def import AgentState as _AgentState
 
     # ── (1) 预加载工具（Python 层，不依赖 LLM） ────────────────────────────────
     _preload_state = _AgentState(goal="__preload__", tools=get_standard_tools())

@@ -76,7 +76,7 @@ def example_manual_assembly():
     适合需要深度定制的场景。
     """
     from agent.core import run, console_hooks, OpenAIBackend
-    from agent.core.types import ToolSpec, ToolResult
+    from agent.core.types_def import ToolSpec, ToolResult
     from agent.tools import get_standard_tools
 
     # 自定义工具

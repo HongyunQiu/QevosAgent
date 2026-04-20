@@ -9,7 +9,7 @@ import os
 import re
 from typing import Optional, Callable
 
-from .types import Action, ActionType, AgentHooks, AgentState, ToolSpec, ToolResult
+from .types_def import Action, ActionType, AgentHooks, AgentState, ToolSpec, ToolResult
 from .llm import LLMBackend, build_system_prompt, build_context_messages, parse_response
 from .executor import execute
 from .compression import (

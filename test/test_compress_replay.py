@@ -34,7 +34,7 @@ from agent.core.llm import (
     build_context_messages,
     build_system_prompt,
 )
-from agent.core.types import AgentState, ToolSpec, ToolResult
+from agent.core.types_def import AgentState, ToolSpec, ToolResult
 
 
 # ── Mock LLM（仅用于 token 估算，不发起真实 API 调用）─────────────────────────
