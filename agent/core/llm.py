@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from typing import Optional, Iterable
 
 from .types_def import Action, ActionType, AgentState, ToolSpec
+from .json_error_feedback import generate_error_feedback
 
 
 def _estimate_tokens_heuristic(texts: Iterable[str]) -> int:
