@@ -437,6 +437,13 @@ def run(
         if persistence is not None:
             persistence.start(state)
     else:
+        # Restore any /+N extensions accumulated in previous run segments.
+        # state.meta['_max_iterations'] holds the last effective limit; if it's
+        # larger than the caller's default, honour it rather than resetting.
+        _stored_max = state.meta.get('_max_iterations')
+        if isinstance(_stored_max, int) and _stored_max > max_iterations:
+            max_iterations = _stored_max
+
         state.goal = goal
         for k, v in tools.items():
             state.tools.setdefault(k, v)
