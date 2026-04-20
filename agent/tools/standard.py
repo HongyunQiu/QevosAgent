@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-from ..core.types import AgentState, ToolSpec, ToolResult
+from ..core.types_def import AgentState, ToolSpec, ToolResult
 
 
 # ── 工具函数实现 ──────────────────────────────────────────────────────────────

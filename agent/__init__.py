@@ -21,7 +21,7 @@
 
 import os
 
-from .core.types import AgentState, ToolSpec, ToolResult
+from .core.types_def import AgentState, ToolSpec, ToolResult
 from .core.loop import run, console_hooks, AgentHooks
 from .core.llm import OpenAIBackend, AnthropicBackend
 from .tools.standard import get_standard_tools
