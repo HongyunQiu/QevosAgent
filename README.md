@@ -116,6 +116,7 @@ Current tracked capabilities include:
 - Persistent runtime outputs such as `short_term.jsonl`, `status.json`, `meta.json`, and `final_answer.md`
 - User intervention commands such as `/inject`, `/stop`, `/status`, and `/+N`
 - A web dashboard for launching runs, inspecting files, and editing `AGENTS.md` and snapshots
+- `advisor.py` Senior Advisor module: an independent second-perspective LLM pass triggered periodically or on loop detection to provide strategic guidance without carrying main-agent context
 
 ## 仓库结构
 
@@ -126,7 +127,9 @@ agent/
     executor.py          # 工具执行与参数过滤
     loop.py              # 主循环、自恢复、验收门禁、上下文压缩
     async_manager.py     # 后台 shell 任务管理
-    types.py             # Action / ToolSpec / ToolResult / AgentState
+    compression.py       # 上下文压缩与裁剪
+    advisor.py           # 独立视角的高级指导员模块
+    types_def.py         # Action / ToolSpec / ToolResult / AgentState
   runtime/
     persistence.py       # 运行期落盘与 run 产物生成
     user_interrupt.py    # 命令行用户干预
@@ -134,14 +137,16 @@ agent/
     standard.py          # 标准工具集、快照与工具演化
 
 run_goal.py              # 命令行启动入口
-demo.py                  # 最小示例与手动组装示例
 dashboard/
   server.js              # Dashboard 服务端
   public/index.html      # Dashboard 前端
 
-tests_parse_response.py
-tests_runtime_regressions.py
-agent_snapshot_meta.json # 默认快照文件（最小合法 JSON）
+test/
+  demo.py                # 最小示例与手动组装示例
+  tests_parse_response.py
+  tests_runtime_regressions.py
+
+agent_tools.json         # 用户自定义工具持久化文件
 ```
 
 ## 运行模型
@@ -348,7 +353,7 @@ The snapshot currently stores:
 
 By default, loading restores long-term memory, promoted evolved tools, and repair candidates. It does not directly restore old scratchpad content, which helps avoid carrying stale intermediate state into a new task.
 
-The repository ships with a minimal valid `agent_snapshot_meta.json` placeholder so flows that explicitly call `load_snapshot_meta` do not fail on a missing or empty file.
+User-defined tools registered via `register_tool` are persisted in `agent_tools.json` at the repo root and are automatically loaded on the next run.
 
 ## Use as a Library
 
@@ -372,7 +377,7 @@ print(state.meta.get("final_answer"))
 
 ```python
 from agent import Agent
-from agent.core.types import ToolSpec, ToolResult
+from agent.core.types_def import ToolSpec, ToolResult
 
 def to_upper(state, text: str) -> ToolResult:
     return ToolResult(success=True, output=text.upper())
@@ -405,15 +410,15 @@ state = run(
 )
 ```
 
-For more examples, see `demo.py`.
+For more examples, see [`test/demo.py`](./test/demo.py).
 
 ## Tests
 
 The repository currently includes two directly runnable test entry points:
 
 ```powershell
-python tests_parse_response.py
-python tests_runtime_regressions.py
+python test/tests_parse_response.py
+python test/tests_runtime_regressions.py
 ```
 
 Coverage focuses on:
@@ -447,6 +452,7 @@ Current practical boundaries include:
 
 - [`run_goal.py`](./run_goal.py)
 - [`agent/core/loop.py`](./agent/core/loop.py)
+- [`agent/core/advisor.py`](./agent/core/advisor.py)
 - [`agent/tools/standard.py`](./agent/tools/standard.py)
 - [`agent/runtime/persistence.py`](./agent/runtime/persistence.py)
 - [`dashboard/server.js`](./dashboard/server.js)
