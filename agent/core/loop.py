@@ -290,8 +290,9 @@ def console_hooks() -> AgentHooks:
     RESET   = "\033[0m"
 
     def on_iter(i, state):
+        max_i = state.meta.get("_max_iterations", "?")
         print(f"\n{GRAY}{'─'*60}{RESET}")
-        print(f"{GRAY}[迭代 {i}]  工具数: {len(state.tools)}  长期记忆: {len(state.long_term)} 条{RESET}")
+        print(f"{GRAY}[迭代 {i}/{max_i}]  工具数: {len(state.tools)}  长期记忆: {len(state.long_term)} 条{RESET}")
 
     def on_thought(t):
         print(f"{CYAN}💭 思考: {t}{RESET}")
@@ -452,16 +453,15 @@ def run(
         state.meta.pop("_need_user_help", None)
         _checkpoint_state(state)
 
+    _nostop_mode = state.meta.get("nostop", False)
+    state.meta['_max_iterations'] = "∞" if _nostop_mode else max_iterations
     try:
-        while state.iteration < max_iterations:
-            if hooks.on_iteration_start:
-                hooks.on_iteration_start(state.iteration, state)
-
-            # ── Drain queued interrupt commands at each iteration boundary ────────
-            # Commands injected via dashboard (web_cmd.txt → _cmd_queue) or stdin
-            # are processed here, before the LLM call, so effects are immediate:
+        while True:
+            # ── Drain queued interrupt commands BEFORE checking iteration limit ──
+            # Draining first ensures /+N typed during the last iteration can extend
+            # max_iterations before the exit check, so it actually takes effect.
             #   /inject  → appended to short_term, LLM sees it this iteration
-            #   /+N      → max_iterations extended; checked at top of while
+            #   /+N      → max_iterations extended; checked right below
             #   /compress→ sets state.meta["_compress_requested"], consumed below
             #   /exit    → breaks the loop cleanly
             _ih = getattr(hooks, 'interrupt_handler', None)
@@ -481,10 +481,18 @@ def run(
                 _extra = state.meta.pop('_add_iterations', 0)
                 if _extra:
                     max_iterations += _extra
+                    if not _nostop_mode:
+                        state.meta['_max_iterations'] = max_iterations
                 if _stop_loop:
                     state.meta['user_stopped'] = True
                     break
             # ─────────────────────────────────────────────────────────────────────
+
+            if not _nostop_mode and state.iteration >= max_iterations:
+                break
+
+            if hooks.on_iteration_start:
+                hooks.on_iteration_start(state.iteration, state)
 
             # ── 高级指导员：定期 + 主动请求触发 ─────────────────────────────────
             import os
@@ -909,7 +917,7 @@ def run(
             persistence.finish(state, outcome="failed", error=f"{type(e).__name__}: {e}")
         raise
     else:
-        if state.iteration >= max_iterations and not state.meta.get("paused") and "final_answer" not in state.meta:
+        if not _nostop_mode and state.iteration >= max_iterations and not state.meta.get("paused") and "final_answer" not in state.meta:
             if hooks.on_error:
                 hooks.on_error(f"达到最大迭代次数 {max_iterations}，强制退出。")
             state.meta["timeout"] = True

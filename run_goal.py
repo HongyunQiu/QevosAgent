@@ -437,6 +437,13 @@ def main():
                     print("No input provided; exiting.")
                     break
 
+                # weak_pass 问题明确告知用户回复「完成」即可结束；检测到后直接退出
+                if user_input.strip() in ("完成", "done", "finish", "finished", "ok", "好", "好的", "不用了"):
+                    state.meta.pop("paused", None)
+                    state.meta.pop("awaiting_input", None)
+                    print("[run_goal] 用户确认完成，退出。")
+                    break
+
                 state.short_term.append({
                     "role": "user",
                     "content": f"[用户补充信息]\n{user_input}",
@@ -444,6 +451,8 @@ def main():
                 if state.persistence is not None:
                     state.persistence.append_short_term(state.short_term[-1])
                     state.persistence.checkpoint(state)
+                state.meta.pop("paused", None)
+                state.meta.pop("awaiting_input", None)
                 continue
 
             # ── 正常完成（pass verdict，no paused flag）──────────────────────

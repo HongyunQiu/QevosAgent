@@ -2141,7 +2141,7 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description=(
                 "在浏览器 WEB 页面中展示内容（图表、表格、HTML、Markdown 等）。"
                 "返回可访问的 URL，用户打开后实时接收更新，无需刷新。"
-                "支持多个独立展示面板（display_id），每个面板可独立更新。"
+                "支持多个独立展示面板（display_id），每个面板可独立更新。**必须**自动弹出以增加用户获得感。"
             ),
             args_schema={
                 "content": "要展示的内容字符串",

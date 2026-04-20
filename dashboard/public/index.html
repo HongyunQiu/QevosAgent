@@ -1163,7 +1163,10 @@ function renderTopBar(data, rid) {
 function renderSidebar(data, rid) {
   const st  = data.status || {};
   const evs = data.events || [];
-  document.getElementById('sIter').textContent   = st.iteration ?? '—';
+  const maxIter = data.meta?._max_iterations;
+  document.getElementById('sIter').textContent = maxIter != null
+    ? `${st.iteration ?? '—'} / ${maxIter}`
+    : (st.iteration ?? '—');
   document.getElementById('sEvents').textContent = evs.length;
   document.getElementById('sStatus').textContent = st.status || (data.launching ? 'launching' : '—');
   document.getElementById('sTools').textContent  = evs.filter(e => e.type === 'tool_call').length;
@@ -1219,7 +1222,7 @@ function renderMainArea(data) {
   // Always update the events log first, then control the empty-state visibility.
   // NOTE: renderEvents replaces eventsLog.innerHTML which would destroy eventsEmpty
   // (a child node) — renderEvents now detaches/reattaches it to keep it alive.
-  renderEvents(evs);
+  renderEvents(evs, data.meta || {});
 
   const empty = document.getElementById('eventsEmpty');
   if (empty) empty.style.display = hasEvts ? 'none' : '';
@@ -1275,7 +1278,7 @@ function updateCmdBarMode(data) {
 }
 
 // ── Events rendering ──────────────────────────────────────────────────────
-function renderEvents(events) {
+function renderEvents(events, meta = {}) {
   const log   = document.getElementById('eventsLog');
   const badge = document.getElementById('evCount');
   badge.textContent = events.length;
@@ -1319,7 +1322,8 @@ function renderEvents(events) {
           const tokenHtml = ts
             ? `<span class="iter-token">[token] prompt≈${ts.promptEst} / context=${ts.contextWindow} (est), max_tokens=${ts.maxTokens}</span>`
             : '';
-          html += `<div class="iter-sep"><span class="iter-label">Iteration ${iterNum}</span>${tokenHtml}</div>`;
+          const _maxIterSuffix = meta._max_iterations != null ? ` of ${meta._max_iterations}` : '';
+          html += `<div class="iter-sep"><span class="iter-label">Iteration ${iterNum}${_maxIterSuffix}</span>${tokenHtml}</div>`;
         }
         lastIter = iterNum;
       }
