@@ -365,10 +365,26 @@ body.large-font .app {
 .job-badge.FAILED   { background:rgba(248,81,73,0.18); color:var(--red); }
 .job-badge.CANCELLED{ background:rgba(125,133,144,0.15); color:var(--muted); }
 .job-cmd { font-family:var(--mono); font-size:11px; color:var(--cyan); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.job-toggle { font-size:10px; color:var(--muted); margin-left:auto; flex-shrink:0; }
+.job-toggle { font-size:10px; color:var(--muted); flex-shrink:0; }
+.job-fullscreen-btn {
+  margin-left:auto; background:none; border:none; color:var(--muted);
+  cursor:pointer; font-size:13px; line-height:1; padding:2px 6px; border-radius:3px;
+  transition:all 0.15s;
+}
+.job-fullscreen-btn:hover { color:var(--blue); background:rgba(88,166,255,0.12); }
 .job-output-wrap { display:none; margin-top:8px; }
 .job-card.expanded .job-output-wrap { display:block; }
 .job-output { background:var(--bg); border-radius:4px; padding:8px 10px; font-family:var(--mono); font-size:10.5px; line-height:1.65; color:#b8c8d8; white-space:pre-wrap; word-break:break-word; max-height:220px; overflow-y:auto; border:1px solid var(--border); }
+
+/* Fullscreen job card — takes over the whole viewport */
+.job-card.fullscreen {
+  position:fixed; inset:0; z-index:1000; margin:0; border-radius:0;
+  padding:16px 20px; display:flex; flex-direction:column; cursor:default;
+  background:var(--bg2); border-color:var(--blue);
+}
+.job-card.fullscreen .job-output-wrap { display:flex; flex:1; margin-top:12px; min-height:0; }
+.job-card.fullscreen .job-output { max-height:none; flex:1; font-size:12px; line-height:1.7; }
+.job-card.fullscreen .job-cmd { white-space:normal; overflow:visible; text-overflow:clip; }
 .job-output-empty { color:var(--muted); font-style:italic; }
 .jobs-empty { color:var(--muted); font-size:12px; text-align:center; padding:20px; }
 
@@ -1443,11 +1459,12 @@ function renderJobs(events) {
     const expanded  = !!gJobExpanded[j.id];
     const isRunning = j.status === 'running' || j.status === 'RUNNING';
     return `
-    <div class="job-card${expanded ? ' expanded' : ''}" onclick="toggleJobCard('${j.id}','${runId}')">
+    <div class="job-card${expanded ? ' expanded' : ''}" data-job-id="${esc(j.id)}" onclick="toggleJobCard('${j.id}','${runId}')">
       <div class="job-top">
         <span class="job-id">${esc(j.id)}</span>
         <span class="job-badge ${j.status}">${j.status}</span>
         ${isRunning ? '<span class="job-badge RUNNING" style="font-size:9px;padding:1px 4px;margin-left:2px;">LIVE</span>' : ''}
+        <button class="job-fullscreen-btn" title="Toggle fullscreen" onclick="toggleJobFullscreen(event,'${j.id}','${runId}')">⛶</button>
         <span class="job-toggle">${expanded ? '▲' : '▼'}</span>
       </div>
       ${j.command ? `<div class="job-cmd" title="${esc(j.command)}">${esc(j.command)}</div>` : ''}
@@ -1501,6 +1518,39 @@ function toggleJobCard(jobId, runId) {
   }
 }
 
+function toggleJobFullscreen(ev, jobId, runId) {
+  ev.stopPropagation();
+  const card = document.querySelector(`.job-card[data-job-id="${jobId}"]`);
+  if (!card) return;
+  const isFull = card.classList.toggle('fullscreen');
+  document.body.style.overflow = isFull ? 'hidden' : '';
+
+  // When entering fullscreen, ensure the card is expanded so output renders + polls
+  if (isFull && !gJobExpanded[jobId]) {
+    gJobExpanded[jobId] = true;
+    card.classList.add('expanded');
+    const toggle = card.querySelector('.job-toggle');
+    if (toggle) toggle.textContent = '▲';
+    fetchJobOutput(jobId, runId);
+    const isRunning = !!card.querySelector('.job-badge.RUNNING');
+    if (isRunning && !gJobPollers[jobId]) {
+      gJobPollers[jobId] = setInterval(() => {
+        if (gJobExpanded[jobId]) fetchJobOutput(jobId, runId);
+        else { clearInterval(gJobPollers[jobId]); delete gJobPollers[jobId]; }
+      }, 1000);
+    }
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const full = document.querySelector('.job-card.fullscreen');
+  if (full) {
+    full.classList.remove('fullscreen');
+    document.body.style.overflow = '';
+  }
+});
+
 function fetchJobOutput(jobId, runId) {
   if (!runId) return;
   fetch(`/api/job-output/${encodeURIComponent(runId)}/${encodeURIComponent(jobId)}`)
@@ -1510,10 +1560,15 @@ function fetchJobOutput(jobId, runId) {
       if (!el) return;
       if (!data.exists || !data.content) {
         el.innerHTML = '<span class="job-output-empty">No output yet…</span>';
-      } else {
-        el.textContent = data.content;
-        el.scrollTop = el.scrollHeight;
+        return;
       }
+      // Only auto-scroll if user is already pinned near the bottom (< 40px gap).
+      // Otherwise preserve their scroll position so they can read history.
+      const nearBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 40;
+      const prevTop = el.scrollTop;
+      el.textContent = data.content;
+      if (nearBottom) el.scrollTop = el.scrollHeight;
+      else el.scrollTop = prevTop;
     })
     .catch(() => {});
 }

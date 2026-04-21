@@ -27,6 +27,7 @@ class Action:
     args: dict = field(default_factory=dict)
     final_answer: Optional[str] = None  # type=DONE 时的最终输出
     error_type: Optional[str] = None    # type=ERROR 时的分类标签（供运行时补丁使用）
+    scratchpad_note: Optional[str] = None  # inline 模式：LLM 同步输出的草稿笔记
 
 
 # ── 工具执行结果 ──────────────────────────────────────────────────────────────

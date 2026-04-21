@@ -271,6 +271,53 @@ def _auto_scratchpad_note(
         pass  # 自动追加失败不影响主流程
 
 
+# ── inline 模式：直接应用 LLM 同步输出的草稿笔记 ─────────────────────────────
+
+def _apply_inline_scratchpad_note(
+    action: Action,
+    state: AgentState,
+    hooks: Optional[AgentHooks] = None,
+) -> None:
+    """inline 模式下，将 action.scratchpad_note 追加到草稿本。
+
+    与 _auto_scratchpad_note 共享相同的截断策略，但无需额外 LLM 调用。
+    """
+    note = getattr(action, "scratchpad_note", None)
+    if not note:
+        return
+    note = note.strip()[:200]
+    if not note:
+        return
+
+    try:
+        iter_n = getattr(state, "iteration", 0)
+        entry = f"\n[iter{iter_n}|inline] {note}"
+
+        if hooks is not None and hooks.on_note:
+            hooks.on_note(action.tool or "inline", note)
+
+        cur = state.meta.get("scratchpad", "")
+        max_chars = int(os.environ.get("SCRATCHPAD_MAX_CHARS", "2000"))
+        new_sp = cur + entry
+
+        if len(new_sp) > max_chars:
+            lines = new_sp.splitlines(keepends=True)
+            head = "".join(lines[:3])
+            body = new_sp[len(head):]
+            overflow = len(head) + len(body) - max_chars
+            body = body[overflow:]
+            new_sp = head + body
+
+        state.meta["scratchpad"] = new_sp
+
+        persistence = _get_persistence(state)
+        if persistence is not None:
+            persistence.save_scratchpad(new_sp)
+
+    except Exception:
+        pass
+
+
 # ── 运行时补丁 ────────────────────────────────────────────────────────────────
 
 # 已知 JSON 错误类型 → 补丁规则（静态映射）

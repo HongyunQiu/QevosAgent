@@ -502,6 +502,8 @@ def main():
             next_input = interrupt_handler.get_user_input("")
             if next_input is None or not next_input.strip():
                 break
+            if next_input.strip().lower() in ("/exit", "exit"):
+                break
 
             _raw_next_goal = next_input.strip()
 

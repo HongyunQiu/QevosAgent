@@ -368,6 +368,7 @@ def build_system_prompt(
     scratchpad: str = "",
     concept_memory: str = "",
     runtime_patches: Optional[list[str]] = None,
+    scratchpad_note_mode: Optional[str] = None,
 ) -> str:
     """
     动态构建 system prompt。
@@ -414,11 +415,18 @@ def build_system_prompt(
             + scratchpad.strip()
         )
 
+    import os as _os
+    _note_mode = scratchpad_note_mode or _os.environ.get("SCRATCHPAD_NOTE_MODE", "mini_call")
+    _inline_note_field = (
+        '\n  "scratchpad_note": "（可选）对上一步工具结果的1-2条关键新发现，将自动追加草稿本，每条<=40字",'
+        if _note_mode == "inline" else ""
+    )
+
     return f"""你是一个通用自主智能体。你通过循环调用工具来完成任意目标。
 
 ## 输出格式（严格遵守，必须是合法 JSON）
 {{
-  "thought": "你当前的推理过程，分析情况、决定下一步",
+  "thought": "你当前的推理过程，分析情况、决定下一步",{_inline_note_field}
   "action": "tool_call" | "done",
   "tool": "工具名（action=tool_call 时必填）",
   "args": {{...}},
@@ -731,12 +739,14 @@ def parse_response(raw: str) -> Action:
 
     thought = data.get("thought", "")
     action_str = data.get("action", "tool_call")
+    _sp_note = (data.get("scratchpad_note") or "").strip() or None
 
     if action_str == "done":
         return Action(
             type=ActionType.DONE,
             thought=thought,
             final_answer=data.get("final_answer", ""),
+            scratchpad_note=_sp_note,
         )
 
     # 检测 LLM 把工具名写成了 action 值（如 action="shell"）
@@ -808,6 +818,7 @@ def parse_response(raw: str) -> Action:
         thought=thought,
         tool=tool,
         args=args if isinstance(args, dict) else {},
+        scratchpad_note=_sp_note,
     )
 
 

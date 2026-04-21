@@ -20,6 +20,7 @@ from .compression import (
     _trim_short_term,
     _maybe_compress_for_context,
     _auto_scratchpad_note,
+    _apply_inline_scratchpad_note,
     _rebuild_context_on_hard_block,
     _apply_runtime_patch,
 )
@@ -848,8 +849,14 @@ def run(
                 if hooks.on_tool_result:
                     hooks.on_tool_result(result)
 
-                # 自动提取关键发现追加草稿本（目标感知的 mini LLM call）
-                if os.environ.get("AUTO_SCRATCHPAD_NOTE", "1") != "0":
+                # 草稿本笔记追加（SCRATCHPAD_NOTE_MODE 控制模式）
+                # mini_call（默认）：工具执行后用独立 mini LLM call 提炼笔记
+                # inline：LLM 在同一响应中输出 scratchpad_note 字段，直接应用，无额外调用
+                # off / 0：禁用自动笔记
+                _note_mode = os.environ.get("SCRATCHPAD_NOTE_MODE", "mini_call")
+                if _note_mode == "inline":
+                    _apply_inline_scratchpad_note(action, state, hooks=hooks)
+                elif _note_mode not in ("off", "0") and os.environ.get("AUTO_SCRATCHPAD_NOTE", "1") != "0":
                     _auto_scratchpad_note(action, result, state, llm, hooks=hooks)
 
                 if action.tool == "ask_user":

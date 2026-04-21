@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/QevosAgent-banner-light.png" alt="QevosAgent banner" width="100%" />
+  <img src="./assets/QevosAgent.png" alt="QevosAgent banner" width="100%" />
 </p>
 
 # QevosAgent
@@ -20,7 +20,7 @@ It keeps the core loop small: `LLM -> tool_call -> feedback -> done`.
 What makes it different is everything around that loop: persistent runs, recoverable snapshots, built-in scratchpad, explicit tool repair, human intervention, and a lightweight dashboard you can actually use.
 
 <p align="center">
-  <img src="./assets/QevosAgent.png" alt="QevosAgent dashboard demo" width="100%" />
+  <img src="./assets/simpleAgent_dashboard.gif" alt="QevosAgent dashboard demo" width="100%" />
 </p>
 
 
