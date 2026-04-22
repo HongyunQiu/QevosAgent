@@ -54,12 +54,29 @@ jobs:
         run: npm run setup
         timeout-minutes: 20
 
-      # Linux AppImage 需要 256x256 PNG 图标，从 ico 转换
-      - name: Generate Linux PNG icon
+      # Windows：PNG → ICO（多尺寸）
+      - name: Generate Windows icon
+        if: runner.os == 'Windows'
+        shell: bash
+        run: magick assets/QevosLogo.png -define icon:auto-resize=256,128,64,48,32,16 desktop/build/icon.ico
+
+      # macOS：PNG → ICNS（通过 iconset）
+      - name: Generate macOS icon
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p /tmp/icon.iconset
+          for size in 16 32 64 128 256 512; do
+            sips -z $size $size assets/QevosLogo.png --out /tmp/icon.iconset/icon_${size}x${size}.png
+          done
+          sips -z 1024 1024 assets/QevosLogo.png --out /tmp/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns /tmp/icon.iconset -o desktop/build/icon.icns
+
+      # Linux：PNG 直接缩放到 256x256
+      - name: Generate Linux icon
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y imagemagick
-          convert desktop/build/icon.ico[0] -resize 256x256 desktop/build/icon.png
+          convert assets/QevosLogo.png -resize 256x256 desktop/build/icon.png
 
       - name: Build Electron app
         working-directory: desktop
