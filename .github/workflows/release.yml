@@ -109,10 +109,10 @@ jobs:
       # 重命名为固定文件名，让网站下载链接永远指向最新版
       - name: Rename to stable download names
         run: |
-          find artifacts -name "*.exe"      -exec cp {} artifacts/QevosAgent-Setup.exe \;
+          find artifacts -name "*.exe"       -exec cp {} artifacts/QevosAgent-Setup.exe \;
           find artifacts -name "*arm64*.dmg" -exec cp {} artifacts/QevosAgent-macOS-arm64.dmg \;
-          find artifacts -name "*x64*.dmg"   -exec cp {} artifacts/QevosAgent-macOS-x64.dmg \;
-          find artifacts -name "*.AppImage" -exec cp {} artifacts/QevosAgent.AppImage \;
+          find artifacts -name "*.dmg" ! -name "*arm64*" -exec cp {} artifacts/QevosAgent-macOS-x64.dmg \;
+          find artifacts -name "*.AppImage"  -exec cp {} artifacts/QevosAgent.AppImage \;
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
