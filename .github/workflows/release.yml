@@ -54,12 +54,22 @@ jobs:
         run: npm run setup
         timeout-minutes: 20
 
+      # Linux AppImage 需要 256x256 PNG 图标，从 ico 转换
+      - name: Generate Linux PNG icon
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y imagemagick
+          convert desktop/build/icon.ico[0] -resize 256x256 desktop/build/icon.png
+
       - name: Build Electron app
         working-directory: desktop
         run: ${{ matrix.build_cmd }}
         env:
-          # 跳过 macOS 代码签名（无证书时必须设置）
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          # 禁止 electron-builder 自行发布，由 release job 统一处理
+          EP_DRAFT: false
+          PUBLISH_FOR_PULL_REQUEST: false
+          GH_TOKEN: ""
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
