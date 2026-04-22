@@ -1,0 +1,98 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 三平台并行编译 ──────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build_cmd: npm run build
+            artifact_glob: desktop/dist/*.exe
+            artifact_name: dist-windows
+
+          - os: macos-latest
+            build_cmd: npm run build:mac
+            artifact_glob: desktop/dist/*.dmg
+            artifact_name: dist-macos
+
+          - os: ubuntu-latest
+            build_cmd: npm run build:linux
+            artifact_glob: desktop/dist/*.AppImage
+            artifact_name: dist-linux
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm install
+
+      # 下载嵌入式 Python 并安装 agent 依赖（各平台自动选择对应版本）
+      - name: Setup embedded Python
+        working-directory: desktop
+        run: npm run setup
+        timeout-minutes: 20
+
+      - name: Build Electron app
+        working-directory: desktop
+        run: ${{ matrix.build_cmd }}
+        env:
+          # 跳过 macOS 代码签名（无证书时必须设置）
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
+
+  # ── 创建 GitHub Release ─────────────────────────────────
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # 重命名为固定文件名，让网站下载链接永远指向最新版
+      - name: Rename to stable download names
+        run: |
+          find artifacts -name "*.exe"      -exec cp {} artifacts/QevosAgent-Setup.exe \;
+          find artifacts -name "*arm64*.dmg" -exec cp {} artifacts/QevosAgent-macOS-arm64.dmg \;
+          find artifacts -name "*x64*.dmg"   -exec cp {} artifacts/QevosAgent-macOS-x64.dmg \;
+          find artifacts -name "*.AppImage" -exec cp {} artifacts/QevosAgent.AppImage \;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 上传所有文件（含原版本号文件 + 固定名文件）
+          files: artifacts/**/*
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
