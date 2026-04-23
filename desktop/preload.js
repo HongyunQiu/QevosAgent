@@ -13,4 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** Start the dashboard server and navigate the window to it. */
   openDashboard: () => ipcRenderer.invoke('dashboard:open'),
+
+  /** Test connectivity to the LLM endpoint. Returns { ok, status?, error? }. */
+  testConnection: data => ipcRenderer.invoke('env:test', data),
 });

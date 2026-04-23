@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 33px;
+      overflow: hidden;
+      background: #090d12;
+      color: #e6edf3;
+      font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+      font-size: 12px;
+      user-select: none;
+      border-bottom: 1px solid #21262d;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      -webkit-app-region: drag;
+    }
+
+    /* ── Tab strip ── */
+    #tabs {
+      display: flex;
+      align-items: center;
+      height: 100%;
+      flex: 1;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 0 6px;
+      gap: 2px;
+      -webkit-app-region: no-drag;
+    }
+    #tabs::-webkit-scrollbar { height: 0; }
+
+    /* ── Single tab — pill/button style, all 4 corners rounded ── */
+    .tab {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 10px;
+      height: 23px;
+      border-radius: 5px;
+      cursor: pointer;
+      color: #7d8590;
+      white-space: nowrap;
+      transition: background 0.12s, color 0.12s;
+      flex-shrink: 0;
+      max-width: 220px;
+    }
+    .tab:hover {
+      background: #161b22;
+      color: #cdd9e5;
+    }
+    .tab.active {
+      background: #21262d;
+      color: #e6edf3;
+    }
+
+    .tab-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      flex: 1;
+    }
+
+    /* ── Close button (×) — hidden until tab is hovered ── */
+    .tab-close {
+      flex-shrink: 0;
+      width: 14px;
+      height: 14px;
+      border: none;
+      background: transparent;
+      color: transparent;
+      font-size: 13px;
+      line-height: 1;
+      cursor: pointer;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      transition: background 0.1s, color 0.1s;
+    }
+    .tab:hover .tab-close        { color: #7d8590; }
+    .tab-close:hover              { background: rgba(248,81,73,0.18) !important; color: #f85149 !important; }
+
+    /* ── Draggable spacer ── */
+    .spacer {
+      flex: 1;
+      height: 100%;
+      -webkit-app-region: drag;
+    }
+
+    /* ── Settings button ── */
+    #btn-settings {
+      flex-shrink: 0;
+      width: 33px;
+      height: 100%;
+      border: none;
+      background: transparent;
+      color: #7d8590;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.12s;
+      -webkit-app-region: no-drag;
+    }
+    #btn-settings:hover { color: #e6edf3; }
+  </style>
+</head>
+<body>
+  <div id="tabs"></div>
+  <div class="spacer"></div>
+  <button id="btn-settings" title="设置">⚙</button>
+
+  <script>
+    const tabsEl = document.getElementById('tabs');
+
+    function render({ tabs, activeId }) {
+      tabsEl.innerHTML = '';
+      for (const t of tabs) {
+        const tab = document.createElement('div');
+        tab.className = 'tab' + (t.id === activeId ? ' active' : '');
+        tab.title = t.title;
+
+        const title = document.createElement('span');
+        title.className = 'tab-title';
+        title.textContent = t.title;
+        tab.appendChild(title);
+
+        if (!t.isHome) {
+          const closeBtn = document.createElement('button');
+          closeBtn.className = 'tab-close';
+          closeBtn.textContent = '×';
+          closeBtn.title = '关闭';
+          closeBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            window.tabAPI.close(t.id);
+          });
+          tab.appendChild(closeBtn);
+        }
+
+        tab.addEventListener('click', () => window.tabAPI.activate(t.id));
+        tabsEl.appendChild(tab);
+      }
+    }
+
+    window.tabAPI.onUpdate(render);
+
+    document.getElementById('btn-settings').addEventListener('click', () =>
+      window.tabAPI.settings()
+    );
+  </script>
+</body>
+</html>

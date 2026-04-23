@@ -1707,11 +1707,29 @@ def tool_web_show(
     run_id = Path(run_dir).name
     url = f"http://localhost:{port}/view/{run_id}/{display_id}"
 
-    # 每个 display_id 只在首次创建时自动打开浏览器，append 不重复打开
+    # 每个 display_id 只在首次创建时自动打开，append 不重复触发
     opened_key = f"_web_show_opened_{display_id}"
     if mode != "append" and not state.meta.get(opened_key):
-        import webbrowser
-        webbrowser.open(url)
+        if os.environ.get("ELECTRON"):
+            # Running inside Electron: notify via dashboard API so main.js
+            # can open the view as a native menu tab (no CORS / webbrowser needed).
+            import urllib.request as _ur
+            try:
+                _payload = json.dumps(
+                    {"url": url, "title": title or display_id, "display_id": display_id}
+                ).encode()
+                _req = _ur.Request(
+                    f"http://localhost:{port}/api/open-view",
+                    data=_payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                _ur.urlopen(_req, timeout=2)
+            except Exception:
+                pass
+        else:
+            import webbrowser
+            webbrowser.open(url)
         state.meta[opened_key] = True
 
     return ToolResult(

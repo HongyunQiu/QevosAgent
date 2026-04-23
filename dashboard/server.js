@@ -22,6 +22,12 @@ const fs           = require('fs');
 const path         = require('path');
 const { spawn }    = require('child_process');
 const WebSocket    = require('ws');
+const EventEmitter = require('events');
+
+// Emits 'open-view' when Electron should open a view tab.
+// main.js listens to this because both files run in the same Node process.
+const serverEvents = new EventEmitter();
+module.exports = { serverEvents };
 
 const PORT       = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
 const RUNS_DIR   = path.resolve(process.env.RUNS_DIR || path.join(__dirname, '..', 'runs'));
@@ -30,6 +36,24 @@ const PUBLIC     = path.join(__dirname, 'public');
 const POLL_MS    = parseInt(process.env.POLL_MS || '500', 10);
 // Python command — default to 'python' so the calling conda env is used
 const PYTHON_CMD = process.env.PYTHON_CMD || 'python';
+
+/**
+ * Split PYTHON_CMD into [executable, ...args], respecting quoted paths.
+ * Handles: plain "python", conda "conda run -n env python",
+ * and quoted paths like "\"C:\\Program Files\\python.exe\"".
+ */
+function parsePythonCmd(cmd) {
+  const t = cmd.trim();
+  if (t.startsWith('"')) {
+    const end = t.indexOf('"', 1);
+    if (end > 0) {
+      const exe  = t.slice(1, end);
+      const rest = t.slice(end + 1).trim();
+      return rest ? [exe, ...rest.split(/\s+/)] : [exe];
+    }
+  }
+  return t.split(/\s+/);
+}
 
 // ── Agent process state ────────────────────────────────────────────────────
 
@@ -380,9 +404,10 @@ function launchAgent(goal, nostop = false) {
   broadcastConsole('system', `▶ Launching: ${PYTHON_CMD} run_goal.py${nostopLabel} "${goal.slice(0, 80)}${goal.length > 80 ? '…' : ''}"`);
   broadcastConsole('system', `  Working dir: ${AGENT_DIR}`);
 
-  // On Windows, PYTHON_CMD may be a multi-word string like "conda run -n myenv python".
-  // Split into command + args so spawn works correctly on all platforms.
-  const parts    = PYTHON_CMD.trim().split(/\s+/);
+  // On Windows, PYTHON_CMD may be a multi-word string like "conda run -n myenv python",
+  // or a quoted path with spaces like "\"C:\\Programme Files\\python.exe\"".
+  // parsePythonCmd() handles both cases correctly.
+  const parts    = parsePythonCmd(PYTHON_CMD);
   const cmd      = parts[0];
   const cmdArgs  = [...parts.slice(1), 'run_goal.py'];
   if (nostop) cmdArgs.push('--nostop');
@@ -728,6 +753,20 @@ const server = http.createServer(async (req, res) => {
       if (e.code === 'ENOENT') { json(200, { content: null, exists: false }); return; }
       json(500, { error: String(e) });
     }
+    return;
+  }
+
+  // ── POST /api/open-view — tell Electron to open a view tab ──────────────
+  if (req.method === 'POST' && req.url === '/api/open-view') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      serverEvents.emit('open-view', {
+        url:       body.url,
+        title:     body.title || body.display_id,
+        displayId: body.display_id,
+      });
+      json(200, { ok: true });
+    } catch (e) { json(400, { error: String(e) }); }
     return;
   }
 

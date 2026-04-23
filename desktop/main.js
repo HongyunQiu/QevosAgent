@@ -3,46 +3,52 @@
 /**
  * QevosAgent Desktop — Electron main process
  *
- * Startup flow:
- *   1. Load .env from resources/ (packaged) or QevosAgent/ (dev)
- *   2. If OPENAI_BASE_URL is not set → show setup.html (settings page)
- *      else → show loading.html → start dashboard → navigate to http://localhost:PORT
+ * Window layout (content area, below the native title bar):
+ *   ┌──────────────────────────────────────────────┐
+ *   │ ⚡ │ 看板 │ View A × │ View B × │       ⚙   │  ← tabbar.html  (TAB_H px)
+ *   ├──────────────────────────────────────────────┤
+ *   │                                              │
+ *   │          setup.html / dashboard / view       │  ← content WebContentsView
+ *   │                                              │
+ *   └──────────────────────────────────────────────┘
  *
- * IPC channels (see preload.js):
- *   env:read        → return current settings
- *   env:save        → write .env file and update process.env
- *   dashboard:open  → start server + navigate window to dashboard
+ * Tab system (Electron-only, browser mode unchanged):
+ *   - tabbar.html is a separate WebContentsView pinned to the top.
+ *   - Each web_show call POSTs to /api/open-view → server.js emits 'open-view'
+ *     → main.js creates a new content WebContentsView and updates the tab bar.
+ *   - Switching tabs hides/shows views via setBounds() — no page reloads.
+ *   - "看板" tab is permanent and cannot be closed.
+ *   - Settings (⚙) in the tab bar loads setup.html into the home view.
  *
- * Application menu:
- *   QevosAgent > 设置  → reopen setup.html at any time
+ * IPC (content views → main, via preload.js):
+ *   env:read        → return current .env values
+ *   env:save        → write .env and sync process.env
+ *   env:test        → connectivity check against the LLM endpoint
+ *   dashboard:open  → start dashboard server + navigate home view
+ *
+ * IPC (tabbar.html → main, via tabbar-preload.js):
+ *   tab-activate id → switch to that view
+ *   tab-close    id → destroy that view
+ *   tab-settings    → load setup.html in the home view
  */
 
-const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs   = require('fs');
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
-// vendor/app/ is created by `npm run setup` and holds agent/dashboard/run_goal.py.
-// Used as APP_ROOT when packaged; in dev mode use the repo root instead.
 const VENDOR_APP  = path.join(__dirname, 'vendor', 'app');
 const APP_ROOT    = app.isPackaged ? VENDOR_APP : path.resolve(__dirname, '..');
-
-// .env lives one level above __dirname:
-//   dev      → QevosAgent/          (standard location)
-//   packaged → resources/            (accessible after install)
 const DOT_ENV_DIR = path.resolve(__dirname, '..');
 
 // ── Load .env ──────────────────────────────────────────────────────────────
-// Mirrors run_goal.py's load_dotenv_if_present().
-// Existing process.env values always win.
 
 function loadDotenv() {
   const envFile = path.join(DOT_ENV_DIR, '.env');
   let raw;
   try { raw = fs.readFileSync(envFile, 'utf8'); } catch { return; }
-
   for (const rawLine of raw.split(/\r?\n/)) {
     let line = rawLine.trim();
     if (!line || line.startsWith('#')) continue;
@@ -62,14 +68,17 @@ function loadDotenv() {
 loadDotenv();
 
 // ── Embedded Python ────────────────────────────────────────────────────────
-// vendor/python/python.exe is created by `npm run setup`.
-// It takes priority over any PYTHON_CMD in .env.
 
 const EMBEDDED_PYTHON = process.platform === 'win32'
   ? path.join(__dirname, 'vendor', 'python', 'python.exe')
   : path.join(__dirname, 'vendor', 'python', 'bin', 'python3');
+
 if (fs.existsSync(EMBEDDED_PYTHON)) {
-  process.env.PYTHON_CMD = EMBEDDED_PYTHON;
+  // Quote the path so server.js parsePythonCmd() can recover it even when
+  // it contains spaces (e.g. "C:\Programme Files\QevosAgent\...\python.exe").
+  process.env.PYTHON_CMD = EMBEDDED_PYTHON.includes(' ')
+    ? `"${EMBEDDED_PYTHON}"`
+    : EMBEDDED_PYTHON;
   console.log('[desktop] Embedded Python:', EMBEDDED_PYTHON);
 } else if (!process.env.PYTHON_CMD) {
   console.warn(
@@ -80,15 +89,108 @@ if (fs.existsSync(EMBEDDED_PYTHON)) {
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
-const PORT = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
+const PORT  = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
+const TAB_H = 33; // matches the dashboard topbar height (grid-template-rows: 33px …)
 
 // ── State ──────────────────────────────────────────────────────────────────
 
-let mainWindow       = null;
+const HOME_ID = 'dashboard';
+const gViews  = new Map();  // viewId → { view: WebContentsView, title: string }
+let gActiveId      = HOME_ID;
+let mainWindow     = null;
+let tabbarView     = null;
 let dashboardStarted = false;
 
+// ── Layout ─────────────────────────────────────────────────────────────────
+
+function getTabbarBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return { x: 0, y: 0, width: 0, height: TAB_H };
+  const [w] = mainWindow.getContentSize();
+  return { x: 0, y: 0, width: w, height: TAB_H };
+}
+
+function getContentBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return { x: 0, y: TAB_H, width: 0, height: 0 };
+  const [w, h] = mainWindow.getContentSize();
+  return { x: 0, y: TAB_H, width: w, height: Math.max(0, h - TAB_H) };
+}
+
+function updateLayout() {
+  if (tabbarView && !tabbarView.webContents.isDestroyed()) {
+    tabbarView.setBounds(getTabbarBounds());
+  }
+  const full   = getContentBounds();
+  const hidden = { x: 0, y: TAB_H, width: 0, height: 0 };
+  for (const [id, entry] of gViews) {
+    entry.view.setBounds(id === gActiveId ? full : hidden);
+  }
+}
+
+// ── Tab state → tabbar ─────────────────────────────────────────────────────
+
+function pushTabsUpdate() {
+  if (!tabbarView || tabbarView.webContents.isDestroyed()) return;
+  const tabs = [
+    { id: HOME_ID, title: '看板', isHome: true },
+    ...Array.from(gViews.entries())
+      .filter(([id]) => id !== HOME_ID)
+      .map(([id, { title }]) => ({ id, title, isHome: false })),
+  ];
+  tabbarView.webContents.send('tabs-update', { tabs, activeId: gActiveId });
+}
+
+// ── View tab management ────────────────────────────────────────────────────
+
+function activateView(id) {
+  if (!gViews.has(id)) return;
+  gActiveId = id;
+  updateLayout();
+  pushTabsUpdate();
+}
+
+function openElectronView(displayId, url, title) {
+  const id = 'view-' + displayId;
+  if (gViews.has(id)) {
+    // Replace mode: reload the existing view with updated content.
+    gViews.get(id).view.webContents.loadURL(url);
+    activateView(id);
+    return;
+  }
+
+  const view = new WebContentsView({
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+
+  // Keep this view locked to its view URL — any link the user clicks inside
+  // the rendered HTML content opens in the system browser instead of
+  // navigating the view or spawning a new Electron window.
+  view.webContents.on('will-navigate', (e, targetUrl) => {
+    e.preventDefault();
+    shell.openExternal(targetUrl);
+  });
+  view.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+    shell.openExternal(targetUrl);
+    return { action: 'deny' };
+  });
+
+  mainWindow.contentView.addChildView(view);
+  view.webContents.loadURL(url);
+  gViews.set(id, { view, title: title || displayId });
+  activateView(id);
+}
+
+function closeView(id) {
+  if (id === HOME_ID) return; // 看板 is permanent
+  const entry = gViews.get(id);
+  if (!entry) return;
+  mainWindow.contentView.removeChildView(entry.view);
+  entry.view.webContents.close();
+  gViews.delete(id);
+  if (gActiveId === id) activateView(HOME_ID);
+  else pushTabsUpdate();
+}
+
 // ── Dashboard server ───────────────────────────────────────────────────────
-// server.js is require()'d in-process — no separate node binary needed.
 
 function startDashboard() {
   if (dashboardStarted) return;
@@ -97,12 +199,17 @@ function startDashboard() {
   process.env.DASHBOARD_PORT   = String(PORT);
   process.env.PYTHONUTF8       = '1';
   process.env.PYTHONIOENCODING = 'utf-8';
+  process.env.ELECTRON         = '1';
   process.env.AGENT_DIR        = APP_ROOT;
   process.env.PYTHONPATH       = APP_ROOT;
 
   const serverPath = path.join(APP_ROOT, 'dashboard', 'server.js');
   try {
-    require(serverPath);
+    const { serverEvents } = require(serverPath);
+    serverEvents.on('open-view', ({ url, title, displayId }) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      openElectronView(displayId, url, title || displayId);
+    });
     console.log('[desktop] Dashboard server started from', serverPath);
   } catch (err) {
     console.error('[desktop] Failed to load dashboard server:', err.message);
@@ -133,25 +240,30 @@ function waitForServer(maxRetries, intervalMs, callback) {
   attempt();
 }
 
-// ── Error display in loading.html ─────────────────────────────────────────
+// ── Helpers for the home (看板) view ──────────────────────────────────────
+
+function getMainView() {
+  const entry = gViews.get(HOME_ID);
+  return entry ? entry.view : null;
+}
 
 function notifyLoadingError(msg) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const mv = getMainView();
+  if (!mv || !mainWindow || mainWindow.isDestroyed()) return;
   const escaped = msg.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  mainWindow.webContents
+  mv.webContents
     .executeJavaScript(`typeof showError === 'function' && showError("${escaped}")`)
     .catch(() => {});
 }
 
-// ── Navigate window to the running dashboard ──────────────────────────────
-
 function navigateToDashboard() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-
-  mainWindow.loadFile(path.join(__dirname, 'loading.html'));
+  const mv = getMainView();
+  if (!mv) return;
+  activateView(HOME_ID);
+  mv.webContents.loadFile(path.join(__dirname, 'loading.html'));
 
   if (startDashboard._error) {
-    mainWindow.webContents.once('did-finish-load', () => {
+    mv.webContents.once('did-finish-load', () => {
       notifyLoadingError(`无法加载 Dashboard：${startDashboard._error}`);
     });
     return;
@@ -160,8 +272,15 @@ function navigateToDashboard() {
   waitForServer(30, 500, err => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (err) { notifyLoadingError(err.message); return; }
-    mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+    mv.webContents.loadURL(`http://127.0.0.1:${PORT}`);
   });
+}
+
+function showSetup() {
+  const mv = getMainView();
+  if (!mv || !mainWindow || mainWindow.isDestroyed()) return;
+  activateView(HOME_ID);
+  mv.webContents.loadFile(path.join(__dirname, 'setup.html'));
 }
 
 // ── Check if the LLM endpoint is configured ────────────────────────────────
@@ -174,10 +293,32 @@ function isConfigured() {
   );
 }
 
+// ── Native menu — minimal; tabs live in tabbar.html ───────────────────────
+
+function setupNativeMenu() {
+  if (process.platform === 'darwin') {
+    // macOS requires an application menu for Cmd+Q and system conventions.
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      {
+        label: 'QevosAgent',
+        submenu: [
+          { role: 'about',     label: '关于 QevosAgent' },
+          { type: 'separator' },
+          { role: 'quit',      label: '退出' },
+        ],
+      },
+    ]));
+  } else {
+    // Windows / Linux: remove the menu bar entirely — tabs replace it.
+    Menu.setApplicationMenu(null);
+  }
+}
+
 // ── IPC handlers ──────────────────────────────────────────────────────────
 
 function registerIPC() {
-  // Return current settings to the renderer
+  // ── Content view IPC (preload.js) ────────────────────────────────────────
+
   ipcMain.handle('env:read', () => ({
     OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
     OPENAI_API_KEY:  process.env.OPENAI_API_KEY  || '',
@@ -185,11 +326,8 @@ function registerIPC() {
     MAX_ITERS:       process.env.MAX_ITERS        || '100',
   }));
 
-  // Write .env file and update process.env immediately
   ipcMain.handle('env:save', (_, data) => {
     const envPath = path.join(DOT_ENV_DIR, '.env');
-
-    // Read existing .env to preserve unrelated keys (e.g. PYTHON_CMD)
     let existing = {};
     try {
       for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
@@ -199,71 +337,60 @@ function registerIPC() {
         }
       }
     } catch {}
-
-    // Merge: form data overwrites existing
     const merged = { ...existing };
     for (const [k, v] of Object.entries(data)) {
       if (v && v.trim()) merged[k] = v.trim();
     }
-
-    const content = Object.entries(merged)
-      .map(([k, v]) => `${k}=${v}`)
-      .join('\n') + '\n';
-
+    const content = Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
     fs.writeFileSync(envPath, content, 'utf8');
-
-    // Sync into process.env so the running process picks them up
-    for (const [k, v] of Object.entries(merged)) {
-      process.env[k] = v;
-    }
-
+    for (const [k, v] of Object.entries(merged)) process.env[k] = v;
     return { ok: true };
   });
 
-  // Start dashboard server and navigate the window to it
   ipcMain.handle('dashboard:open', () => {
     startDashboard();
     navigateToDashboard();
     return { ok: true };
   });
 
+  ipcMain.handle('env:test', (_, { baseUrl, apiKey }) => {
+    return new Promise(resolve => {
+      let url;
+      try {
+        const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+        url = new URL(base + '/models');
+      } catch {
+        return resolve({ ok: false, error: '无效的 API 地址格式' });
+      }
+      const mod = url.protocol === 'https:' ? require('https') : require('http');
+      const options = {
+        hostname: url.hostname,
+        port:     url.port || (url.protocol === 'https:' ? 443 : 80),
+        path:     url.pathname + url.search,
+        method:   'GET',
+        headers:  { Authorization: `Bearer ${apiKey || 'local'}` },
+        timeout:  8000,
+      };
+      const req = mod.request(options, res => {
+        res.resume();
+        resolve(res.statusCode >= 200 && res.statusCode < 300
+          ? { ok: true,  status: res.statusCode }
+          : { ok: false, status: res.statusCode, error: `HTTP ${res.statusCode}` });
+      });
+      req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: '连接超时（8 秒）' }); });
+      req.on('error',   err => resolve({ ok: false, error: err.message }));
+      req.end();
+    });
+  });
+
+  // ── Tab bar IPC (tabbar-preload.js) ──────────────────────────────────────
+
+  ipcMain.on('tab-activate', (_, id)  => activateView(id));
+  ipcMain.on('tab-close',    (_, id)  => closeView(id));
+  ipcMain.on('tab-settings', ()       => showSetup());
 }
 
-// ── Application menu ───────────────────────────────────────────────────────
-
-function buildMenu() {
-  return Menu.buildFromTemplate([
-    {
-      label: 'QevosAgent',
-      submenu: [
-        {
-          label: '⚙  设置',
-          accelerator: 'CmdOrCtrl+,',
-          click: () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.loadFile(path.join(__dirname, 'setup.html'));
-            }
-          },
-        },
-        { type: 'separator' },
-        { role: 'quit', label: '退出' },
-      ],
-    },
-    {
-      label: '视图',
-      submenu: [
-        { role: 'reload',         label: '刷新' },
-        { role: 'toggleDevTools', label: '开发者工具' },
-        { type: 'separator' },
-        { role: 'resetZoom',      label: '重置缩放' },
-        { role: 'zoomIn',         label: '放大' },
-        { role: 'zoomOut',        label: '缩小' },
-      ],
-    },
-  ]);
-}
-
-// ── BrowserWindow ──────────────────────────────────────────────────────────
+// ── BrowserWindow + WebContentsViews ──────────────────────────────────────
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -277,30 +404,67 @@ function createWindow() {
                      : process.platform === 'linux'  ? 'icon.png'
                      : 'icon.ico'),
     backgroundColor: '#0d1117',
+  });
+
+  // ── Tab bar (always visible, pinned to top) ───────────────────────────────
+  tabbarView = new WebContentsView({
+    webPreferences: {
+      nodeIntegration:  false,
+      contextIsolation: true,
+      preload:          path.join(__dirname, 'tabbar-preload.js'),
+    },
+  });
+  mainWindow.contentView.addChildView(tabbarView);
+  tabbarView.webContents.loadFile(path.join(__dirname, 'tabbar.html'));
+  // Push initial state once the tab bar has finished rendering.
+  tabbarView.webContents.once('did-finish-load', pushTabsUpdate);
+
+  // ── Home (看板) content view ──────────────────────────────────────────────
+  const mainView = new WebContentsView({
     webPreferences: {
       nodeIntegration:  false,
       contextIsolation: true,
       preload:          path.join(__dirname, 'preload.js'),
     },
   });
+  mainWindow.contentView.addChildView(mainView);
+  gViews.set(HOME_ID, { view: mainView, title: '看板' });
+  gActiveId = HOME_ID;
+  updateLayout();
+
+  // External links from the dashboard open in the system browser.
+  mainView.webContents.on('will-navigate', (e, targetUrl) => {
+    try {
+      const { hostname, protocol } = new URL(targetUrl);
+      if (protocol !== 'file:' && hostname !== '127.0.0.1' && hostname !== 'localhost') {
+        e.preventDefault();
+        shell.openExternal(targetUrl);
+      }
+    } catch { e.preventDefault(); }
+  });
+  mainView.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
+    shell.openExternal(targetUrl);
+    return { action: 'deny' };
+  });
+
+  mainWindow.on('resize',     updateLayout);
+  mainWindow.on('maximize',   updateLayout);
+  mainWindow.on('unmaximize', updateLayout);
+  mainWindow.on('closed',     () => { mainWindow = null; });
 
   if (isConfigured()) {
-    // Already configured: go straight to dashboard
     startDashboard();
     navigateToDashboard();
   } else {
-    // First run: show settings page
-    mainWindow.loadFile(path.join(__dirname, 'setup.html'));
+    mainView.webContents.loadFile(path.join(__dirname, 'setup.html'));
   }
-
-  mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 // ── App lifecycle ──────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
   registerIPC();
-  Menu.setApplicationMenu(buildMenu());
+  setupNativeMenu();
   createWindow();
 
   app.on('activate', () => {
@@ -309,6 +473,5 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
-  // server.js registers process.on('exit', cleanup) to kill any running agent.
   if (process.platform !== 'darwin') app.quit();
 });

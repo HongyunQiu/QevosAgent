@@ -153,6 +153,23 @@
     }
     .btn-secondary:hover { color: #cdd9e5; border-color: #6e7681; }
 
+    .btn-test {
+      display: block;
+      width: 100%;
+      padding: 8px;
+      background: transparent;
+      color: #388bfd;
+      font-size: 13px;
+      border: 1px solid #1f6feb;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-top: 12px;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+      font-family: inherit;
+    }
+    .btn-test:hover:not(:disabled) { background: #0d1b2a; border-color: #388bfd; }
+    .btn-test:disabled { opacity: 0.5; cursor: not-allowed; }
+
     /* ── Messages ── */
     .msg {
       display: none;
@@ -213,6 +230,8 @@
                placeholder="100" min="1" max="500" value="100">
         <div class="hint">Agent 单次任务最多执行的步骤数，默认 100</div>
       </div>
+
+      <button type="button" class="btn-test" id="btn-test">验证连接</button>
 
       <hr class="divider">
 
@@ -288,6 +307,32 @@
       } catch (err) {
         showMsg('error', '保存失败：' + err.message);
         setLoading(false);
+      }
+    });
+
+    // ── Test connection ───────────────────────────────────────────────────
+    const btnTest = document.getElementById('btn-test');
+    btnTest.addEventListener('click', async () => {
+      const baseUrl = document.getElementById('base-url').value.trim();
+      const apiKey  = document.getElementById('api-key').value.trim();
+      if (!baseUrl) { showMsg('error', '请先填写 API 服务地址'); return; }
+
+      btnTest.disabled     = true;
+      btnTest.textContent  = '验证中…';
+      msgBox.className     = 'msg'; // hide previous message
+
+      try {
+        const result = await window.electronAPI.testConnection({ baseUrl, apiKey: apiKey || 'local' });
+        if (result.ok) {
+          showMsg('success', `连接成功（HTTP ${result.status}）— 服务端响应正常`);
+        } else {
+          showMsg('error', `连接失败：${result.error || `HTTP ${result.status}`}`);
+        }
+      } catch (err) {
+        showMsg('error', '验证出错：' + err.message);
+      } finally {
+        btnTest.disabled    = false;
+        btnTest.textContent = '验证连接';
       }
     });
 
