@@ -1662,6 +1662,23 @@ def _get_run_dir(state: AgentState) -> Optional[str]:
     return os.environ.get("RUN_DIR")
 
 
+def tool_get_env_info(state: AgentState) -> ToolResult:
+    """返回当前运行环境的基本信息：日期时间、工作目录。"""
+    import datetime
+    now = datetime.datetime.now()
+    cwd = os.getcwd()
+    info = {
+        "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "weekday": now.strftime("%A"),
+        "cwd": cwd,
+    }
+    lines = [
+        f"当前时间：{info['datetime']}（{info['weekday']}）",
+        f"当前目录：{info['cwd']}",
+    ]
+    return ToolResult(success=True, output="\n".join(lines))
+
+
 def tool_web_show(
     state: AgentState,
     content: str,
@@ -2190,6 +2207,13 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "display_id": "（可选）目标面板 ID，'*' 表示推送到所有面板（默认）",
             },
             fn=tool_web_notify,
+        ),
+        # ── 环境信息工具 ──────────────────────────────────────────────────────
+        ToolSpec(
+            name="get_env_info",
+            description="获取当前运行环境的基本信息：当前日期与时间、当前工作目录。在任务开始时调用以了解所处环境。",
+            args_schema={},
+            fn=tool_get_env_info,
         ),
     ]
     return {s.name: s for s in specs}

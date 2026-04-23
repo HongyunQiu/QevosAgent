@@ -25,6 +25,54 @@
   --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
 }
 
+/* ── Light Theme ─────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --bg:      #ffffff;
+  --bg2:     #f6f8fa;
+  --bg3:     #eaeef2;
+  --bg4:     #d0d7de;
+  --border:  #d0d7de;
+  --text:    #1f2328;
+  --muted:   #656d76;
+  --blue:    #0969da;
+  --green:   #1a7f37;
+  --purple:  #8250df;
+  --orange:  #bc4c00;
+  --red:     #d1242f;
+  --yellow:  #9a6700;
+  --cyan:    #0550ae;
+}
+[data-theme="light"] .run-item.selected   { background: rgba(9,105,218,0.06); }
+[data-theme="light"] .ftree-file.selected { background: rgba(9,105,218,0.08); }
+[data-theme="light"] .run-pill.live       { border-color: rgba(26,127,55,0.4); }
+[data-theme="light"] .run-pill.launching  { border-color: rgba(188,76,0,0.4); }
+[data-theme="light"] .mobile-menu-btn.open,
+[data-theme="light"] .mobile-panel-btn.open { border-color: rgba(9,105,218,0.4); }
+[data-theme="light"] .cmd-input:focus     { box-shadow: 0 0 0 3px rgba(9,105,218,0.12); }
+[data-theme="light"] .nostop-btn.on       { background: rgba(26,127,55,0.08); box-shadow: 0 0 0 1px rgba(26,127,55,0.2); }
+[data-theme="light"] .ask-banner {
+  background: rgba(255,248,220,0.98);
+  border-color: rgba(154,103,0,0.45);
+  color: var(--yellow);
+}
+[data-theme="light"] .ask-banner.nostop-idle {
+  background: rgba(218,255,228,0.98);
+  border-color: rgba(26,127,55,0.45);
+  color: var(--green);
+}
+[data-theme="light"] .ask-banner.nostop-idle .ask-banner-label { color: rgba(26,127,55,0.7); }
+[data-theme="light"] .mobile-overlay   { background: rgba(0,0,0,0.3); }
+[data-theme="light"] .sidebar          { box-shadow: 4px 0 20px rgba(0,0,0,0.12); }
+[data-theme="light"] .right-panel      { box-shadow: -4px 0 20px rgba(0,0,0,0.12); }
+[data-theme="light"] #toast            { box-shadow: 0 4px 24px rgba(0,0,0,0.15); }
+[data-theme="light"] .logo-icon        { box-shadow: 0 0 10px rgba(9,105,218,0.25); }
+[data-theme="light"] .con-line.stdout  { color: #0550ae; }
+[data-theme="light"] .con-line.stderr  { color: #d1242f; }
+[data-theme="light"] .cmd-send.nostop-idle       { background: linear-gradient(135deg,#145e21,#1a7f37); box-shadow: 0 1px 4px rgba(26,127,55,0.35); }
+[data-theme="light"] .cmd-send.nostop-idle:hover { background: linear-gradient(135deg,#166b26,#229041); }
+[data-theme="light"] .cmd-send.awaiting          { background: linear-gradient(135deg,#7a5700,#9a6700); box-shadow: 0 1px 4px rgba(154,103,0,0.35); }
+[data-theme="light"] .cmd-send.awaiting:hover    { background: linear-gradient(135deg,#8a6300,#b07a00); }
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
 body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 13px; }
@@ -123,6 +171,16 @@ input, textarea { font-family: inherit; font-size: inherit; }
 }
 .ws-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
 .ws-dot.ok { background: var(--green); }
+
+/* ── Theme toggle button ─────────────────────────────────────────────── */
+.theme-btn {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 20px; padding: 3px 9px;
+  font-size: 13px; line-height: 1; transition: border-color 0.15s; cursor: pointer;
+  color: var(--muted);
+}
+.theme-btn:hover { border-color: var(--blue); color: var(--blue); }
 
 /* ── Font size toggle ────────────────────────────────────────────────── */
 .font-size-btn {
@@ -819,6 +877,9 @@ body.large-font .app {
     <button class="font-size-btn" id="fontSizeBtn" onclick="toggleFontSize()" title="切换字号 / Toggle font size">
       <span class="fs-a fs-a-sm">A</span>
       <span class="fs-a fs-a-lg">A</span>
+    </button>
+    <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" title="Toggle light / dark theme">
+      <span id="themeIcon">☀</span>
     </button>
     <div class="topbar-sep"></div>
     <div class="ws-pill">
@@ -2321,6 +2382,25 @@ function toggleFontSize() {
 if (localStorage.getItem('largeFontMode')) {
   document.body.classList.add('large-font');
 }
+
+// ── Theme toggle ──────────────────────────────────────────────────────────
+function toggleTheme() {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  const next = isLight ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  document.getElementById('themeIcon').textContent = next === 'light' ? '☀' : '🌙';
+  localStorage.setItem('dashTheme', next);
+}
+(function () {
+  const t = localStorage.getItem('dashTheme');
+  if (t === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+    document.addEventListener('DOMContentLoaded', function () {
+      const el = document.getElementById('themeIcon');
+      if (el) el.textContent = '☀';
+    });
+  }
+})();
 
 connectWs();
 </script>
