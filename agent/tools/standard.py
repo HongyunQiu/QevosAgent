@@ -229,6 +229,22 @@ def tool_scratchpad_append(state: AgentState, content: str) -> ToolResult:
     return ToolResult(success=True, output=f"scratchpad appended ({len(cur)} chars)")
 
 
+def tool_compress_context(state: AgentState, summary: str = "", use_llm_summary: bool = True) -> ToolResult:
+    """主动压缩上下文，腾出 token 空间。
+
+    压缩前会先生成摘要写入草稿本，保留关键信息再丢弃历史：
+    - summary 非空：直接使用你提供的摘要（最高优先级）
+    - summary 为空且 use_llm_summary=true：自动调用模型对即将丢弃的历史生成结构化摘要
+    - 兜底：纯机械裁剪（信息损失最大，不推荐）
+    """
+    try:
+        from ..core.compression import compress_context
+        msg = compress_context(state, summary=summary, use_llm_summary=use_llm_summary)
+        return ToolResult(success=True, output=msg)
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
 def _find_python_executable() -> str:
     """找到当前可用的 Python 解释器路径。
 
@@ -1815,6 +1831,22 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "path": "文件路径（可选；默认使用环境变量 RAW_MEMORY_PATH，其次 ./raw_memory.ndjson）",
             },
             fn=tool_raw_append,
+        ),
+        ToolSpec(
+            name="compress_context",
+            description=(
+                "主动压缩上下文历史，腾出 token 空间。"
+                "执行长任务、切换阶段、或感知到对话历史很长时使用。"
+                "压缩前会自动调用模型对即将丢弃的历史生成结构化摘要并写入草稿本，"
+                "保留关键发现/进度/决策，丢弃低价值的执行噪声，"
+                "比系统自动兜底压缩（纯机械裁剪）保留更多有效信息。"
+                "也可通过 summary 参数自行提供摘要。"
+            ),
+            args_schema={
+                "summary": "（可选）自行提供的摘要，优先于自动 LLM 摘要，写入草稿本作为替代记录",
+                "use_llm_summary": "（可选，默认 true）是否允许自动调用模型生成摘要；设为 false 则退化为纯机械裁剪",
+            },
+            fn=tool_compress_context,
         ),
         ToolSpec(
             name="scratchpad_get",
