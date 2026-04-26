@@ -286,11 +286,18 @@ def _find_python_executable() -> str:
 def tool_run_python(state: AgentState, code: str) -> ToolResult:
     """在隔离子进程中执行 Python 代码并返回输出。"""
     import os as _os
+    import tempfile
     timeout = int(_os.environ.get("PYTHON_TIMEOUT", "30"))
     python_exec = _find_python_executable()
+    tmp_path = None
     try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(code)
+            tmp_path = f.name
         result = subprocess.run(
-            [python_exec, "-c", code],
+            [python_exec, tmp_path],
             capture_output=True,
             stdin=subprocess.DEVNULL,  # prevent inheriting parent's stdin pipe (dashboard mode)
             text=True,
@@ -316,6 +323,12 @@ def tool_run_python(state: AgentState, code: str) -> ToolResult:
         return ToolResult(success=False, output=None, error=f"执行超时（>{timeout}s）")
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
+    finally:
+        if tmp_path:
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def tool_write_file(state: AgentState, path: str, content: str) -> ToolResult:
