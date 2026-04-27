@@ -1814,6 +1814,45 @@ def tool_web_notify(
     return ToolResult(success=True, output={"message": message, "display_id": display_id})
 
 
+# ── SKILL 工具 ────────────────────────────────────────────────────────────────
+
+_SKILLS_DIR = Path(__file__).parent.parent.parent / "SKILLS"
+
+
+def tool_list_skills(state: AgentState) -> ToolResult:
+    """列出 SKILLS/ 目录中所有可用的技能文件。"""
+    skills_dir = Path(os.environ.get("SKILLS_DIR", str(_SKILLS_DIR)))
+    if not skills_dir.exists():
+        return ToolResult(success=True, output={"skills": [], "skills_dir": str(skills_dir)})
+    try:
+        skills = []
+        for p in sorted(skills_dir.glob("*.md")):
+            size = p.stat().st_size
+            skills.append({"name": p.stem, "filename": p.name, "size_bytes": size})
+        return ToolResult(success=True, output={"skills": skills, "skills_dir": str(skills_dir)})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+def tool_read_skill(state: AgentState, name: str) -> ToolResult:
+    """读取指定技能文件的内容。name 为文件名（不含 .md 后缀）。"""
+    skills_dir = Path(os.environ.get("SKILLS_DIR", str(_SKILLS_DIR)))
+    # 支持带或不带 .md 后缀
+    target = name if name.endswith(".md") else f"{name}.md"
+    fp = skills_dir / target
+    if not fp.exists():
+        available = [p.stem for p in skills_dir.glob("*.md")] if skills_dir.exists() else []
+        return ToolResult(
+            success=False, output=None,
+            error=f"技能文件 '{target}' 不存在。可用技能: {available}"
+        )
+    try:
+        content = fp.read_text(encoding="utf-8")
+        return ToolResult(success=True, output={"name": fp.stem, "content": content})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
 def get_standard_tools() -> dict[str, ToolSpec]:
     """返回标准工具集（直接传给 agent.run()）。"""
     specs = [
@@ -2259,6 +2298,27 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description="获取当前运行环境的基本信息：当前日期与时间、当前工作目录。在任务开始时调用以了解所处环境。",
             args_schema={},
             fn=tool_get_env_info,
+        ),
+        # ── SKILL 工具 ────────────────────────────────────────────────────────
+        ToolSpec(
+            name="list_skills",
+            description=(
+                "列出 SKILLS/ 目录中所有可用的领域技能文件。"
+                "每个技能文件包含特定领域的操作规范和最佳实践。"
+                "任务开始时可调用此工具了解有哪些可用技能规范。"
+            ),
+            args_schema={},
+            fn=tool_list_skills,
+        ),
+        ToolSpec(
+            name="read_skill",
+            description=(
+                "读取指定领域技能文件的完整内容。"
+                "技能文件包含针对该领域的操作规范、工具偏好和输出标准。"
+                "当前任务与某领域高度相关时，读取对应技能文件获取专业指导。"
+            ),
+            args_schema={"name": "技能名称（SKILLS/ 目录下的文件名，不含 .md 后缀，如 'coding'、'data_analysis'）"},
+            fn=tool_read_skill,
         ),
     ]
     return {s.name: s for s in specs}

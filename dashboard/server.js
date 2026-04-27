@@ -32,6 +32,7 @@ module.exports = { serverEvents };
 const PORT       = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
 const RUNS_DIR   = path.resolve(process.env.RUNS_DIR || path.join(__dirname, '..', 'runs'));
 const AGENT_DIR  = path.resolve(process.env.AGENT_DIR || path.join(__dirname, '..'));
+const SKILLS_DIR = path.resolve(process.env.SKILLS_DIR || path.join(AGENT_DIR, 'SKILLS'));
 const PUBLIC     = path.join(__dirname, 'public');
 const POLL_MS    = parseInt(process.env.POLL_MS || '500', 10);
 // Python command — default to 'python' so the calling conda env is used
@@ -384,11 +385,12 @@ function isAgentRunning() {
 
 /**
  * Spawn a new agent process with the given goal string.
- * @param {string}  goal    - Natural language goal for the agent.
- * @param {boolean} nostop  - If true, pass --nostop flag (continuous conversation mode).
+ * @param {string}   goal    - Natural language goal for the agent.
+ * @param {boolean}  nostop  - If true, pass --nostop flag (continuous conversation mode).
+ * @param {string[]} skills  - List of skill names to activate (passed via --skills).
  * Returns { ok, error? }.
  */
-function launchAgent(goal, nostop = false) {
+function launchAgent(goal, nostop = false, skills = []) {
   if (isAgentRunning()) {
     return { ok: false, error: 'An agent process is already running.' };
   }
@@ -400,8 +402,9 @@ function launchAgent(goal, nostop = false) {
   state.launching = true;
   broadcast();
 
-  const nostopLabel = nostop ? ' --nostop' : '';
-  broadcastConsole('system', `▶ Launching: ${PYTHON_CMD} run_goal.py${nostopLabel} "${goal.slice(0, 80)}${goal.length > 80 ? '…' : ''}"`);
+  const nostopLabel  = nostop ? ' --nostop' : '';
+  const skillsLabel  = skills.length ? ` --skills ${skills.join(',')}` : '';
+  broadcastConsole('system', `▶ Launching: ${PYTHON_CMD} run_goal.py${nostopLabel}${skillsLabel} "${goal.slice(0, 80)}${goal.length > 80 ? '…' : ''}"`);
   broadcastConsole('system', `  Working dir: ${AGENT_DIR}`);
 
   // On Windows, PYTHON_CMD may be a multi-word string like "conda run -n myenv python",
@@ -411,6 +414,7 @@ function launchAgent(goal, nostop = false) {
   const cmd      = parts[0];
   const cmdArgs  = [...parts.slice(1), 'run_goal.py'];
   if (nostop) cmdArgs.push('--nostop');
+  if (skills.length) { cmdArgs.push('--skills'); cmdArgs.push(skills.join(',')); }
   cmdArgs.push(goal);
 
   agentProc = spawn(cmd, cmdArgs, {
@@ -549,9 +553,10 @@ const server = http.createServer(async (req, res) => {
   // ── POST /api/launch  ─────────────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/api/launch') {
     try {
-      const { goal, nostop } = JSON.parse(await readBody(req));
+      const { goal, nostop, skills } = JSON.parse(await readBody(req));
       if (!goal || !goal.trim()) { json(400, { error: 'goal is required' }); return; }
-      const result = launchAgent(goal.trim(), !!nostop);
+      const skillList = Array.isArray(skills) ? skills.filter(Boolean) : [];
+      const result = launchAgent(goal.trim(), !!nostop, skillList);
       json(result.ok ? 200 : 409, result);
     } catch (e) { json(500, { error: String(e) }); }
     return;
@@ -665,6 +670,60 @@ const server = http.createServer(async (req, res) => {
       if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
       fs.writeFileSync(path.join(AGENT_DIR, 'ADVISOR.md'), content, 'utf8');
       json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/skills  — list all skill files ───────────────────────────────
+  if (req.method === 'GET' && req.url === '/api/skills') {
+    try {
+      if (!fs.existsSync(SKILLS_DIR)) { json(200, { skills: [] }); return; }
+      const skills = fs.readdirSync(SKILLS_DIR)
+        .filter(f => f.endsWith('.md'))
+        .sort()
+        .map(f => {
+          const fp   = path.join(SKILLS_DIR, f);
+          const stat = fs.statSync(fp);
+          return { name: f.replace(/\.md$/, ''), filename: f, size: stat.size };
+        });
+      json(200, { skills });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/skill/:name  — read a skill file ─────────────────────────────
+  const skillGetMatch = req.url.match(/^\/api\/skill\/([^/?]+)$/);
+  if (req.method === 'GET' && skillGetMatch) {
+    const name = decodeURIComponent(skillGetMatch[1]).replace(/\.md$/, '');
+    const fp   = path.join(SKILLS_DIR, name + '.md');
+    if (!fs.existsSync(fp)) { json(404, { error: 'skill not found' }); return; }
+    json(200, { name, content: readText(fp) || '' });
+    return;
+  }
+
+  // ── POST /api/skill/:name  — create or update a skill file ───────────────
+  const skillPostMatch = req.url.match(/^\/api\/skill\/([^/?]+)$/);
+  if (req.method === 'POST' && skillPostMatch) {
+    try {
+      const name = decodeURIComponent(skillPostMatch[1]).replace(/\.md$/, '');
+      const { content } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      if (!fs.existsSync(SKILLS_DIR)) fs.mkdirSync(SKILLS_DIR, { recursive: true });
+      fs.writeFileSync(path.join(SKILLS_DIR, name + '.md'), content, 'utf8');
+      json(200, { ok: true, name });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── DELETE /api/skill/:name  — delete a skill file ───────────────────────
+  const skillDelMatch = req.url.match(/^\/api\/skill\/([^/?]+)$/);
+  if (req.method === 'DELETE' && skillDelMatch) {
+    try {
+      const name = decodeURIComponent(skillDelMatch[1]).replace(/\.md$/, '');
+      const fp   = path.join(SKILLS_DIR, name + '.md');
+      if (!fs.existsSync(fp)) { json(404, { error: 'skill not found' }); return; }
+      fs.unlinkSync(fp);
+      json(200, { ok: true, name });
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }

@@ -616,6 +616,62 @@ body.large-font .app {
   border-top:2px solid var(--blue);
 }
 
+/* ── Skills pane ─────────────────────────────────────────────────────── */
+.skills-body { flex:1; overflow:hidden; display:flex; }
+.skills-list {
+  width:200px; flex-shrink:0; overflow-y:auto;
+  border-right:1px solid var(--border); padding:6px 0;
+  background:var(--bg2);
+}
+.skills-list-header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:5px 10px 4px; font-size:10px; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.5px; color:var(--muted);
+  border-bottom:1px solid var(--border); margin-bottom:4px;
+}
+.skill-item {
+  display:flex; align-items:center; gap:7px;
+  padding:5px 10px; cursor:pointer; font-size:11.5px;
+  color:var(--text); user-select:none; transition:background 0.1s;
+}
+.skill-item:hover { background:var(--bg3); }
+.skill-item.selected { background:rgba(88,166,255,0.1); color:var(--blue); }
+.skill-item input[type=checkbox] { accent-color:var(--blue); width:13px; height:13px; flex-shrink:0; cursor:pointer; }
+.skill-item-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.skill-item-size { font-size:10px; color:var(--muted); flex-shrink:0; }
+.skills-add-btn {
+  width:100%; background:none; border:none; border-top:1px solid var(--border);
+  color:var(--blue); font-size:11.5px; padding:7px 10px; text-align:left;
+  cursor:pointer; transition:background 0.1s; margin-top:4px;
+}
+.skills-add-btn:hover { background:rgba(88,166,255,0.08); }
+.skill-active-badge {
+  font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px;
+  background:rgba(63,185,80,0.18); color:var(--green); flex-shrink:0;
+}
+.skills-editor { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+.skills-editor-header {
+  display:flex; align-items:center; gap:8px; flex-shrink:0;
+  padding:0 14px; height:36px; border-bottom:1px solid var(--border);
+  background:var(--bg2);
+}
+.skills-editor-name { font-size:12px; font-weight:600; color:var(--cyan); }
+.skills-empty-hint {
+  flex:1; display:flex; align-items:center; justify-content:center;
+  color:var(--muted); font-size:12px; font-style:italic;
+}
+.skills-active-bar {
+  display:flex; align-items:center; gap:6px; flex-shrink:0;
+  padding:4px 14px; border-bottom:1px solid var(--border);
+  background:rgba(63,185,80,0.06); font-size:11px; color:var(--green);
+  min-height:28px; flex-wrap:wrap;
+}
+.skills-active-bar.empty { display:none; }
+.skill-tag {
+  background:rgba(63,185,80,0.15); color:var(--green);
+  padding:1px 7px; border-radius:10px; font-size:10.5px; font-weight:600;
+}
+
 /* ── Run Files pane ──────────────────────────────────────────────────── */
 .files-toolbar {
   display:flex; align-items:center; gap:8px;
@@ -930,6 +986,7 @@ body.large-font .app {
       <span class="count-badge" id="evCount">0</span>
       <div class="ctab-sep"></div>
       <button class="center-tab" id="ctab-agentsmd" onclick="setCenterTab('agentsmd')">AGENTS.md</button>
+      <button class="center-tab" id="ctab-skills" onclick="setCenterTab('skills')">Skills</button>
       <button class="center-tab" id="ctab-advisormd" onclick="setCenterTab('advisormd')">ADVISOR.md</button>
       <button class="center-tab" id="ctab-files" onclick="setCenterTab('files')">Run Files</button>
       <button class="center-tab" id="ctab-memory" onclick="setCenterTab('memory')">Memory</button>
@@ -962,6 +1019,50 @@ body.large-font .app {
       <div class="agents-body">
         <div class="md-render agents-view" id="agentsMdView"></div>
         <textarea class="agents-edit" id="agentsMdEdit" style="display:none" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <!-- Skills pane -->
+    <div class="center-pane" id="cpane-skills">
+      <div class="agents-toolbar">
+        <span class="agents-title">Skills</span>
+        <span class="agents-hint" id="skillsHint"></span>
+        <div class="bar-gap"></div>
+        <button class="icon-btn" onclick="loadSkills()">↺ Refresh</button>
+        <button class="icon-btn" onclick="skillsNewPrompt()">＋ New</button>
+      </div>
+      <!-- active skills bar -->
+      <div class="skills-active-bar empty" id="skillsActiveBar">
+        <span style="color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Activated:</span>
+      </div>
+      <div class="skills-body">
+        <!-- left: list with checkboxes -->
+        <div class="skills-list" id="skillsList">
+          <div class="skills-list-header">
+            <span>Available</span>
+            <span id="skillsSelCount" style="color:var(--blue)"></span>
+          </div>
+          <div id="skillsItems"></div>
+          <button class="skills-add-btn" onclick="skillsNewPrompt()">＋ New skill…</button>
+        </div>
+        <!-- right: editor -->
+        <div class="skills-editor">
+          <div id="skillsEditorEmpty" class="skills-empty-hint">Select a skill to view or edit</div>
+          <div id="skillsEditorPanel" style="display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden">
+            <div class="skills-editor-header">
+              <span class="skills-editor-name" id="skillsEditorName"></span>
+              <div class="bar-gap"></div>
+              <button class="icon-btn" id="skillsEditBtn" onclick="enterSkillEdit()">✎ Edit</button>
+              <button class="icon-btn" id="skillsSaveBtn" style="display:none" onclick="saveSkill()">✓ Save</button>
+              <button class="icon-btn" id="skillsCancelBtn" style="display:none" onclick="cancelSkillEdit()">✕ Cancel</button>
+              <button class="icon-btn" style="color:var(--red)" onclick="deleteSkill()">🗑</button>
+            </div>
+            <div class="agents-body">
+              <div class="md-render agents-view" id="skillsView"></div>
+              <textarea class="agents-edit" id="skillsEdit" style="display:none" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1702,7 +1803,7 @@ async function launchAgent(goal) {
     const res  = await fetch('/api/launch', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ goal: goal.trim(), nostop: gNostop }),
+      body:    JSON.stringify({ goal: goal.trim(), nostop: gNostop, skills: [...gActiveSkills] }),
     });
     const data = await res.json();
     if (res.ok && data.ok) {
@@ -1913,12 +2014,13 @@ let gSelectedFile  = null;
 
 function setCenterTab(name) {
   gCenterTab = name;
-  ['events', 'agentsmd', 'advisormd', 'files', 'memory'].forEach(n => {
+  ['events', 'agentsmd', 'skills', 'advisormd', 'files', 'memory'].forEach(n => {
     document.getElementById('ctab-' + n).className  = 'center-tab' + (n === name ? ' active' : '');
     document.getElementById('cpane-' + n).className = 'center-pane' + (n === name ? ' active' : '');
   });
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
   if (name === 'agentsmd')  loadAgentsMd();
+  if (name === 'skills')    loadSkills();
   if (name === 'advisormd') loadAdvisorMd();
   if (name === 'files')     loadRunFiles();
   if (name === 'memory')    loadMemory();
@@ -1973,6 +2075,187 @@ async function saveAgentsMd() {
       toast('✗ Save failed: ' + (data.error || 'unknown'));
     }
   } catch (e) { toast('✗ Network error: ' + e.message); }
+}
+
+// ── Skills ────────────────────────────────────────────────────────────────
+let gSkills        = [];          // [{name, filename, size}]
+let gActiveSkills  = new Set();   // names checked for activation
+let gSkillCurrent  = null;        // name of skill shown in editor
+let gSkillOrig     = '';          // original content before edit
+
+async function loadSkills() {
+  try {
+    const data = await fetch('/api/skills').then(r => r.json());
+    gSkills = data.skills || [];
+    renderSkillsList();
+    document.getElementById('skillsHint').textContent =
+      gSkills.length + ' skill' + (gSkills.length !== 1 ? 's' : '');
+  } catch (e) {
+    document.getElementById('skillsHint').textContent = 'Error: ' + e.message;
+  }
+}
+
+function renderSkillsList() {
+  const container = document.getElementById('skillsItems');
+  container.innerHTML = '';
+  for (const sk of gSkills) {
+    const row = document.createElement('div');
+    row.className = 'skill-item' + (gSkillCurrent === sk.name ? ' selected' : '');
+    row.dataset.name = sk.name;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = gActiveSkills.has(sk.name);
+    cb.title = 'Activate for next launch';
+    // Stop click from bubbling to the row (which would call openSkill → renderSkillsList,
+    // replacing the DOM before the 'change' event fires and resetting the checkbox state).
+    cb.addEventListener('click', e => e.stopPropagation());
+    cb.addEventListener('change', () => {
+      if (cb.checked) gActiveSkills.add(sk.name); else gActiveSkills.delete(sk.name);
+      renderSkillsActiveBar();
+      renderSkillsSelCount();
+    });
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'skill-item-name';
+    nameSpan.textContent = sk.name;
+
+    const sizeSpan = document.createElement('span');
+    sizeSpan.className = 'skill-item-size';
+    sizeSpan.textContent = sk.size < 1024 ? sk.size + 'B' : (sk.size / 1024).toFixed(1) + 'K';
+
+    row.appendChild(cb);
+    row.appendChild(nameSpan);
+    row.appendChild(sizeSpan);
+    // Clicking the name/row (not the checkbox) opens the skill in the editor.
+    row.addEventListener('click', () => openSkill(sk.name));
+    container.appendChild(row);
+  }
+  renderSkillsSelCount();
+  renderSkillsActiveBar();
+}
+
+function renderSkillsSelCount() {
+  const el = document.getElementById('skillsSelCount');
+  if (el) el.textContent = gActiveSkills.size ? gActiveSkills.size + ' on' : '';
+}
+
+function renderSkillsActiveBar() {
+  const bar = document.getElementById('skillsActiveBar');
+  // Remove old tags (keep the label span)
+  [...bar.querySelectorAll('.skill-tag')].forEach(t => t.remove());
+  if (gActiveSkills.size === 0) {
+    bar.classList.add('empty');
+  } else {
+    bar.classList.remove('empty');
+    for (const n of gActiveSkills) {
+      const tag = document.createElement('span');
+      tag.className = 'skill-tag';
+      tag.textContent = n;
+      bar.appendChild(tag);
+    }
+  }
+}
+
+async function openSkill(name) {
+  gSkillCurrent = name;
+  // re-render list to update selected highlight
+  renderSkillsList();
+  const panel = document.getElementById('skillsEditorPanel');
+  const empty = document.getElementById('skillsEditorEmpty');
+  panel.style.display = 'flex';
+  empty.style.display = 'none';
+  document.getElementById('skillsEditorName').textContent = name + '.md';
+  cancelSkillEdit();
+  try {
+    const data = await fetch('/api/skill/' + encodeURIComponent(name)).then(r => r.json());
+    gSkillOrig = data.content || '';
+    document.getElementById('skillsView').innerHTML =
+      typeof marked !== 'undefined' ? marked.parse(gSkillOrig) : `<pre>${gSkillOrig}</pre>`;
+  } catch (e) {
+    document.getElementById('skillsView').textContent = 'Error: ' + e.message;
+  }
+}
+
+function enterSkillEdit() {
+  document.getElementById('skillsView').style.display  = 'none';
+  document.getElementById('skillsEdit').style.display  = '';
+  document.getElementById('skillsEditBtn').style.display   = 'none';
+  document.getElementById('skillsSaveBtn').style.display   = '';
+  document.getElementById('skillsCancelBtn').style.display = '';
+  document.getElementById('skillsEdit').value = gSkillOrig;
+  document.getElementById('skillsEdit').focus();
+}
+
+function cancelSkillEdit() {
+  document.getElementById('skillsView').style.display  = '';
+  document.getElementById('skillsEdit').style.display  = 'none';
+  document.getElementById('skillsEditBtn').style.display   = '';
+  document.getElementById('skillsSaveBtn').style.display   = 'none';
+  document.getElementById('skillsCancelBtn').style.display = 'none';
+}
+
+async function saveSkill() {
+  if (!gSkillCurrent) return;
+  const content = document.getElementById('skillsEdit').value;
+  try {
+    const res  = await fetch('/api/skill/' + encodeURIComponent(gSkillCurrent), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      gSkillOrig = content;
+      document.getElementById('skillsView').innerHTML =
+        typeof marked !== 'undefined' ? marked.parse(content) : `<pre>${content}</pre>`;
+      cancelSkillEdit();
+      toast('✓ Skill saved: ' + gSkillCurrent);
+      loadSkills();
+    } else {
+      toast('✗ Save failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ ' + e.message); }
+}
+
+async function deleteSkill() {
+  if (!gSkillCurrent) return;
+  if (!confirm(`Delete skill "${gSkillCurrent}"?`)) return;
+  try {
+    const res = await fetch('/api/skill/' + encodeURIComponent(gSkillCurrent), { method: 'DELETE' });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      gActiveSkills.delete(gSkillCurrent);
+      gSkillCurrent = null;
+      document.getElementById('skillsEditorPanel').style.display = 'none';
+      document.getElementById('skillsEditorEmpty').style.display = '';
+      toast('Skill deleted');
+      loadSkills();
+    } else {
+      toast('✗ Delete failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ ' + e.message); }
+}
+
+async function skillsNewPrompt() {
+  const name = prompt('New skill name (e.g. "devops", "writing"):');
+  if (!name || !name.trim()) return;
+  const safeName = name.trim().replace(/[^a-zA-Z0-9_\-]/g, '_');
+  const defaultContent = `# SKILL: ${safeName}\n\n适用领域：\n\n## 规范\n\n`;
+  try {
+    const res  = await fetch('/api/skill/' + encodeURIComponent(safeName), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: defaultContent }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      await loadSkills();
+      await openSkill(safeName);
+      enterSkillEdit();
+      toast('✓ Skill created: ' + safeName);
+    } else {
+      toast('✗ Create failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ ' + e.message); }
 }
 
 // ── ADVISOR.md ────────────────────────────────────────────────────────────

@@ -199,9 +199,17 @@ def main():
         "--nostop", action="store_true",
         help="完成任务后不退出，持续等待下一个目标（持续对话模式）",
     )
+    _parser.add_argument(
+        "--skills", default="",
+        help="逗号分隔的技能名列表（如 coding,data_analysis），或 'all' 加载全部技能",
+    )
     _pargs = _parser.parse_args()
     goal   = " ".join(_pargs.goal).strip()
     nostop = _pargs.nostop
+    # --skills 优先于 AGENT_SKILLS 环境变量
+    _skills_arg = _pargs.skills.strip() or os.environ.get("AGENT_SKILLS", "").strip()
+    if _skills_arg:
+        os.environ["AGENT_SKILLS"] = _skills_arg
     # Expose the raw user goal (without injected prefixes) for scratchpad seeding.
     os.environ["USER_GOAL"] = goal
     if not goal:
@@ -311,6 +319,40 @@ def main():
         )
     else:
         prefix = prefix + f"提示：本次运行 RUN_DIR={run_dir}。建议将临时/中间产物写入 {run_dir}/artifacts/。\n\n"
+
+    # ── (5) 加载领域技能（SKILLS/*.md）────────────────────────────────────────
+    _skills_env = os.environ.get("AGENT_SKILLS", "").strip()
+    if _skills_env:
+        skills_dir = Path("./SKILLS")
+        selected_skills: list[str] = []
+        if _skills_env.lower() == "all":
+            selected_skills = sorted(p.stem for p in skills_dir.glob("*.md")) if skills_dir.exists() else []
+        else:
+            selected_skills = [s.strip() for s in _skills_env.split(",") if s.strip()]
+
+        loaded_skills: list[str] = []
+        skill_blocks: list[str] = []
+        for skill_name in selected_skills:
+            skill_path = skills_dir / f"{skill_name}.md"
+            if skill_path.exists():
+                try:
+                    skill_content = skill_path.read_text(encoding="utf-8").strip()
+                    skill_blocks.append(skill_content)
+                    loaded_skills.append(skill_name)
+                except Exception as _se:
+                    print(f"[run_goal] skill load warning ({skill_name}): {_se}")
+            else:
+                print(f"[run_goal] skill not found: {skill_name}")
+
+        if skill_blocks:
+            prefix = (
+                prefix
+                + "【领域技能】以下是本次任务激活的领域专业规范，请遵守：\n\n"
+                + "\n\n---\n\n".join(skill_blocks)
+                + "\n\n"
+            )
+            print(f"[run_goal] skills loaded: {loaded_skills}")
+        initial_meta["_active_skills"] = loaded_skills
 
     full_goal = prefix + goal
 
