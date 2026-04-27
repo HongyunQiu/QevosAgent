@@ -120,14 +120,13 @@ jobs:
         with:
           # 上传所有文件（含原版本号文件 + 固定名文件）
           files: artifacts/**/*
-          generate_release_notes: true
+          generate_release_notes: false
           fail_on_unmatched_files: false
           body: |
             > **macOS 用户注意**：本应用暂未经 Apple 公证，首次打开时 Gatekeeper 可能提示"无法验证开发者"。
-            > 请在终端执行以下命令后再启动：
-            > ```
-            > xattr -cr /Applications/QevosAgent.app
-            > ```
-            > 或在"系统设置 → 隐私与安全性"中点击"仍要打开"。
+            > **解决方法（二选一）**：
+            > 1. 在 Finder 中**右键点击** QevosAgent.app → **"打开"** → 弹窗中再点"打开"
+            > 2. 在终端执行：`xattr -cr /Applications/QevosAgent.app`
+            > 之后双击即可正常启动，无需重复操作。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
