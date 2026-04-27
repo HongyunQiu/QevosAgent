@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>QevosAgent — 设置</title>
+  <link rel="icon" type="image/png" href="assets/LOGO_256.png">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -36,12 +37,15 @@
       margin-bottom: 28px;
     }
     .logo {
-      font-size: 20px;
-      font-weight: 700;
-      letter-spacing: 0.5px;
       margin-bottom: 6px;
+      display: flex;
+      justify-content: center;
     }
-    .logo span { color: #388bfd; }
+    .logo img {
+      width: 56px;
+      height: 56px;
+      border-radius: 12px;
+    }
     .subtitle {
       font-size: 13px;
       color: #7d8590;
@@ -188,7 +192,7 @@
   <div class="card">
 
     <div class="header">
-      <div class="logo">simple<span>Agent</span></div>
+      <div class="logo"><img src="assets/LOGO_256.png" alt="QevosAgent"></div>
       <div class="subtitle">首次使用需要配置 LLM 服务连接</div>
     </div>
 

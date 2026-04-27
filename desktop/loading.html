@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>QevosAgent</title>
+  <link rel="icon" type="image/png" href="assets/LOGO_256.png">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -21,15 +22,10 @@
       -webkit-app-region: drag; /* allow dragging the window from this area */
     }
 
-    .logo {
-      font-size: 22px;
-      font-weight: 700;
-      color: #e6edf3;
-      letter-spacing: 1px;
-    }
-
-    .logo span {
-      color: #388bfd;
+    .logo img {
+      width: 64px;
+      height: 64px;
+      border-radius: 14px;
     }
 
     /* Three-dot pulse animation */
@@ -97,7 +93,7 @@
   </style>
 </head>
 <body>
-  <div class="logo">Qevos<span>Agent</span></div>
+  <div class="logo"><img src="assets/LOGO_256.png" alt="QevosAgent"></div>
 
   <div class="dots" id="dots">
     <span></span><span></span><span></span>

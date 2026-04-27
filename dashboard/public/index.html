@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/png" href="/LOGO_256.png">
 <title>QevosAgent Dashboard</title>
 <style>
 /* ── Variables ───────────────────────────────────────────────────────── */
@@ -115,11 +116,9 @@ input, textarea { font-family: inherit; font-size: inherit; }
 
 .logo-icon {
   width: 28px; height: 28px;
-  background: linear-gradient(135deg, #1f6feb 0%, #8b5cf6 100%);
   border-radius: 7px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 14px; flex-shrink: 0;
-  box-shadow: 0 0 10px rgba(31,111,235,0.4);
+  flex-shrink: 0;
+  object-fit: cover;
 }
 
 .topbar-sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
@@ -864,7 +863,7 @@ body.large-font .app {
   <header class="topbar">
     <button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleMobileSidebar()" title="Sidebar">☰</button>
     <div class="logo">
-      <div class="logo-icon">⚡</div>
+      <img class="logo-icon" src="/LOGO_256.png" alt="QevosAgent">
       QevosAgent
 </div>
     <div class="topbar-sep"></div>

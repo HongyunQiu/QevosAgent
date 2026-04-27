@@ -58,7 +58,7 @@ jobs:
       - name: Generate Windows icon
         if: runner.os == 'Windows'
         shell: bash
-        run: magick assets/QevosLogo.png -define icon:auto-resize=256,128,64,48,32,16 desktop/build/icon.ico
+        run: magick assets/LOGO_256.png -define icon:auto-resize=256,128,64,48,32,16 desktop/build/icon.ico
 
       # macOS：PNG → ICNS（通过 iconset）
       - name: Generate macOS icon
@@ -66,9 +66,9 @@ jobs:
         run: |
           mkdir -p /tmp/icon.iconset
           for size in 16 32 64 128 256 512; do
-            sips -z $size $size assets/QevosLogo.png --out /tmp/icon.iconset/icon_${size}x${size}.png
+            sips -z $size $size assets/LOGO_256.png --out /tmp/icon.iconset/icon_${size}x${size}.png
           done
-          sips -z 1024 1024 assets/QevosLogo.png --out /tmp/icon.iconset/icon_512x512@2x.png
+          sips -z 1024 1024 assets/LOGO_256.png --out /tmp/icon.iconset/icon_512x512@2x.png
           iconutil -c icns /tmp/icon.iconset -o desktop/build/icon.icns
 
       # Linux：PNG 直接缩放到 256x256
@@ -76,13 +76,14 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install -y imagemagick
-          convert assets/QevosLogo.png -resize 256x256 desktop/build/icon.png
+          convert assets/LOGO_256.png -resize 256x256 desktop/build/icon.png
 
       - name: Build Electron app
         working-directory: desktop
         run: ${{ matrix.build_cmd }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_LINK: ""
           # 禁止 electron-builder 自行发布，由 release job 统一处理
           EP_DRAFT: false
           PUBLISH_FOR_PULL_REQUEST: false
@@ -121,5 +122,12 @@ jobs:
           files: artifacts/**/*
           generate_release_notes: true
           fail_on_unmatched_files: false
+          body: |
+            > **macOS 用户注意**：本应用暂未经 Apple 公证，首次打开时 Gatekeeper 可能提示"无法验证开发者"。
+            > 请在终端执行以下命令后再启动：
+            > ```
+            > xattr -cr /Applications/QevosAgent.app
+            > ```
+            > 或在"系统设置 → 隐私与安全性"中点击"仍要打开"。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
