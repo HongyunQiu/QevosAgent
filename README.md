@@ -61,7 +61,7 @@ QevosAgent 不是只给程序员用的工具：
 
 
 <p align="center">
-  <img src="./assets/simpleAgent_dashboard.gifg" alt="QevosAgent Demo" width="100%" />
+  <img src="./assets/simpleAgent_dashboard.gif" alt="QevosAgent Demo" width="100%" />
 </p>
 
 ### 源码安装
