@@ -60,7 +60,9 @@ QevosAgent 不是只给程序员用的工具：
 | 🐧 **Linux**               | [下载 Linux AppImage](https://github.com/HongyunQiu/QevosAgent/releases/latest) |
 
 
-
+<p align="center">
+  <img src="./assets/simpleAgent_dashboard.gifg" alt="QevosAgent Demo" width="100%" />
+</p>
 
 ### 源码安装
 
