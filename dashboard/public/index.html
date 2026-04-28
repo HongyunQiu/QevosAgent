@@ -255,7 +255,7 @@ body.large-font .app {
 .run-item.selected .run-id { color: var(--blue); }
 .run-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
 .run-dot.active { background: var(--green); }
-.run-id { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.run-id { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-tag { margin-left: auto; font-size: 10px; color: var(--muted); background: var(--bg4); border-radius: 3px; padding: 1px 5px; }
 
 /* ── Events panel ────────────────────────────────────────────────────── */
@@ -1384,9 +1384,13 @@ function renderRunsList(runs, activeId) {
     const isLive     = isActive && !!(gState && gState.agentAlive);
     const isSelected = r === activeId;
     const tag        = isActive ? (isLive ? '<span class="run-tag">live</span>' : '<span class="run-tag">latest</span>') : '';
+    const summaries  = (gState && gState.runSummaries) || {};
+    const summary    = summaries[r];
+    const label      = summary || fmtRunId(r);
+    const timestamp  = fmtRunId(r);
     return `<div class="run-item ${isSelected ? 'selected' : ''}" onclick="selectRun('${r}')">
       <div class="run-dot ${isLive ? 'active' : ''}"></div>
-      <span class="run-id">${fmtRunId(r)}</span>
+      <span class="run-id" title="${summary ? timestamp + ' — ' + esc(summary) : timestamp}">${esc(label)}</span>
       ${tag}
     </div>`;
   }).join('');

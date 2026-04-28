@@ -64,16 +64,17 @@ let isLaunching  = false;  // true from spawn() until first stdout or error
 // ── Shared state (broadcast to all WS clients) ────────────────────────────
 
 let state = {
-  runs:        [],
-  activeRunId: null,
-  status:      null,
-  scratchpad:  '',
-  events:      [],
-  meta:        {},
-  launching:   false,   // agent is being spawned, not yet writing runs/
-  agentPid:    null,
-  agentAlive:  false,   // true iff the agent process is confirmed running right now
-  webDisplays: {},      // { display_id: { content_type, title, content, updated_at } }
+  runs:         [],
+  runSummaries: {},     // { runId: summaryString } — short label for each run
+  activeRunId:  null,
+  status:       null,
+  scratchpad:   '',
+  events:       [],
+  meta:         {},
+  launching:    false,  // agent is being spawned, not yet writing runs/
+  agentPid:     null,
+  agentAlive:   false,  // true iff the agent process is confirmed running right now
+  webDisplays:  {},     // { display_id: { content_type, title, content, updated_at } }
 };
 
 let _linesProcessed        = 0;
@@ -243,6 +244,13 @@ function poll() {
 
   if (JSON.stringify(runs) !== JSON.stringify(state.runs)) {
     state.runs = runs;
+    // Load summary for any run not yet cached
+    for (const rid of runs) {
+      if (!(rid in state.runSummaries)) {
+        const s = readJSON(path.join(RUNS_DIR, rid, 'status.json'));
+        state.runSummaries[rid] = (s && s.summary) || '';
+      }
+    }
     dirty = true;
   }
 
@@ -271,7 +279,11 @@ function poll() {
     const dir = path.join(RUNS_DIR, state.activeRunId);
     if (changed(path.join(dir, 'status.json'))) {
       const s = readJSON(path.join(dir, 'status.json'));
-      if (s) { state.status = s; dirty = true; }
+      if (s) {
+        state.status = s;
+        state.runSummaries[state.activeRunId] = s.summary || '';
+        dirty = true;
+      }
     }
     if (changed(path.join(dir, 'scratchpad.md'))) {
       const s = readText(path.join(dir, 'scratchpad.md'));

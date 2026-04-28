@@ -20,6 +20,17 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _make_summary(text: str, max_len: int = 40) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    for sep in ("。", "？", "！", "\n", ".", "?", "!"):
+        idx = text.find(sep)
+        if 0 < idx < max_len:
+            return text[: idx + 1]
+    return text[:max_len] + ("…" if len(text) > max_len else "")
+
+
 def _write_text_atomic(path: Path, content: str) -> None:
     # Resolve to absolute path to avoid abs->relative rename failure on Windows
     # (tempfile always returns an absolute tmp.name via os.path.abspath internally)
@@ -77,6 +88,7 @@ class RunPersistence:
         state=None,
         status: str = "running",
         error: Optional[str] = None,
+        summary_override: Optional[str] = None,
     ) -> dict:
         goal = ""
         iteration = 0
@@ -84,10 +96,13 @@ class RunPersistence:
             goal = getattr(state, "goal", "") or ""
             iteration = int(getattr(state, "iteration", 0) or 0)
 
+        summary = summary_override if summary_override is not None else _make_summary(goal)
+
         return {
             "status": status,
             "run_id": self.run_dir.name,
             "goal": goal,
+            "summary": summary,
             "started_at": self.started_at,
             "updated_at": _utc_now(),
             "iteration": iteration,
@@ -171,7 +186,7 @@ class RunPersistence:
     def save_scratchpad(self, text: str) -> None:
         _write_text_atomic(self.scratchpad_path, text or "")
 
-    def checkpoint(self, state, status: str = "running", error: Optional[str] = None) -> None:
+    def checkpoint(self, state, status: str = "running", error: Optional[str] = None, summary_override: Optional[str] = None) -> None:
         if state is not None:
             meta = dict(getattr(state, "meta", {}) or {})
             # 移除不可 JSON 序列化的内部对象（如 AsyncJobManager、LLM 实例）
@@ -183,7 +198,7 @@ class RunPersistence:
                 "iteration": int(getattr(state, "iteration", 0) or 0),
             }
             _write_json_atomic(self.meta_path, meta)
-        _write_json_atomic(self.status_path, self._status_payload(state=state, status=status, error=error))
+        _write_json_atomic(self.status_path, self._status_payload(state=state, status=status, error=error, summary_override=summary_override))
 
     def save_final_answer(self, text: str) -> None:
         _write_text_atomic(self.final_answer_path, text or "")
@@ -312,7 +327,8 @@ class RunPersistence:
             "context_window": None,
         }
 
-        self.checkpoint(state, status=status, error=error)
+        completion_summary = _make_summary(final_answer) if final_answer else None
+        self.checkpoint(state, status=status, error=error, summary_override=completion_summary)
         self._write_execution_summary(state, status, diagnostics, error)
         self._write_issues(state, diagnostics, error)
         self._write_reflection(diagnostics, error)
