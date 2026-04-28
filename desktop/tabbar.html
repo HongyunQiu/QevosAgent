@@ -113,15 +113,41 @@
       -webkit-app-region: no-drag;
     }
     #btn-settings:hover { color: #e6edf3; }
+
+    /* ── Update button ── */
+    #btn-update {
+      display: none;
+      flex-shrink: 0;
+      height: 100%;
+      padding: 0 8px;
+      border: none;
+      background: transparent;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      align-items: center;
+      gap: 3px;
+      white-space: nowrap;
+      transition: opacity 0.12s;
+      -webkit-app-region: no-drag;
+    }
+    #btn-update.has-update       { color: #3fb950; display: flex; }
+    #btn-update.needs-installer  { color: #d29922; display: flex; }
+    #btn-update.downloading      { color: #58a6ff; display: flex; cursor: default; }
+    #btn-update.done             { color: #3fb950; display: flex; }
+    #btn-update:not(.downloading):hover { opacity: 0.75; }
   </style>
 </head>
 <body>
   <div id="tabs"></div>
   <div class="spacer"></div>
   <button id="btn-settings" title="设置">⚙</button>
+  <button id="btn-update" title=""></button>
 
   <script>
-    const tabsEl = document.getElementById('tabs');
+    const tabsEl   = document.getElementById('tabs');
+    const btnUpdate = document.getElementById('btn-update');
+    let pendingVersion = null;
 
     function render({ tabs, activeId }) {
       tabsEl.innerHTML = '';
@@ -157,6 +183,49 @@
     document.getElementById('btn-settings').addEventListener('click', () =>
       window.tabAPI.settings()
     );
+
+    // ── Update button state machine ──────────────────────────────────────────
+
+    let isContentUpdate = false;
+
+    function setUpdateState(state, label, tooltip) {
+      btnUpdate.className = state;
+      btnUpdate.textContent = label;
+      btnUpdate.title = tooltip;
+    }
+
+    window.tabAPI.onUpdateAvailable(({ current, latest, isContentUpdate: isc }) => {
+      pendingVersion  = latest;
+      isContentUpdate = isc;
+      if (isc) {
+        setUpdateState('has-update', `↑ ${latest}`, `当前 ${current}，点击静默更新至 ${latest}`);
+      } else {
+        setUpdateState('needs-installer', `↑ ${latest}`, `当前 ${current}，需下载新安装包，点击前往`);
+      }
+    });
+
+    window.tabAPI.onUpdateProgress(({ percent, file }) => {
+      setUpdateState('downloading', `↓ ${percent}%`, `正在下载: ${file}`);
+    });
+
+    btnUpdate.addEventListener('click', async () => {
+      if (btnUpdate.classList.contains('done')) {
+        window.tabAPI.relaunch();
+        return;
+      }
+      if (btnUpdate.classList.contains('needs-installer')) {
+        window.tabAPI.openReleases();
+        return;
+      }
+      if (!btnUpdate.classList.contains('has-update')) return;
+      setUpdateState('downloading', '↓ 0%', '正在准备下载...');
+      const result = await window.tabAPI.startUpdate();
+      if (result.ok) {
+        setUpdateState('done', '✓ 重启应用', '更新已就绪，点击重启');
+      } else {
+        setUpdateState('has-update', `↑ ${pendingVersion}`, `更新失败: ${result.error}，点击重试`);
+      }
+    });
   </script>
 </body>
 </html>

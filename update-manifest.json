@@ -1,0 +1,12 @@
+{
+  "version": "v0.1.6",
+  "files": [
+    "AGENTS.md",
+    "ADVISOR.md",
+    "SKILLS/coding.md",
+    "SKILLS/data_analysis.md",
+    "SKILLS/web_research.md",
+    "SKILLS/tscircuit.md",
+    "run_goal.py"
+  ]
+}
