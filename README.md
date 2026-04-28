@@ -2,7 +2,7 @@
   <img src="./assets/QevosAgent.png" alt="QevosAgent banner" width="100%" />
 </p>
 
-# QevosAgent
+<h1 align="center">QevosAgent</h1>
 
 [![Stars](https://img.shields.io/github/stars/HongyunQiu/QevosAgent?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent/stargazers)
 [![Last Commit](https://img.shields.io/github/last-commit/HongyunQiu/QevosAgent?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent/commits/main)
@@ -11,7 +11,7 @@
 [![Web Dashboard](https://img.shields.io/badge/Web-Dashboard-0A7CFF?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
 [![Tool Repair](https://img.shields.io/badge/Tool-Repair-orange?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
 
-🇺🇸 **English** (EN) • 🇨🇳 **中文** (ZH)
+🇺🇸 [**English** (EN)](#english) • 🇨🇳 [**中文** (ZH)](#中文)
 
 ---
 
