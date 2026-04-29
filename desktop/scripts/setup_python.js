@@ -41,6 +41,7 @@ const FORCE          = process.argv.includes('--force');
 const APP_COPY_MAP = [
   { src: path.join(REPO_ROOT, 'agent'),       dest: path.join(VENDOR_APP_DIR, 'agent') },
   { src: path.join(REPO_ROOT, 'dashboard'),   dest: path.join(VENDOR_APP_DIR, 'dashboard') },
+  { src: path.join(REPO_ROOT, 'SKILLS'),      dest: path.join(VENDOR_APP_DIR, 'SKILLS') },
   { src: path.join(REPO_ROOT, 'run_goal.py'), dest: path.join(VENDOR_APP_DIR, 'run_goal.py') },
   { src: path.join(REPO_ROOT, 'AGENTS.md'),   dest: path.join(VENDOR_APP_DIR, 'AGENTS.md') },
   { src: path.join(REPO_ROOT, 'ADVISOR.md'),  dest: path.join(VENDOR_APP_DIR, 'ADVISOR.md') },

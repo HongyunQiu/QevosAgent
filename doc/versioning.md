@@ -63,21 +63,33 @@ v<major>.<minor>.<patch>
 
 ## 可增量更新的文件范围
 
-`update-manifest.json` 的 `files` 列表决定哪些文件走增量通道，当前包含：
+`update-manifest.json` 的 `files` 列表决定哪些文件走增量通道。所列文件必须同时满足：
+1. 已通过 `desktop/scripts/setup_python.js` 的 `APP_COPY_MAP` 拷贝进 `vendor/app/`
+2. 属于纯内容文件，变更不需要重新安装 Python 依赖或修改 Electron 主进程
+
+当前包含：
 
 ```
-AGENTS.md
-ADVISOR.md
-SKILLS/coding.md
-SKILLS/data_analysis.md
-SKILLS/web_research.md
-SKILLS/tscircuit.md
-run_goal.py
+AGENTS.md                       # Agent 运行指令
+ADVISOR.md                      # Advisor 角色指令
+SKILLS/coding.md                # 编程技能
+SKILLS/data_analysis.md         # 数据分析技能
+SKILLS/web_research.md          # 网络研究技能
+SKILLS/tscircuit.md             # tscircuit 技能
+run_goal.py                     # Agent 主入口
+agent/core/llm.py               # LLM 接口
+agent/core/loop.py              # 执行主循环
+agent/core/compression.py       # 上下文压缩
+agent/core/advisor.py           # Advisor 逻辑
+agent/core/executor.py          # 工具执行器
+agent/core/async_manager.py     # 异步管理
+agent/core/types_def.py         # 类型定义
+agent/tools/standard.py         # 标准工具集
+agent/runtime/persistence.py    # 运行时持久化
+agent/runtime/user_interrupt.py # 用户中断处理
 ```
 
-**可以加入列表的文件**：Agent 指令文件、技能文件、Python 入口脚本等纯内容文件。
-
-**不应加入列表的文件**：`desktop/main.js`、`desktop/preload.js`、`requirements.txt`（依赖变更需重装）、`.env`（用户配置）、用户自定义工具文件。
+**不应加入列表的文件**：`desktop/main.js`、`desktop/preload.js`（Electron 主进程）、`requirements.txt`（pip 依赖变更需重新打包）、`dashboard/`（Node.js 服务端，改动较复杂）、`.env`（用户配置）。
 
 ---
 
