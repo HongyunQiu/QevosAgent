@@ -17,6 +17,9 @@
     "agent/core/types_def.py",
     "agent/tools/standard.py",
     "agent/runtime/persistence.py",
-    "agent/runtime/user_interrupt.py"
+    "agent/runtime/user_interrupt.py",
+    "dashboard/server.js",
+    "dashboard/public/index.html",
+    "dashboard/public/view.html"
   ]
 }

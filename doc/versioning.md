@@ -87,9 +87,12 @@ agent/core/types_def.py         # 类型定义
 agent/tools/standard.py         # 标准工具集
 agent/runtime/persistence.py    # 运行时持久化
 agent/runtime/user_interrupt.py # 用户中断处理
+dashboard/server.js             # Dashboard Node.js 服务端
+dashboard/public/index.html     # Dashboard 主界面前端
+dashboard/public/view.html      # Dashboard 子视图前端
 ```
 
-**不应加入列表的文件**：`desktop/main.js`、`desktop/preload.js`（Electron 主进程）、`requirements.txt`（pip 依赖变更需重新打包）、`dashboard/`（Node.js 服务端，改动较复杂）、`.env`（用户配置）。
+**不应加入列表的文件**：`desktop/main.js`、`desktop/preload.js`（Electron 主进程）、`requirements.txt`（pip 依赖变更需重新打包）、`dashboard/node_modules/`（运行时无法 npm install）、`dashboard/package.json`（同上）、`.env`（用户配置）。
 
 ---
 
