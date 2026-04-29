@@ -96,6 +96,34 @@ dashboard/public/view.html      # Dashboard 子视图前端
 
 ---
 
+## 依赖约束：增量更新的边界
+
+增量更新只能替换代码文件，**无法安装新的运行时依赖**。违反此约束会导致用户机器在更新后运行报错。
+
+### Node.js（dashboard）
+
+`dashboard/node_modules/` 在打包时已固化进安装包，运行时没有 `npm install` 环境。
+
+| 情形 | 能否增量更新 |
+|------|-------------|
+| 修改 `server.js` / `index.html`，只使用已有依赖 | ✅ 可以 |
+| `server.js` 新增 `require('some-new-pkg')` | ❌ 必须打新安装包 |
+
+### Python（agent）
+
+`vendor/python/` 中的包在构建时由 `requirements.txt` 通过 `pip install` 安装，运行时无法追加。
+
+| 情形 | 能否增量更新 |
+|------|-------------|
+| 修改 `agent/` 下的 `.py` 文件，只使用已安装的包 | ✅ 可以 |
+| 新增 `import some_new_library`（不在 requirements.txt）| ❌ 必须更新 `requirements.txt` 并打新安装包 |
+
+### 发版判断规则补充
+
+> 如果本次改动**新增了任何 `require()` 或 `import`**，先确认对应包是否已在安装包中。若不在，该次变更必须走 **minor/major 安装包发布**，而不能只推 patch。
+
+---
+
 ## 版本初始化机制
 
 用户首次安装后，增量更新系统会以安装包内嵌的 `app.getVersion()` 作为基准版本写入 `vendor/app/.content_version`，避免将安装包已包含的文件重复下载。
