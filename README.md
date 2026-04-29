@@ -6,10 +6,13 @@
 
 [![Stars](https://img.shields.io/github/stars/HongyunQiu/QevosAgent?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent/stargazers)
 [![Last Commit](https://img.shields.io/github/last-commit/HongyunQiu/QevosAgent?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent/commits/main)
+[![License](https://img.shields.io/github/license/HongyunQiu/QevosAgent?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent/blob/main/LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent/releases/latest)
 [![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-412991?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
 [![Anthropic](https://img.shields.io/badge/Anthropic-Supported-black?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
 [![Web Dashboard](https://img.shields.io/badge/Web-Dashboard-0A7CFF?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
 [![Tool Repair](https://img.shields.io/badge/Tool-Repair-orange?style=for-the-badge)](https://github.com/HongyunQiu/QevosAgent)
+
 
 🇺🇸 [**English** (EN)](#english) • 🇨🇳 [**中文** (ZH)](#中文)
 

@@ -31,6 +31,32 @@ def _make_summary(text: str, max_len: int = 40) -> str:
     return text[:max_len] + ("…" if len(text) > max_len else "")
 
 
+_COMPLETION_PREFIXES = (
+    "已成功完成了", "已成功地完成了", "已成功完成", "已成功地完成",
+    "成功完成了", "成功完成",
+    "已经完成了", "已经完成",
+    "已完成了", "已完成",
+    "完成了",
+    "已成功", "成功地",
+)
+
+def _make_completion_summary(text: str, max_len: int = 40) -> str:
+    """取 final_answer 第一句并剥离冗余完成前缀，避免列表里每条都以"已完成"开头。"""
+    if not text:
+        return ""
+    # 先取第一句（放宽到 200 字，再做二次截断）
+    first = _make_summary(text.strip(), max_len=200)
+    # 剥离冗余前缀（按长度降序匹配，避免短前缀遮蔽长前缀）
+    for prefix in _COMPLETION_PREFIXES:
+        if first.startswith(prefix):
+            first = first[len(prefix):].lstrip(" \t，,：:")
+            break
+    first = first.strip()
+    if not first:
+        return _make_summary(text, max_len)
+    return first[:max_len] + ("…" if len(first) > max_len else "")
+
+
 def _write_text_atomic(path: Path, content: str) -> None:
     # Resolve to absolute path to avoid abs->relative rename failure on Windows
     # (tempfile always returns an absolute tmp.name via os.path.abspath internally)
@@ -96,7 +122,8 @@ class RunPersistence:
             goal = getattr(state, "goal", "") or ""
             iteration = int(getattr(state, "iteration", 0) or 0)
 
-        summary = summary_override if summary_override is not None else _make_summary(goal)
+        user_goal = (getattr(state, "meta", {}) or {}).get("_user_goal") if state is not None else None
+        summary = summary_override if summary_override is not None else _make_summary(user_goal or goal)
 
         return {
             "status": status,
@@ -327,7 +354,7 @@ class RunPersistence:
             "context_window": None,
         }
 
-        completion_summary = _make_summary(final_answer) if final_answer else None
+        completion_summary = _make_completion_summary(final_answer) if final_answer else None
         self.checkpoint(state, status=status, error=error, summary_override=completion_summary)
         self._write_execution_summary(state, status, diagnostics, error)
         self._write_issues(state, diagnostics, error)

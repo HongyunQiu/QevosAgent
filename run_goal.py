@@ -276,6 +276,7 @@ def main():
     initial_meta["_episodic_path"] = str(episodic_path)
     initial_meta["_concept_path"]  = str(concept_path)
     initial_meta["nostop"]         = nostop  # expose mode flag to agent state
+    initial_meta["_user_goal"]     = goal    # raw user input, used for run summary display
 
     # ── (4) 预加载高级指导员系统提示词 ────────────────────────────────────────
     advisor_system = ""
@@ -562,6 +563,7 @@ def main():
             state.short_term.clear()
             state.meta["scratchpad"]     = f"任务描述:\n{_raw_next_goal}\n"
             state.meta["_task_desc"]     = _raw_next_goal
+            state.meta["_user_goal"]     = _raw_next_goal
             state.meta.pop("_loop_warn_counts", None)
             state.meta.pop("_call_sig_history", None)
             state.iteration = 0   # 重置迭代计数，新一轮可使用完整 max_iterations
