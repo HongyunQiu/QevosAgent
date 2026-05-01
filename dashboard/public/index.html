@@ -777,6 +777,46 @@ body.large-font .app {
 }
 .jsonl-body { flex: 1; white-space: pre-wrap; word-break: break-all; }
 
+/* ── Image preview ───────────────────────────────────────────────────────── */
+.img-preview {
+  flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); padding: 16px; min-height: 0;
+}
+.img-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.img-preview svg { max-width: 100%; max-height: 100%; }
+
+/* ── HTML iframe preview ─────────────────────────────────────────────────── */
+.html-preview {
+  flex: 1; border: none; width: 100%; min-height: 0; background: #fff;
+}
+
+/* ── CSV table render ────────────────────────────────────────────────────── */
+.csv-render {
+  flex: 1; overflow: auto; padding: 12px 16px; background: var(--bg); min-height: 0;
+}
+.csv-render table {
+  border-collapse: collapse; width: 100%;
+  font-family: var(--mono); font-size: 12px;
+}
+.csv-render th, .csv-render td {
+  border: 1px solid var(--border); padding: 4px 10px; text-align: left;
+}
+.csv-render th {
+  background: var(--bg2); font-weight: 600; color: var(--text);
+  position: sticky; top: 0; z-index: 1;
+}
+.csv-render td { color: var(--muted); }
+.csv-render tr:nth-child(even) td { background: var(--bg2); }
+
+/* ── Code highlight render ───────────────────────────────────────────────── */
+.code-render {
+  flex: 1; overflow: auto; margin: 0; border-radius: 0;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+  padding: 12px 16px; min-height: 0;
+}
+.code-render .hljs { background: transparent !important; padding: 0; }
+.hljs { background: var(--bg) !important; }
+
 /* ── Memory pane ─────────────────────────────────────────────────────────── */
 .memory-section {
   display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
@@ -912,6 +952,8 @@ body.large-font .app {
 }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -1089,7 +1131,7 @@ body.large-font .app {
         <span class="agents-title" id="filesRunLabel">No run selected</span>
         <div class="bar-gap"></div>
         <button class="icon-btn" onclick="loadRunFiles()">↺ Refresh</button>
-        <button class="icon-btn" id="filesRenderBtn" onclick="toggleFilesRender()" title="Preview (Markdown / JSON / JSONL)">◈ Preview</button>
+        <button class="icon-btn active" id="filesRenderBtn" onclick="toggleFilesRender()" title="Preview (Markdown / JSON / JSONL / HTML / CSV / Code)">◈ Preview</button>
       </div>
       <div class="files-body">
         <div class="files-tree" id="filesTree">
@@ -1100,6 +1142,10 @@ body.large-font .app {
           <pre class="files-view" id="filesView"><span class="files-placeholder">Select a file to view its contents</span></pre>
           <div class="md-render" id="filesMdView" style="display:none"></div>
           <div class="json-render" id="filesJsonView" style="display:none"></div>
+          <div class="img-preview" id="filesImageView" style="display:none"><img id="filesImageEl" alt=""></div>
+          <iframe class="html-preview" id="filesHtmlView" style="display:none" sandbox="allow-scripts allow-same-origin"></iframe>
+          <div class="csv-render" id="filesCsvView" style="display:none"></div>
+          <pre class="code-render" id="filesCodeView" style="display:none"><code id="filesCodeEl"></code></pre>
         </div>
       </div>
     </div>
@@ -2538,40 +2584,76 @@ function renderFileTree(files, runId) {
 }
 
 let gFilesContent  = '';
-let gFilesPreview  = false;
+let gFilesPreview  = true;
 let gFilesPath     = '';
+let gFilesRunId    = '';
 
 function applyPreview(content, filePath, preview) {
   const pre     = document.getElementById('filesView');
   const mdDiv   = document.getElementById('filesMdView');
   const jsonDiv = document.getElementById('filesJsonView');
+  const imgDiv  = document.getElementById('filesImageView');
+  const htmlFr  = document.getElementById('filesHtmlView');
+  const csvDiv  = document.getElementById('filesCsvView');
+  const codeDiv = document.getElementById('filesCodeView');
   const ext     = (filePath || '').split('.').pop().toLowerCase();
+  const all     = [pre, mdDiv, jsonDiv, imgDiv, htmlFr, csvDiv, codeDiv];
+  const showOnly = el => { all.forEach(e => e.style.display = 'none'); el.style.display = ''; };
+
+  // Images: always render regardless of preview toggle (binary, no text to show)
+  const imgExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'];
+  if (imgExts.includes(ext)) {
+    document.getElementById('filesImageEl').src =
+      `/api/run-file-raw/${encodeURIComponent(gFilesRunId)}/${gFilesPath}`;
+    showOnly(imgDiv);
+    return;
+  }
 
   if (!preview || !content) {
-    pre.style.display = ''; mdDiv.style.display = 'none'; jsonDiv.style.display = 'none';
+    showOnly(pre);
     return;
   }
 
+  // SVG — embed inline (it's XML text)
+  if (ext === 'svg') {
+    imgDiv.innerHTML = content;
+    showOnly(imgDiv);
+    return;
+  }
+
+  // HTML — sandboxed iframe
+  if (ext === 'html' || ext === 'htm') {
+    htmlFr.srcdoc = content;
+    showOnly(htmlFr);
+    return;
+  }
+
+  // CSV / TSV — render as table
+  if (ext === 'csv' || ext === 'tsv') {
+    csvDiv.innerHTML = csvToTable(content, ext === 'tsv' ? '\t' : ',');
+    showOnly(csvDiv);
+    return;
+  }
+
+  // Markdown
   if (ext === 'md' || ext === 'markdown') {
-    pre.style.display = 'none'; jsonDiv.style.display = 'none';
     if (typeof marked !== 'undefined') {
-      mdDiv.innerHTML = marked.parse(content); mdDiv.style.display = '';
-    } else { pre.style.display = ''; }
+      mdDiv.innerHTML = marked.parse(content);
+      showOnly(mdDiv);
+    } else { showOnly(pre); }
     return;
   }
 
+  // JSON
   if (ext === 'json') {
-    pre.style.display = 'none'; mdDiv.style.display = 'none';
-    try {
-      const parsed = JSON.parse(content);
-      jsonDiv.innerHTML = syntaxHL(JSON.stringify(parsed, null, 2));
-    } catch { jsonDiv.innerHTML = syntaxHL(content); }
-    jsonDiv.style.display = '';
+    try { jsonDiv.innerHTML = syntaxHL(JSON.stringify(JSON.parse(content), null, 2)); }
+    catch { jsonDiv.innerHTML = syntaxHL(content); }
+    showOnly(jsonDiv);
     return;
   }
 
+  // JSONL
   if (ext === 'jsonl') {
-    pre.style.display = 'none'; mdDiv.style.display = 'none';
     const lines = content.split('\n').filter(l => l.trim());
     jsonDiv.innerHTML = lines.map((line, i) => {
       let body;
@@ -2579,12 +2661,46 @@ function applyPreview(content, filePath, preview) {
       catch { body = esc(line); }
       return `<div class="jsonl-line"><span class="jsonl-idx">${i + 1}</span><span class="jsonl-body">${body}</span></div>`;
     }).join('') || '<span class="files-placeholder">(empty)</span>';
-    jsonDiv.style.display = '';
+    showOnly(jsonDiv);
     return;
   }
 
-  // 其他类型：回退到原始显示
-  pre.style.display = ''; mdDiv.style.display = 'none'; jsonDiv.style.display = 'none';
+  // Code files — highlight.js
+  const codeExts = ['py','js','ts','jsx','tsx','go','rs','java','c','cpp','h','hpp',
+    'cs','rb','php','sh','bash','zsh','yaml','yml','toml','ini','cfg','xml',
+    'css','scss','less','sql','r','kotlin','swift','dart','lua','vim','dockerfile'];
+  if (codeExts.includes(ext) && typeof hljs !== 'undefined') {
+    const codeEl = document.getElementById('filesCodeEl');
+    codeEl.removeAttribute('data-highlighted');
+    codeEl.textContent = content;
+    hljs.highlightElement(codeEl);
+    showOnly(codeDiv);
+    return;
+  }
+
+  // fallback — raw text
+  showOnly(pre);
+}
+
+function csvToTable(csv, sep = ',') {
+  const lines = csv.split('\n').filter(l => l.trim());
+  if (!lines.length) return '<span class="files-placeholder">(empty)</span>';
+  const parseRow = line => {
+    const cells = []; let cur = ''; let inQ = false;
+    for (const ch of line) {
+      if (ch === '"') { inQ = !inQ; }
+      else if (ch === sep && !inQ) { cells.push(cur); cur = ''; }
+      else { cur += ch; }
+    }
+    cells.push(cur);
+    return cells;
+  };
+  const [header, ...rows] = lines.map(parseRow);
+  const th = header.map(h => `<th>${esc(h.trim())}</th>`).join('');
+  const tbody = rows.map(r =>
+    `<tr>${r.map(c => `<td>${esc((c || '').trim())}</td>`).join('')}</tr>`
+  ).join('');
+  return `<table><thead><tr>${th}</tr></thead><tbody>${tbody}</tbody></table>`;
 }
 
 function applyMdRender(preId, divId, content, render) {
@@ -2609,10 +2725,22 @@ async function selectRunFile(runId, filePath, el) {
   document.querySelectorAll('.ftree-file').forEach(e => e.classList.remove('selected'));
   el.classList.add('selected');
   gSelectedFile = filePath;
-  gFilesPath = filePath;
-  const pathEl = document.getElementById('filesContentPath');
+  gFilesPath    = filePath;
+  gFilesRunId   = runId;
+  const pathEl  = document.getElementById('filesContentPath');
   pathEl.textContent = filePath;
   pathEl.style.display = '';
+
+  // Binary image types: skip utf8 fetch, render directly via raw endpoint
+  const ext      = filePath.split('.').pop().toLowerCase();
+  const imgExts  = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'];
+  if (imgExts.includes(ext)) {
+    gFilesContent = '';
+    document.getElementById('filesView').innerHTML = '<span class="files-placeholder">[binary image]</span>';
+    applyPreview('', gFilesPath, gFilesPreview);
+    return;
+  }
+
   document.getElementById('filesView').innerHTML = '<span class="files-placeholder">Loading…</span>';
   try {
     const data = await fetch(`/api/run-file/${encodeURIComponent(runId)}/${filePath}`).then(r => r.json());

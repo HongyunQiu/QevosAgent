@@ -526,7 +526,14 @@ const MIME = {
   '.json': 'application/json',
   '.ico':  'image/x-icon',
   '.png':  'image/png',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif':  'image/gif',
+  '.webp': 'image/webp',
+  '.bmp':  'image/bmp',
   '.svg':  'image/svg+xml',
+  '.mp4':  'video/mp4',
+  '.webm': 'video/webm',
 };
 
 function readBody(req) {
@@ -823,6 +830,28 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       if (e.code === 'ENOENT') { json(200, { content: null, exists: false }); return; }
       json(500, { error: String(e) });
+    }
+    return;
+  }
+
+  // ── GET /api/run-file-raw/:runId/*  — serve binary files with correct MIME ─
+  const runFileRawMatch = req.url.match(/^\/api\/run-file-raw\/([^/]+)\/(.+)/);
+  if (req.method === 'GET' && runFileRawMatch) {
+    const runDir  = path.resolve(path.join(RUNS_DIR, runFileRawMatch[1]));
+    const relFile = decodeURIComponent(runFileRawMatch[2]);
+    const fullPath = path.resolve(path.join(runDir, relFile));
+    const rel = path.relative(runDir, fullPath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      res.writeHead(403); res.end('forbidden'); return;
+    }
+    try {
+      const ext = path.extname(fullPath).toLowerCase();
+      const mime = MIME[ext] || 'application/octet-stream';
+      const data = fs.readFileSync(fullPath);
+      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+      res.end(data);
+    } catch (e) {
+      res.writeHead(e.code === 'ENOENT' ? 404 : 500); res.end(String(e));
     }
     return;
   }
