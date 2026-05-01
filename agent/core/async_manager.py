@@ -122,6 +122,11 @@ class AsyncJobManager:
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            # Give each job its own session so os.killpg() only kills that job's
+            # process tree — without this, _kill_tree on any job would SIGKILL the
+            # entire process group, taking down other running jobs and the agent.
+            popen_kwargs["start_new_session"] = True
 
         try:
             proc = subprocess.Popen(command, **popen_kwargs)
