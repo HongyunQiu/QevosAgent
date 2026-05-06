@@ -96,9 +96,40 @@ jobs:
           path: ${{ matrix.artifact_glob }}
           if-no-files-found: error
 
+  # ── Android APK 构建 ────────────────────────────────────
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ubuntu-latest 预装了 gradle，用它生成 wrapper jar（不提交二进制到仓库）
+      - name: Generate Gradle wrapper
+        working-directory: mobile/android
+        run: gradle wrapper --gradle-version 8.6 --distribution-type bin
+
+      - name: Build debug APK
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-android
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
   # ── 创建 GitHub Release ─────────────────────────────────
   release:
-    needs: build
+    needs: [build, android]
     runs-on: ubuntu-latest
 
     steps:
@@ -114,6 +145,7 @@ jobs:
           find artifacts -name "*arm64*.dmg" -exec cp {} artifacts/QevosAgent-macOS-arm64.dmg \;
           find artifacts -name "*.dmg" ! -name "*arm64*" -exec cp {} artifacts/QevosAgent-macOS-x64.dmg \;
           find artifacts -name "*.AppImage"  -exec cp {} artifacts/QevosAgent.AppImage \;
+          find artifacts -name "*.apk"       -exec cp {} artifacts/QevosAgent-Android.apk \;
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -128,5 +160,7 @@ jobs:
             > 1. 在 Finder 中**右键点击** QevosAgent.app → **"打开"** → 弹窗中再点"打开"
             > 2. 在终端执行：`xattr -cr /Applications/QevosAgent.app`
             > 之后双击即可正常启动，无需重复操作。
+
+            > **Android 用户注意**：`QevosAgent-Android.apk` 为调试版本，安装前需在手机设置中开启"允许安装未知来源应用"。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
