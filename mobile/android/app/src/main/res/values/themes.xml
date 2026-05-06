@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.QevosAgent" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/colorPrimary</item>
+        <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
+        <item name="colorAccent">@color/colorAccent</item>
+        <item name="android:statusBarColor">@color/colorPrimaryDark</item>
+        <item name="android:windowBackground">@color/white</item>
+        <!-- Toolbar 文字颜色为白色 -->
+        <item name="toolbarStyle">@style/Widget.AppCompat.Toolbar</item>
+        <item name="actionMenuTextColor">@color/white</item>
+    </style>
+</resources>
