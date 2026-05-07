@@ -509,7 +509,7 @@ def run(
             if _advisor_sys:
                 _should_advise, _advise_reason = should_trigger_advisor(
                     state,
-                    interval=int(os.environ.get("ADVISOR_INTERVAL", "10")),
+                    interval=int(os.environ.get("ADVISOR_INTERVAL", "15")),
                 )
                 if _should_advise:
                     _advice = run_advisor(state, llm, _advisor_sys, trigger_reason=_advise_reason)
