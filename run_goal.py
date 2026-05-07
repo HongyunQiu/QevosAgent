@@ -48,8 +48,6 @@ def ensure_env_defaults():
 
     if not os.environ.get("OPENAI_BASE_URL"):
         raise ValueError("缺少 OPENAI_BASE_URL，请在 .env 中设置。")
-    if not os.environ.get("OPENAI_MODEL"):
-        raise ValueError("缺少 OPENAI_MODEL，请在 .env 中设置。")
 
     os.environ.setdefault("OPENAI_API_KEY", "local")
 
@@ -71,8 +69,6 @@ def probe_openai_configuration(list_models=None):
 
     if not base_url:
         raise ValueError("LLM 服务探测失败: 缺少 OPENAI_BASE_URL。")
-    if not model:
-        raise ValueError("LLM 服务探测失败: 缺少 OPENAI_MODEL。")
 
     if list_models is None:
         from openai import OpenAI
