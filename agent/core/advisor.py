@@ -5,7 +5,7 @@
 审视当前执行状态并给出战略性指导意见。
 
 触发时机：
-  1. 定期触发（每 ADVISOR_INTERVAL 轮，默认 10）
+  1. 定期触发（每 ADVISOR_INTERVAL 轮，默认 15）
   2. 循环检测触发（_need_user_help 被设置时，在暂停前先尝试 advisor 介入）
   3. Agent 主动请求（调用 request_advisor 工具）
 
@@ -155,7 +155,7 @@ def run_advisor(
 
 def should_trigger_advisor(
     state: AgentState,
-    interval: int = 10,
+    interval: int = 15,
 ) -> Tuple[bool, str]:
     """检查是否应触发定期/主动请求型 advisor。
 

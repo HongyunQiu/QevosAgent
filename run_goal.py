@@ -46,41 +46,12 @@ def load_dotenv_if_present(path: str = ".env"):
 def ensure_env_defaults():
     load_dotenv_if_present()
 
-    # Model profile switch (optional):
-    #   OPENAI_PROFILE=oss120b      -> env OPENAI_PROFILE_OSS120B_BASE_URL / openai/gpt-oss-120b
-    #   OPENAI_PROFILE=qwen3527dgx  -> env OPENAI_PROFILE_QWEN3527DGX_BASE_URL / qwen3527dgx
-    profile = (os.environ.get("OPENAI_PROFILE") or "oss120b").strip().lower()
+    if not os.environ.get("OPENAI_BASE_URL"):
+        raise ValueError("缺少 OPENAI_BASE_URL，请在 .env 中设置。")
+    if not os.environ.get("OPENAI_MODEL"):
+        raise ValueError("缺少 OPENAI_MODEL，请在 .env 中设置。")
 
-    profile_defaults = {
-        "oss120b": {
-            "base_url_env": "OPENAI_PROFILE_OSS120B_BASE_URL",
-            "model": "openai/gpt-oss-120b",
-        },
-        "qwen3527dgx": {
-            "base_url_env": "OPENAI_PROFILE_QWEN3527DGX_BASE_URL",
-            "model": "qwen3527dgx",
-        },
-    }
-    profile_config = profile_defaults.get(profile)
-    if profile_config is None:
-        raise ValueError(f"未知 OPENAI_PROFILE: {profile}")
-
-    if "OPENAI_BASE_URL" not in os.environ:
-        profile_base_url = os.environ.get(profile_config["base_url_env"])
-        if profile_base_url:
-            os.environ["OPENAI_BASE_URL"] = profile_base_url
-        else:
-            raise ValueError(
-                f"缺少 OPENAI_BASE_URL。当前 profile={profile}，"
-                f"请设置 OPENAI_BASE_URL 或 {profile_config['base_url_env']}。"
-            )
-
-    if profile == "qwen3527dgx":
-        os.environ.setdefault("OPENAI_API_KEY", "local")
-        os.environ.setdefault("OPENAI_MODEL", profile_config["model"])
-    else:
-        os.environ.setdefault("OPENAI_API_KEY", "local")
-        os.environ.setdefault("OPENAI_MODEL", profile_config["model"])
+    os.environ.setdefault("OPENAI_API_KEY", "local")
 
     # Persist useful experience by default unless the caller explicitly disables it.
     os.environ.setdefault("AUTO_REMEMBER_ON_DONE", "1")
@@ -470,10 +441,43 @@ def main():
                 q = state.meta.get("awaiting_input")
                 print("\n=== NEED INPUT ===")
                 print(q)
-                # 通过 interrupt_handler 读取，与后台线程共享 stdin 不冲突
-                user_input = interrupt_handler.get_user_input("\nYour answer> ")
-                if user_input is None:  # EOF
-                    print("\n[run_goal] No interactive stdin available (EOF). Please rerun in a real terminal to answer.")
+                # 同时轮询两个队列：
+                #   _cmd_queue  — web 看板的 /inject 消息走这里
+                #   _input_queue — CLI stdin 直接输入走这里
+                # 不能只用 get_user_input()（阻塞 _input_queue），否则 web 模式下
+                # /inject 永远到不了 _input_queue，造成永久死锁。
+                import time as _rt
+                user_input = None
+                _ask_stop = False
+                while True:
+                    _cmd = interrupt_handler.poll_command()
+                    if _cmd is not None and _cmd != "/__pause__":
+                        if _cmd.startswith("/inject "):
+                            user_input = _cmd[len("/inject "):].strip()
+                            break
+                        else:
+                            _r = interrupt_handler.process_command(_cmd, state)
+                            if _r == "stop":
+                                state.meta["user_stopped"] = True
+                                _ask_stop = True
+                                break
+                        continue
+                    try:
+                        import queue as _q
+                        _text = interrupt_handler._input_queue.get_nowait()
+                        if _text is not None:
+                            user_input = _text
+                            break
+                        # None = EOF from CLI
+                        _ask_stop = True
+                        break
+                    except _q.Empty:
+                        pass
+                    _rt.sleep(0.1)
+                if _ask_stop:
+                    break
+                if user_input is None:
+                    print("\n[run_goal] No input received; exiting.")
                     break
                 user_input = user_input.strip()
                 if not user_input:

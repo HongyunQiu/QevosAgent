@@ -167,6 +167,40 @@ def _estimate_tokens_heuristic(texts: Iterable[str]) -> int:
     return total
 
 
+def _extract_content_texts(content) -> list[str]:
+    """Extract text strings from message content (str or multimodal list)."""
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        texts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    texts.append(block.get("text", ""))
+                elif block.get("type") == "image":
+                    # Rough estimate: images ~1000 tokens each
+                    texts.append(" " * 4000)
+        return texts
+    return []
+
+
+def image_block(data: str, media_type: str = "image/jpeg") -> dict:
+    """Build a canonical base64 image block for multimodal messages.
+
+    Usage:
+        msg = {"role": "user", "content": [
+            {"type": "text", "text": "What's in this image?"},
+            image_block(base64_str, "image/png"),
+        ]}
+    """
+    return {"type": "image", "media_type": media_type, "data": data}
+
+
+def image_url_block(url: str) -> dict:
+    """Build a canonical URL image block for multimodal messages."""
+    return {"type": "image", "url": url}
+
+
 # ── 抽象后端接口 ──────────────────────────────────────────────────────────────
 
 class LLMBackend(ABC):
@@ -185,7 +219,10 @@ class LLMBackend(ABC):
 
     def estimate_tokens(self, messages: list[dict], system: str) -> int:
         # Default: heuristic; subclasses can override.
-        return _estimate_tokens_heuristic([system] + [m.get("content", "") for m in messages])
+        texts = [system]
+        for m in messages:
+            texts.extend(_extract_content_texts(m.get("content", "")))
+        return _estimate_tokens_heuristic(texts)
 
     def complete_text(self, messages: list[dict], system: str, max_tokens: int = 200) -> str:
         """Plain-text lightweight call. Default falls back to complete(); subclasses may override."""
@@ -201,10 +238,15 @@ class OpenAIBackend(LLMBackend):
             import tiktoken  # type: ignore
             # Best-effort: use o200k_base; works reasonably for many models.
             enc = tiktoken.get_encoding("o200k_base")
-            parts = [system] + [m.get("content", "") for m in messages]
-            return sum(len(enc.encode(str(p))) for p in parts if p)
+            texts = [system]
+            for m in messages:
+                texts.extend(_extract_content_texts(m.get("content", "")))
+            return sum(len(enc.encode(str(p))) for p in texts if p)
         except Exception:
-            return _estimate_tokens_heuristic([system] + [m.get("content", "") for m in messages])
+            texts = [system]
+            for m in messages:
+                texts.extend(_extract_content_texts(m.get("content", "")))
+            return _estimate_tokens_heuristic(texts)
 
     def __init__(
         self,
@@ -212,14 +254,20 @@ class OpenAIBackend(LLMBackend):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        thinking_budget: Optional[int] = None,
     ):
         """OpenAI-compatible backend.
 
         Works with:
         - OpenAI official API (default)
         - Local OpenAI-compatible servers (e.g. vLLM) via base_url
+
+        thinking_budget: token budget for extended thinking (0 = disabled).
+          Env: OPENAI_THINKING_BUDGET (default 0).
+          Can be changed at runtime: llm.thinking_budget = N
         """
         import openai
+        import os
         # openai>=1.x uses `base_url` for OpenAI-compatible endpoints.
         self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
@@ -229,10 +277,14 @@ class OpenAIBackend(LLMBackend):
         # vLLM/OpenAI-compatible servers may compute a negative default max_tokens when
         # the prompt is long; set an explicit positive value.
         if max_tokens is None:
-            import os
             # Default higher because tool_call JSON (esp. long code strings) is easy to truncate.
             max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "16384"))
         self.max_tokens = max(1, int(max_tokens))
+        # Extended thinking budget (tokens). Set to 0 to disable.
+        # Env: OPENAI_THINKING_BUDGET (default 0)
+        if thinking_budget is None:
+            thinking_budget = int(os.environ.get("OPENAI_THINKING_BUDGET", "0"))
+        self.thinking_budget = max(0, int(thinking_budget))
 
     @staticmethod
     def _detect_official_openai_endpoint(base_url: Optional[str]) -> bool:
@@ -245,10 +297,76 @@ class OpenAIBackend(LLMBackend):
             return False
         return hostname in {"api.openai.com", "openai.com"}
 
-    def _call_api(self, messages: list[dict], system: str, max_tokens: int, use_json_format: bool) -> str:
-        """Internal helper: raw API call with explicit format and token controls."""
-        full_messages = [{"role": "system", "content": system}] + messages
-        kwargs = {
+    @staticmethod
+    def _normalize_messages(messages: list[dict]) -> list[dict]:
+        """Convert canonical and Ollama-native image formats to OpenAI content-block format.
+
+        Canonical:      {"type": "image", "media_type": "image/jpeg", "data": "<b64>"}
+                        {"type": "image", "url": "https://..."}
+        Ollama-native:  message-level "images": ["<b64-or-path>", ...]  (converted here so
+                        callers using Ollama SDK-style dicts still work via /v1 endpoint)
+        OpenAI output:  {"type": "image_url", "image_url": {"url": "data:...;base64,..."}}
+        """
+        result = []
+        for msg in messages:
+            # ── Ollama-native: images field at message level ──────────────────
+            # e.g. {'role': 'user', 'content': 'text', 'images': ['<b64>']}
+            ollama_images = msg.get("images")
+            if ollama_images and isinstance(ollama_images, list):
+                text = msg.get("content", "") if isinstance(msg.get("content"), str) else ""
+                blocks: list[dict] = []
+                if text:
+                    blocks.append({"type": "text", "text": text})
+                for img in ollama_images:
+                    if isinstance(img, str):
+                        # Treat as base64 data (Ollama REST encodes images as base64 strings)
+                        blocks.append({"type": "image_url", "image_url": {
+                            "url": f"data:image/jpeg;base64,{img}"
+                        }})
+                cleaned = {k: v for k, v in msg.items() if k not in ("content", "images")}
+                cleaned["content"] = blocks
+                result.append(cleaned)
+                continue
+
+            content = msg.get("content")
+            if not isinstance(content, list):
+                result.append(msg)
+                continue
+
+            # ── Canonical image blocks inside content list ────────────────────
+            new_blocks = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image":
+                    if "url" in block:
+                        new_blocks.append({"type": "image_url", "image_url": {"url": block["url"]}})
+                    elif "data" in block:
+                        mime = block.get("media_type", "image/jpeg")
+                        new_blocks.append({"type": "image_url", "image_url": {
+                            "url": f"data:{mime};base64,{block['data']}"
+                        }})
+                    else:
+                        new_blocks.append(block)
+                else:
+                    new_blocks.append(block)
+            result.append({**msg, "content": new_blocks})
+        return result
+
+    def _call_api(
+        self,
+        messages: list[dict],
+        system: str,
+        max_tokens: int,
+        use_json_format: bool,
+        thinking_budget: Optional[int] = None,
+    ) -> str:
+        """Internal helper: raw API call with explicit format and token controls.
+
+        thinking_budget: override self.thinking_budget for this call (None = use instance default).
+        """
+        budget = self.thinking_budget if thinking_budget is None else thinking_budget
+        normalized = self._normalize_messages(messages)
+        full_messages = [{"role": "system", "content": system}] + normalized
+        kwargs: dict = {
             "model": self.model,
             "messages": full_messages,
             "temperature": 0.3,
@@ -261,7 +379,11 @@ class OpenAIBackend(LLMBackend):
             kwargs["response_format"] = {"type": "json_object"}
 
         if not self._is_official_openai:
-            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+            enable = budget > 0
+            extra: dict = {"chat_template_kwargs": {"enable_thinking": enable}}
+            if enable:
+                extra["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            kwargs["extra_body"] = extra
 
         resp = self.client.chat.completions.create(**kwargs)
         msg = resp.choices[0].message
@@ -276,16 +398,26 @@ class OpenAIBackend(LLMBackend):
             return str(content)
 
     def complete(self, messages: list[dict], system: str) -> str:
-        """Main agent loop call: JSON-formatted, full max_tokens."""
-        return self._call_api(messages, system, max_tokens=self.max_tokens, use_json_format=True)
+        """Main agent loop call: JSON-formatted, full max_tokens, thinking per instance default."""
+        return self._call_api(
+            messages, system,
+            max_tokens=self.max_tokens,
+            use_json_format=True,
+            thinking_budget=self.thinking_budget,
+        )
 
     def complete_text(self, messages: list[dict], system: str, max_tokens: int = 200) -> str:
         """Lightweight plain-text call for summarisation / note extraction.
 
         Bypasses JSON response_format so the model can output free-form text.
-        Uses a small max_tokens cap to keep latency low.
+        Disables thinking to keep latency low.
         """
-        return self._call_api(messages, system, max_tokens=max_tokens, use_json_format=False)
+        return self._call_api(
+            messages, system,
+            max_tokens=max_tokens,
+            use_json_format=False,
+            thinking_budget=0,
+        )
 
 
 # ── Anthropic 后端实现 ─────────────────────────────────────────────────────────
@@ -293,7 +425,10 @@ class OpenAIBackend(LLMBackend):
 class AnthropicBackend(LLMBackend):
     def estimate_tokens(self, messages: list[dict], system: str) -> int:
         # Anthropic token counting is model-specific; keep heuristic.
-        return _estimate_tokens_heuristic([system] + [m.get("content", "") for m in messages])
+        texts = [system]
+        for m in messages:
+            texts.extend(_extract_content_texts(m.get("content", "")))
+        return _estimate_tokens_heuristic(texts)
 
     def __init__(
         self,
@@ -308,6 +443,7 @@ class AnthropicBackend(LLMBackend):
         self.model = model
         # Extended thinking budget (tokens). Set to 0 to disable.
         # Env: ANTHROPIC_THINKING_BUDGET (default 8000)
+        # Can be changed at runtime: llm.thinking_budget = N
         if thinking_budget is None:
             thinking_budget = int(os.environ.get("ANTHROPIC_THINKING_BUDGET", "8000"))
         self.thinking_budget = max(0, thinking_budget)
@@ -333,16 +469,54 @@ class AnthropicBackend(LLMBackend):
         first = content[0] if content else None
         return getattr(first, "text", str(first)) if first is not None else ""
 
+    @staticmethod
+    def _normalize_messages(messages: list[dict]) -> list[dict]:
+        """Convert canonical image blocks to Anthropic content format.
+
+        Canonical:   {"type": "image", "media_type": "image/jpeg", "data": "<b64>"}
+                     {"type": "image", "url": "https://..."}
+        Anthropic:   {"type": "image", "source": {"type": "base64", "media_type": "...", "data": "..."}}
+                     {"type": "image", "source": {"type": "url", "url": "..."}}
+        """
+        result = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                result.append(msg)
+                continue
+            new_blocks = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image":
+                    if "url" in block:
+                        new_blocks.append({"type": "image", "source": {
+                            "type": "url", "url": block["url"]
+                        }})
+                    elif "data" in block:
+                        new_blocks.append({"type": "image", "source": {
+                            "type": "base64",
+                            "media_type": block.get("media_type", "image/jpeg"),
+                            "data": block["data"],
+                        }})
+                    else:
+                        new_blocks.append(block)
+                else:
+                    new_blocks.append(block)
+            result.append({**msg, "content": new_blocks})
+        return result
+
     def complete(self, messages: list[dict], system: str) -> str:
-        """Main agent loop call: full max_tokens, extended thinking enabled."""
+        """Main agent loop call: full max_tokens, extended thinking per instance default."""
+        budget = self.thinking_budget
+        # When thinking is enabled, max_tokens must remain > budget_tokens.
+        max_tokens = max(self.max_tokens, budget + 2048) if budget > 0 else self.max_tokens
         kwargs: dict = dict(
             model=self.model,
-            max_tokens=self.max_tokens,
+            max_tokens=max_tokens,
             system=system,
-            messages=messages,
+            messages=self._normalize_messages(messages),
         )
-        if self.thinking_budget > 0:
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": self.thinking_budget}
+        if budget > 0:
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
         resp = self.client.messages.create(**kwargs)
         return self._extract_text(resp.content)
 
@@ -355,7 +529,7 @@ class AnthropicBackend(LLMBackend):
             model=self.model,
             max_tokens=max_tokens,
             system=system,
-            messages=messages,
+            messages=self._normalize_messages(messages),
         )
         return self._extract_text(resp.content)
 
@@ -474,6 +648,7 @@ def build_system_prompt(
 4. 目标完成后，用 action=done 退出并给出 final_answer
 5. 优先利用长期记忆中的经验，避免重复犯错
 6. 如果已有进化工具出现定义/契约错误，优先使用 `validate_tool_recipe`、`repair_tool_candidate`、`promote_tool_candidate` 修复旧工具；不要仅仅换名字继续注册同义新工具
+7. **WEB 展示交互模式**：调用 `web_show` 后，用户会停留在 WEB 页面，通过页面下方聊天框继续与你交流。此时你必须先调用 `web_notify` 邀请用户互动，再调用 `ask_user` 暂停等待——不得在未收到用户明确"结束"指令前直接走完成流程（submit_completion_report → done）。
 
 ## 草稿本（scratchpad）使用规则（强制）
 - 草稿本用于“执行过程中的中间记录与分析”，是你在多步任务中的工作台。

@@ -474,6 +474,7 @@ def run(
             #   /exit    → breaks the loop cleanly
             _ih = getattr(hooks, 'interrupt_handler', None)
             if _ih is not None:
+                state.meta['_interrupt_handler'] = _ih  # tools can poll force_stop
                 _stop_loop = False
                 while True:
                     _cmd = _ih.poll_command()
@@ -577,6 +578,23 @@ def run(
                     _trim_short_term(state, keep_last=6)
                     _compact_short_term_messages(state, per_message_chars=1200)
                     state.long_term.append("[自我修复] 遇到上下文/输出长度错误，已自动裁剪+压缩 short_term 以缩短 prompt。")
+
+                # 当前模型不支持多模态：清除 short_term 中所有图片块，标记能力缺失
+                _vision_unsupported = (
+                    "image" in es.lower()
+                    and any(k in es for k in ("0 image", "not support", "unsupport", "vision", "multimodal"))
+                )
+                if not _vision_unsupported and "At most 0 image" in es:
+                    _vision_unsupported = True
+                if _vision_unsupported:
+                    stripped = _strip_vision_blocks(state)
+                    state.meta["_vision_supported"] = False
+                    state.long_term.append(
+                        "[自我修复] 当前 LLM 不支持多模态，已自动移除上下文中所有图片块"
+                        f"（共 {stripped} 条消息受影响）。后续 load_image 调用将被跳过。"
+                    )
+                    if hooks.on_error:
+                        hooks.on_error(f"[自我修复] 多模态不支持，已清除 {stripped} 条图片块")
 
                 _append_short_term(
                     state,
@@ -943,6 +961,31 @@ def run(
 # ── 内部辅助 ──────────────────────────────────────────────────────────────────
 
 
+def _strip_vision_blocks(state: AgentState) -> int:
+    """Remove all image content blocks from short_term messages.
+
+    Called when the LLM backend reports it does not support vision.
+    Returns the number of messages that were modified.
+    """
+    count = 0
+    for msg in state.short_term:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        filtered = [b for b in content if not (isinstance(b, dict) and b.get("type") == "image")]
+        if len(filtered) == len(content):
+            continue
+        # Simplify single remaining text block back to a plain string
+        if len(filtered) == 1 and isinstance(filtered[0], dict) and filtered[0].get("type") == "text":
+            msg["content"] = filtered[0]["text"]
+        elif filtered:
+            msg["content"] = filtered
+        else:
+            msg["content"] = "[图片已移除：当前模型不支持多模态]"
+        count += 1
+    return count
+
+
 def _spill_large_output_to_disk(tool_name: str, content: str, state: "AgentState") -> Optional[str]:
     """将超限的工具输出完整写入 artifacts 目录，返回可用的相对路径；失败返回 None。
 
@@ -1074,6 +1117,20 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
         # 纯 ACK 工具：成功时不写入 short_term，避免无意义消息占用上下文
         if action.tool in _ACK_ONLY_TOOLS:
             return None
+
+        # 富内容（多模态）：把文字摘要和图片块一起注入上下文
+        # 若后端已标记不支持视觉，降级为纯文字摘要
+        _vision_ok = state.meta.get("_vision_supported", True) if state else True
+        if result.content_blocks and _vision_ok:
+            text = f"[工具: {action.tool}] 执行成功\n{result.to_str()}" + repeat_warning
+            return [{"type": "text", "text": text}] + list(result.content_blocks)
+        elif result.content_blocks and not _vision_ok:
+            # 降级：只保留文字描述，丢弃图片块
+            return (
+                f"[工具: {action.tool}] 执行成功（图片已跳过：当前模型不支持多模态）\n"
+                f"{result.to_str()}" + repeat_warning
+            )
+
         out = result.to_str()
 
         if len(out) > max_chars:

@@ -180,12 +180,34 @@
   #chat-widget.expanded #chat-toggle-arrow { transform: rotate(180deg); }
 
   #chat-unread-dot {
-    width: 7px; height: 7px;
+    min-width: 16px;
+    height: 16px;
     background: #e05555;
-    border-radius: 50%;
+    border-radius: 8px;
     display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    padding: 0 4px;
+    line-height: 16px;
   }
-  #chat-unread-dot.visible { display: inline-block; }
+  #chat-unread-dot.visible { display: inline-flex; }
+
+  @keyframes chat-glow {
+    0%, 100% {
+      box-shadow: 0 -4px 32px rgba(0,0,0,.5), 0 0 0 0 rgba(224,85,85,0);
+      border-color: var(--chat-border);
+    }
+    50% {
+      box-shadow: 0 -4px 32px rgba(0,0,0,.5), 0 0 18px 6px rgba(224,85,85,.55);
+      border-color: rgba(224,85,85,.7);
+    }
+  }
+  #chat-widget.has-unread {
+    animation: chat-glow 1.8s ease-in-out infinite;
+  }
 
   #chat-history {
     flex: 1;
@@ -269,6 +291,80 @@
   #chat-send:hover { opacity: .85; }
   #chat-send:disabled { opacity: .4; cursor: default; }
 
+  /* ── attach button ── */
+  #attach-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-dim);
+    width: 34px;
+    min-width: 34px;
+    cursor: pointer;
+    font-size: 20px;
+    font-weight: 300;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    align-self: stretch;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  #attach-btn:hover { color: var(--accent); border-color: var(--accent); }
+  #attach-btn.has-image {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(108,142,245,.12);
+  }
+
+  /* ── image preview bar (above input row) ── */
+  #img-preview-bar {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px 0;
+  }
+  #img-preview-bar.visible { display: flex; }
+  .img-preview-thumb {
+    width: 38px;
+    height: 38px;
+    border-radius: 6px;
+    object-fit: cover;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .img-preview-name {
+    font-size: 12px;
+    color: var(--text-dim);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .img-preview-remove {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    line-height: 1;
+    transition: color .15s, background .15s;
+  }
+  .img-preview-remove:hover { color: #e05555; background: rgba(224,85,85,.12); }
+
+  /* ── image thumbnail inside chat bubble ── */
+  .chat-bubble .chat-img-thumb {
+    display: block;
+    max-width: 180px;
+    max-height: 120px;
+    border-radius: 6px;
+    margin-top: 5px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+
   /* ── run info badge ── */
   #run-info {
     position: fixed;
@@ -323,7 +419,10 @@
     <span id="chat-toggle-arrow">▲</span>
   </div>
   <div id="chat-history"></div>
+  <div id="img-preview-bar"></div>
   <div id="chat-input-row">
+    <input type="file" id="img-picker" accept="image/*" style="display:none">
+    <button id="attach-btn" title="附加图片" onclick="triggerImagePicker()">+</button>
     <input id="chat-input" type="text" placeholder="向 Agent 发消息…" autocomplete="off">
     <button id="chat-send" onclick="sendMessage()">发送</button>
   </div>
@@ -341,6 +440,7 @@ let activeTabId = initTab || null;
 let chatExpanded = false;
 let chatUnread   = 0;
 let agentAlive   = false;
+let pendingImage = null; // { dataUrl, filename, mimeType }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -476,6 +576,46 @@ function renderPane(id, data) {
 
   const ct = (data.content_type || 'html').toLowerCase();
 
+  // Resolve a potentially relative image/resource path to an absolute API URL.
+  // Paths that are already absolute (http/https/data/blob) or start with /api/ are
+  // left unchanged. Everything else is treated as relative to the run directory and
+  // rewritten to /api/run-file-raw/{runId}/{path}.
+  function resolveRunPath(src) {
+    if (!src || !runId) return src;
+    if (/^(https?:|data:|blob:|\/\/|\/api\/)/.test(src)) return src;
+    const rel = src.replace(/^\.\//, '');
+    return `/api/run-file-raw/${runId}/${rel}`;
+  }
+
+  // Inject a <base href> into a full HTML document so that relative resource paths
+  // inside sandboxed iframes (which have no inherent base URL) resolve correctly via
+  // the run-file-raw endpoint.
+  function injectBaseHref(html) {
+    if (!runId) return html;
+    const base = `<base href="${window.location.origin}/api/run-file-raw/${runId}/">`;
+    if (/<head[\s>]/i.test(html)) {
+      return html.replace(/(<head[^>]*>)/i, `$1${base}`);
+    }
+    // No <head> tag — insert before everything else
+    return base + html;
+  }
+
+  // Rewrite relative src/href attributes in a fragment of HTML using DOMParser so
+  // that images embedded in partial HTML snippets also resolve correctly.
+  function rewriteFragmentImages(html) {
+    if (!runId) return html;
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.querySelectorAll('img[src]').forEach(img => {
+        img.setAttribute('src', resolveRunPath(img.getAttribute('src')));
+      });
+      // Return inner content; DOMParser always wraps in <html><body>
+      return doc.body.innerHTML;
+    } catch {
+      return html;
+    }
+  }
+
   if (ct === 'html') {
     const html = data.content || '';
     const isFullDoc = /<!DOCTYPE|<html/i.test(html.trimStart().slice(0, 20));
@@ -486,10 +626,10 @@ function renderPane(id, data) {
       const iframe = document.createElement('iframe');
       iframe.style.cssText = 'width:100%;height:100%;border:none;display:block;';
       iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
-      iframe.srcdoc = html;
+      iframe.srcdoc = injectBaseHref(html);
       pane.appendChild(iframe);
     } else {
-      pane.innerHTML = html;
+      pane.innerHTML = rewriteFragmentImages(html);
       pane.querySelectorAll('script').forEach(old => {
         const s = document.createElement('script');
         s.textContent = old.textContent;
@@ -499,7 +639,7 @@ function renderPane(id, data) {
   } else if (ct === 'markdown') {
     const div = document.createElement('div');
     div.className = 'md-body';
-    div.innerHTML = marked.parse(data.content || '');
+    div.innerHTML = rewriteFragmentImages(marked.parse(data.content || ''));
     pane.innerHTML = '';
     pane.appendChild(div);
   } else if (ct === 'text') {
@@ -519,7 +659,7 @@ function renderPane(id, data) {
       }
     }, 0);
   } else if (ct === 'image') {
-    const src = data.content || '';
+    const src = resolveRunPath(data.content || '');
     pane.innerHTML = `<div class="image-wrap"><img src="${escHtml(src)}" alt="image"></div>`;
   } else {
     pane.innerHTML = data.content || '';
@@ -539,30 +679,40 @@ function renderTable(content) {
 // ── Chat ──────────────────────────────────────────────────────────────────────
 function toggleChat() {
   chatExpanded = !chatExpanded;
-  document.getElementById('chat-widget').classList.toggle('expanded', chatExpanded);
+  const widget = document.getElementById('chat-widget');
+  widget.classList.toggle('expanded', chatExpanded);
   if (chatExpanded) {
     chatUnread = 0;
-    document.getElementById('chat-unread-dot').classList.remove('visible');
+    const dot = document.getElementById('chat-unread-dot');
+    dot.classList.remove('visible');
+    dot.textContent = '';
+    widget.classList.remove('has-unread');
     scrollChatToBottom();
   }
 }
 
-function appendChatMessage(role, message, ts) {
+function appendChatMessage(role, message, ts, imageDataUrl) {
   const history = document.getElementById('chat-history');
   const div = document.createElement('div');
   div.className = `chat-msg ${role}`;
   const time = ts ? new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
   const label = role === 'agent' ? 'Agent' : '你';
+  const imgHtml = imageDataUrl
+    ? `<img class="chat-img-thumb" src="${escAttr(imageDataUrl)}" alt="图片" onclick="this.style.maxWidth=this.style.maxWidth?'':'100%'">`
+    : '';
   div.innerHTML = `
-    <div class="chat-bubble">${escHtml(message)}</div>
+    <div class="chat-bubble">${message ? escHtml(message) : ''}${imgHtml}</div>
     <div class="chat-meta">${label}${time ? ' · ' + time : ''}</div>
   `;
   history.appendChild(div);
   scrollChatToBottom();
 
-  if (!chatExpanded) {
+  if (!chatExpanded && role === 'agent') {
     chatUnread++;
-    document.getElementById('chat-unread-dot').classList.add('visible');
+    const dot = document.getElementById('chat-unread-dot');
+    dot.textContent = chatUnread > 9 ? '9+' : String(chatUnread);
+    dot.classList.add('visible');
+    document.getElementById('chat-widget').classList.add('has-unread');
   }
 }
 
@@ -571,26 +721,75 @@ function scrollChatToBottom() {
   h.scrollTop = h.scrollHeight;
 }
 
+// ── Image attach ──────────────────────────────────────────────────────────────
+function triggerImagePicker() {
+  document.getElementById('img-picker').click();
+}
+
+document.getElementById('img-picker').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    pendingImage = { dataUrl: ev.target.result, filename: file.name, mimeType: file.type || 'image/jpeg' };
+    const bar = document.getElementById('img-preview-bar');
+    bar.innerHTML = `
+      <img class="img-preview-thumb" src="${escAttr(pendingImage.dataUrl)}" alt="">
+      <span class="img-preview-name">${escHtml(pendingImage.filename)}</span>
+      <button class="img-preview-remove" onclick="clearPendingImage()" title="移除">✕</button>`;
+    bar.classList.add('visible');
+    document.getElementById('attach-btn').classList.add('has-image');
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+});
+
+function clearPendingImage() {
+  pendingImage = null;
+  const bar = document.getElementById('img-preview-bar');
+  bar.innerHTML = '';
+  bar.classList.remove('visible');
+  document.getElementById('attach-btn').classList.remove('has-image');
+}
+
 async function sendMessage() {
   const input = document.getElementById('chat-input');
   const msg = input.value.trim();
-  if (!msg) return;
+  if (!msg && !pendingImage) return;
 
   const btn = document.getElementById('chat-send');
   btn.disabled = true;
   input.value = '';
-  appendChatMessage('user', msg);
+
+  const img = pendingImage;
+  clearPendingImage();
+  appendChatMessage('user', msg, null, img?.dataUrl);
 
   try {
-    const target = runId || 'active';
-    const body = { command: `/inject [Web用户]: ${msg}` };
-    if (runId) body.runId = runId;
-    const res = await fetch('/api/inject', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (img) {
+      const body = {
+        imageData: img.dataUrl.split(',')[1],
+        imageType: img.mimeType,
+        filename:  img.filename,
+        message:   msg,
+      };
+      if (runId) body.runId = runId;
+      const res = await fetch('/api/inject-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } else {
+      const body = { command: `/inject [Web用户]: ${msg}` };
+      if (runId) body.runId = runId;
+      const res = await fetch('/api/inject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    }
   } catch (e) {
     appendChatMessage('agent', `⚠ 发送失败: ${e.message}`);
   } finally {
@@ -615,6 +814,9 @@ if (runId) updateRunInfo(runId, false);
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 </script>
 </body>

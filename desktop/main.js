@@ -290,11 +290,7 @@ function showSetup() {
 // ── Check if the LLM endpoint is configured ────────────────────────────────
 
 function isConfigured() {
-  return !!(
-    process.env.OPENAI_BASE_URL ||
-    process.env.OPENAI_PROFILE_OSS120B_BASE_URL ||
-    process.env.OPENAI_PROFILE_QWEN3527DGX_BASE_URL
-  );
+  return !!(process.env.OPENAI_BASE_URL && process.env.OPENAI_MODEL);
 }
 
 // ── Native menu — minimal; tabs live in tabbar.html ───────────────────────

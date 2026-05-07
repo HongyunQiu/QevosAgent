@@ -5,7 +5,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional
 from enum import Enum
 
 
@@ -37,6 +37,9 @@ class ToolResult:
     success: bool
     output: Any          # 工具的实际输出
     error: Optional[str] = None
+    # 富内容块（多模态）：非 None 时，loop 将把这些块注入 LLM 上下文。
+    # 使用 agent.core.llm.image_block / image_url_block 构建，格式与 LLM 后端无关。
+    content_blocks: Optional[List[dict]] = None
 
     def to_str(self) -> str:
         if self.success:
@@ -64,13 +67,13 @@ class ToolSpec:
 @dataclass
 class AgentState:
     goal: str
-    tools: dict[str, ToolSpec] = field(default_factory=dict)
+    tools: Dict[str, ToolSpec] = field(default_factory=dict)
 
     # 短期记忆：本轮所有 (action, result) 的线性历史，直接拼入 LLM 上下文
-    short_term: list[dict] = field(default_factory=list)
+    short_term: List[dict] = field(default_factory=list)
 
     # 长期记忆：跨轮次保留的经验/结论，以字符串列表存储（极简方案）
-    long_term: list[str] = field(default_factory=list)
+    long_term: List[str] = field(default_factory=list)
 
     # 迭代计数
     iteration: int = 0

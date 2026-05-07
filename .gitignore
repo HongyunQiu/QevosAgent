@@ -48,3 +48,5 @@ venv/
 # others
 config/
 .code-review-graph/
+
+SKILLS/*

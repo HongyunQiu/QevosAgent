@@ -602,6 +602,34 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── POST /api/inject-image  ───────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/api/inject-image') {
+    try {
+      const { imageData, imageType, filename, message, runId } = JSON.parse(await readBody(req));
+      const target = runId || state.activeRunId;
+      if (!target || !imageData) { json(400, { error: 'missing imageData or active run' }); return; }
+
+      // Save image file to artifacts/
+      const ts = Date.now();
+      const ext = (imageType || 'image/jpeg').split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+      const imgName = `web_img_${ts}.${ext}`;
+      const artifactsDir = path.join(RUNS_DIR, target, 'artifacts');
+      fs.mkdirSync(artifactsDir, { recursive: true });
+      fs.writeFileSync(path.join(artifactsDir, imgName), Buffer.from(imageData, 'base64'));
+
+      // Inject command: agent will call load_image() on its next turn
+      const relPath = `artifacts/${imgName}`;
+      const userText = message ? `[Web用户]: ${message}` : '[Web用户]: （图片）';
+      const cmd = `/inject ${userText}\n[系统提示]: 用户通过看板上传了图片，已保存至 ${relPath}，请调用 load_image(path="${relPath}") 加载后分析。`;
+      fs.writeFileSync(path.join(RUNS_DIR, target, 'web_cmd.txt'), cmd.trim() + '\n', 'utf8');
+
+      state.events.push({ type: 'injected', text: userText, iter: _iterCounter, idx: -1 });
+      broadcast();
+      json(200, { ok: true, path: relPath });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
   // ── GET /api/state  ───────────────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/state') {
     json(200, { type: 'state', ...state });

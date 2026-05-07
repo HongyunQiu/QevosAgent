@@ -1691,6 +1691,95 @@ def _get_run_dir(state: AgentState) -> Optional[str]:
     return os.environ.get("RUN_DIR")
 
 
+def tool_set_thinking_budget(state: AgentState, budget: int = 0) -> ToolResult:
+    """动态调整当前 LLM 实例的 extended thinking token 预算。
+
+    budget=0 关闭 thinking；budget>0 开启并设置 token 上限。
+    对 AnthropicBackend（claude 系列）和支持 thinking 的 OpenAI 兼容后端均有效。
+    修改立即生效，影响本次 run 后续的所有 llm.complete() 调用。
+    """
+    llm = state.meta.get("_llm")
+    if llm is None:
+        return ToolResult(success=False, output=None, error="LLM 实例未挂载到 state.meta['_llm']")
+    if not hasattr(llm, "thinking_budget"):
+        return ToolResult(success=False, output=None,
+                          error=f"{type(llm).__name__} 不支持 thinking_budget 属性")
+    old = getattr(llm, "thinking_budget", 0)
+    llm.thinking_budget = max(0, int(budget))
+    # Anthropic 要求 max_tokens > thinking_budget
+    if llm.thinking_budget > 0 and hasattr(llm, "max_tokens"):
+        llm.max_tokens = max(llm.max_tokens, llm.thinking_budget + 2048)
+    action = "开启" if llm.thinking_budget > 0 else "关闭"
+    return ToolResult(
+        success=True,
+        output=f"thinking_budget {old} → {llm.thinking_budget}（{action}）",
+    )
+
+
+def tool_load_image(state: AgentState, path: str, caption: str = "") -> ToolResult:
+    """加载本地图片或远程图片 URL，将其注入下一次 LLM 调用的上下文（多模态）。
+
+    支持：本地文件路径（jpg/png/gif/webp）、http/https URL。
+    图片会作为 image content block 附加到对话历史，LLM 在下一轮可直接"看到"该图片。
+    caption 会作为图片前的文字说明一并注入。
+    """
+    # 若后端已确认不支持视觉，提前返回明确错误，避免注入图片块导致死循环
+    if state.meta.get("_vision_supported") is False:
+        return ToolResult(
+            success=False,
+            output=None,
+            error=(
+                "当前 LLM 后端不支持多模态（视觉），无法加载图片。\n"
+                "如需分析图片内容，请改用支持视觉的模型，"
+                "或通过其他方式（如 OCR、图片描述文本）提供图片信息。"
+            ),
+        )
+
+    import base64, mimetypes, urllib.request
+
+    from ..core.llm import image_block, image_url_block
+
+    p = path.strip()
+
+    # ── 远程 URL：直接用 image_url_block，不下载 ──────────────────────────────
+    if p.startswith("http://") or p.startswith("https://"):
+        blocks = []
+        if caption:
+            blocks.append({"type": "text", "text": caption})
+        blocks.append(image_url_block(p))
+        return ToolResult(
+            success=True,
+            output=f"已加载远程图片：{p}",
+            content_blocks=blocks,
+        )
+
+    # ── 本地文件：base64 编码 ─────────────────────────────────────────────────
+    fp = Path(p)
+    if not fp.is_absolute():
+        fp = Path(os.getcwd()) / fp
+    if not fp.exists():
+        return ToolResult(success=False, output=None, error=f"文件不存在：{fp}")
+
+    mime, _ = mimetypes.guess_type(str(fp))
+    if not mime or not mime.startswith("image/"):
+        mime = "image/jpeg"
+
+    try:
+        data = base64.b64encode(fp.read_bytes()).decode()
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=f"读取图片失败：{e}")
+
+    blocks = []
+    if caption:
+        blocks.append({"type": "text", "text": caption})
+    blocks.append(image_block(data, mime))
+    return ToolResult(
+        success=True,
+        output=f"已加载本地图片：{fp.name}（{mime}，{len(data)//1024}KB base64）",
+        content_blocks=blocks,
+    )
+
+
 def tool_get_env_info(state: AgentState) -> ToolResult:
     """返回当前运行环境的基本信息：日期时间、工作目录。"""
     import datetime
@@ -2072,7 +2161,11 @@ def get_standard_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="ask_user",
-            description="当缺少关键信息时，向人类提问并暂停本次运行，等待命令行输入后继续",
+            description=(
+                "向人类提问并暂停本次运行，等待用户回复后继续。"
+                "支持两种输入渠道：命令行直接输入，或 WEB 页面聊天框（用户发消息后会自动注入）。"
+                "在 WEB 展示场景下，调用本工具是让 agent 进入等待交互状态的标准方式。"
+            ),
             args_schema={"question": "要向人类询问的问题（字符串）"},
             fn=lambda state, question: ToolResult(success=True, output={"question": question}),
         ),
@@ -2260,7 +2353,13 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description=(
                 "在浏览器 WEB 页面中展示内容（图表、表格、HTML、Markdown 等）。"
                 "返回可访问的 URL，用户打开后实时接收更新，无需刷新。"
-                "支持多个独立展示面板（display_id），每个面板可独立更新。**必须**自动弹出以增加用户获得感。"
+                "支持多个独立展示面板（display_id），每个面板可独立更新。**必须**自动弹出以增加用户获得感。\n"
+                "【重要交互规范】调用本工具后，用户会停留在 WEB 页面通过下方聊天框与你交互，"
+                "因此你必须：① 紧接着调用 web_notify 向用户说明展示内容并邀请他继续对话"
+                "（例如：已展示完毕，有什么问题或需要调整的吗？）；"
+                "② 然后调用 ask_user 暂停任务，等待用户通过 WEB 聊天框发来下一步指令。"
+                "不要在调用 web_show 后立即完成任务（submit_completion_report/done），"
+                "除非用户已明确说不需要进一步交互。"
             ),
             args_schema={
                 "content": "要展示的内容字符串",
@@ -2291,6 +2390,33 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "display_id": "（可选）目标面板 ID，'*' 表示推送到所有面板（默认）",
             },
             fn=tool_web_notify,
+        ),
+        # ── 模型能力动态控制 ─────────────────────────────────────────────────
+        ToolSpec(
+            name="set_thinking_budget",
+            description=(
+                "动态开启或关闭 extended thinking（深度推理）模式，并设置 token 预算。\n"
+                "适合在遇到复杂推理、数学证明、多步规划等任务时临时开启，"
+                "完成后可再次调用关闭以节省 token。\n"
+                "budget=0 关闭；budget>0（建议 4000~16000）开启。"
+            ),
+            args_schema={
+                "budget": "thinking token 预算（整数）。0=关闭，建议范围 4000~16000",
+            },
+            fn=tool_set_thinking_budget,
+        ),
+        ToolSpec(
+            name="load_image",
+            description=(
+                "将本地图片文件或远程图片 URL 加载到对话上下文，使 LLM 在下一轮能直接分析图片内容。\n"
+                "适用场景：分析截图、识别图表/表格、检查设计稿、读取扫描件等。\n"
+                "支持 jpg/png/gif/webp；本地路径支持相对路径（相对于当前工作目录）。"
+            ),
+            args_schema={
+                "path": "图片路径（本地文件路径或 http/https URL）",
+                "caption": "（可选）图片说明文字，会作为图片前的提示注入上下文",
+            },
+            fn=tool_load_image,
         ),
         # ── 环境信息工具 ──────────────────────────────────────────────────────
         ToolSpec(

@@ -5,5 +5,5 @@ own loop/LLM/tools without using the high-level Agent wrapper.
 """
 
 from .types_def import Action, ActionType, AgentState, ToolSpec, ToolResult
-from .llm import LLMBackend, OpenAIBackend, AnthropicBackend
+from .llm import LLMBackend, OpenAIBackend, AnthropicBackend, image_block, image_url_block
 from .loop import run, console_hooks, AgentHooks
