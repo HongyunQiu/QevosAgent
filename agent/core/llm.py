@@ -285,6 +285,8 @@ class OpenAIBackend(LLMBackend):
         if thinking_budget is None:
             thinking_budget = int(os.environ.get("OPENAI_THINKING_BUDGET", "0"))
         self.thinking_budget = max(0, int(thinking_budget))
+        # Context window: probe server first, fall back to env var / hardcoded default.
+        self.context_window = self._probe_context_window()
 
     @staticmethod
     def _detect_official_openai_endpoint(base_url: Optional[str]) -> bool:
@@ -296,6 +298,33 @@ class OpenAIBackend(LLMBackend):
         except Exception:
             return False
         return hostname in {"api.openai.com", "openai.com"}
+
+    def _probe_context_window(self) -> int:
+        """Fetch max_model_len from the server's /v1/models endpoint.
+
+        vLLM and similar servers expose max_model_len per model; this lets the
+        framework use the real limit instead of the hardcoded 128K fallback.
+        Sets LLM_CONTEXT_WINDOW env var as a side-effect so other code (e.g.
+        test scripts) reading the env var also sees the discovered value.
+        Falls back to LLM_CONTEXT_WINDOW env var or 131072 on any error.
+        """
+        import os
+        fallback = int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
+        if self._is_official_openai:
+            return fallback
+        try:
+            resp = self.client.models.list()
+            for item in getattr(resp, "data", []) or []:
+                if getattr(item, "id", None) == self.model:
+                    val = getattr(item, "max_model_len", None)
+                    if val and int(val) > 0:
+                        discovered = int(val)
+                        if "LLM_CONTEXT_WINDOW" not in os.environ:
+                            os.environ["LLM_CONTEXT_WINDOW"] = str(discovered)
+                        return discovered
+        except Exception:
+            pass
+        return fallback
 
     @staticmethod
     def _normalize_messages(messages: list[dict]) -> list[dict]:

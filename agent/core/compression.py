@@ -330,7 +330,9 @@ def compress_context(
 
 def _maybe_compress_for_context(state: AgentState, llm: LLMBackend, system: str, messages: list[dict]) -> dict:
     """Estimate prompt tokens and auto-trim when close to context limit."""
-    ctx = int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))  # oss120b is 128K; vLLM reports 131072
+    # Prefer the backend's discovered value (set during __init__ from /v1/models),
+    # then fall back to the env var, then the hardcoded default.
+    ctx = getattr(llm, "context_window", None) or int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
     warn_ratio = float(os.environ.get("LLM_CONTEXT_WARN_RATIO", "0.90"))
 
     est = 0
