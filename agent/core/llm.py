@@ -302,23 +302,25 @@ class OpenAIBackend(LLMBackend):
     def _probe_context_window(self) -> int:
         """Fetch max_model_len from the server's /v1/models endpoint.
 
-        vLLM and similar servers expose max_model_len per model; this lets the
-        framework use the real limit instead of the hardcoded 128K fallback.
-        Sets LLM_CONTEXT_WINDOW env var as a side-effect so other code (e.g.
-        test scripts) reading the env var also sees the discovered value.
+        Makes a direct HTTP call (no SDK abstraction) so vendor-specific fields
+        like vLLM's max_model_len are never dropped by Pydantic parsing.
+        Sets LLM_CONTEXT_WINDOW env var as a side-effect so other code that
+        reads the env var directly also sees the discovered value.
         Falls back to LLM_CONTEXT_WINDOW env var or 131072 on any error.
-
-        Uses with_raw_response to get the raw JSON dict so that vendor-specific
-        fields (e.g. vLLM's max_model_len) are not silently dropped by the
-        openai SDK's Pydantic model parsing.
         """
-        import os, json as _json
+        import os, json as _json, urllib.request
         fallback = int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
         if self._is_official_openai:
             return fallback
         try:
-            raw = self.client.models.with_raw_response.list()
-            payload = _json.loads(raw.text)
+            url = (self.base_url or "").rstrip("/") + "/models"
+            api_key = getattr(self.client, "api_key", None) or "local"
+            req = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                payload = _json.loads(resp.read().decode())
             for item in (payload.get("data") or []):
                 if item.get("id") == self.model:
                     val = item.get("max_model_len")
