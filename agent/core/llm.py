@@ -307,16 +307,21 @@ class OpenAIBackend(LLMBackend):
         Sets LLM_CONTEXT_WINDOW env var as a side-effect so other code (e.g.
         test scripts) reading the env var also sees the discovered value.
         Falls back to LLM_CONTEXT_WINDOW env var or 131072 on any error.
+
+        Uses with_raw_response to get the raw JSON dict so that vendor-specific
+        fields (e.g. vLLM's max_model_len) are not silently dropped by the
+        openai SDK's Pydantic model parsing.
         """
-        import os
+        import os, json as _json
         fallback = int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
         if self._is_official_openai:
             return fallback
         try:
-            resp = self.client.models.list()
-            for item in getattr(resp, "data", []) or []:
-                if getattr(item, "id", None) == self.model:
-                    val = getattr(item, "max_model_len", None)
+            raw = self.client.models.with_raw_response.list()
+            payload = _json.loads(raw.text)
+            for item in (payload.get("data") or []):
+                if item.get("id") == self.model:
+                    val = item.get("max_model_len")
                     if val and int(val) > 0:
                         discovered = int(val)
                         if "LLM_CONTEXT_WINDOW" not in os.environ:
