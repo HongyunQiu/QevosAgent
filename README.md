@@ -205,7 +205,7 @@ npm install
 npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser to monitor task execution in real time.
+Open [http://localhost:8765](http://localhost:8765) in your browser to monitor task execution in real time.
 
 ### 🎬 Demo
 
@@ -418,7 +418,7 @@ npm install
 npm start
 ```
 
-在浏览器打开 [http://localhost:3000](http://localhost:3000)，即可实时监控任务执行。
+在浏览器打开 [http://localhost:8765](http://localhost:8765)，即可实时监控任务执行。
 
 ### 🎬 演示
 
