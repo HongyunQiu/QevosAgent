@@ -29,6 +29,122 @@ const EventEmitter = require('events');
 const serverEvents = new EventEmitter();
 module.exports = { serverEvents };
 
+// ── CDP browser automation (non-Electron mode) ─────────────────────────────
+const CDP_PORT = parseInt(process.env.CDP_PORT || '9222', 10);
+const cdpTargets = new Map(); // display_id → CDP targetId
+
+function cdpHttp(urlPath) {
+  return new Promise((resolve, reject) => {
+    http.get(`http://127.0.0.1:${CDP_PORT}${urlPath}`, res => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } });
+    }).on('error', reject);
+  });
+}
+
+// One-shot: open WS, send one command, get result, close.
+function cdpSend(wsUrl, method, params = {}) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => { ws.terminate(); reject(new Error('CDP timeout')); }, 10000);
+    ws.once('open', () => ws.send(JSON.stringify({ id: 1, method, params })));
+    ws.on('message', raw => {
+      const msg = JSON.parse(String(raw));
+      if (msg.id === 1) {
+        clearTimeout(timer); ws.close();
+        if (msg.error) reject(new Error(msg.error.message));
+        else resolve(msg.result || {});
+      }
+    });
+    ws.once('error', err => { clearTimeout(timer); ws.close(); reject(err); });
+  });
+}
+
+// Navigate and wait for Page.loadEventFired (max 15 s).
+function cdpNavigate(wsUrl, url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    let navigated = false;
+    const timer = setTimeout(() => { ws.close(); resolve({ ok: true, note: 'load timeout' }); }, 15000);
+    ws.once('open', () => ws.send(JSON.stringify({ id: 1, method: 'Page.enable', params: {} })));
+    ws.on('message', raw => {
+      const msg = JSON.parse(String(raw));
+      if (msg.id === 1) {
+        ws.send(JSON.stringify({ id: 2, method: 'Page.navigate', params: { url } }));
+      } else if (msg.id === 2) {
+        navigated = true;
+      } else if (msg.method === 'Page.loadEventFired' && navigated) {
+        clearTimeout(timer); ws.close(); resolve({ ok: true });
+      }
+    });
+    ws.once('error', err => { clearTimeout(timer); ws.close(); reject(err); });
+  });
+}
+
+async function cdpBrowserAction(displayId, action, payload) {
+  let pages;
+  try {
+    const all = await cdpHttp('/json');
+    pages = all.filter(t => t.type === 'page');
+  } catch {
+    throw new Error(
+      `无法连接到浏览器 CDP（端口 ${CDP_PORT}）。` +
+      `请以 --remote-debugging-port=${CDP_PORT} 启动 Chrome/Edge 后重试。`
+    );
+  }
+
+  if (action === 'new_tab') {
+    const url = payload.url || 'about:blank';
+    const tab = await cdpHttp(`/json/new?${encodeURIComponent(url)}`);
+    cdpTargets.set(displayId, tab.id);
+    return { ok: true, targetId: tab.id, url: tab.url };
+  }
+
+  const targetId = cdpTargets.get(displayId);
+  const target = pages.find(t => t.id === targetId) || pages[0];
+  if (!target) throw new Error('没有可用的浏览器标签页，请先调用 new_tab');
+  cdpTargets.set(displayId, target.id);
+  const wsUrl = target.webSocketDebuggerUrl;
+
+  switch (action) {
+    case 'navigate':
+      return await cdpNavigate(wsUrl, payload.url);
+    case 'eval': {
+      const r = await cdpSend(wsUrl, 'Runtime.evaluate', {
+        expression: payload.code, returnByValue: true, awaitPromise: true,
+      });
+      return { ok: true, result: r.result?.value ?? r.result };
+    }
+    case 'get_html': {
+      const r = await cdpSend(wsUrl, 'Runtime.evaluate', {
+        expression: 'document.documentElement.outerHTML', returnByValue: true,
+      });
+      return { ok: true, html: r.result?.value };
+    }
+    case 'screenshot': {
+      const r = await cdpSend(wsUrl, 'Page.captureScreenshot', { format: 'png' });
+      return { ok: true, data: r.data };
+    }
+    case 'click': {
+      await cdpSend(wsUrl, 'Runtime.evaluate', {
+        expression: `document.querySelector(${JSON.stringify(payload.selector)})?.click()`,
+      });
+      return { ok: true };
+    }
+    case 'fill': {
+      const expr = `(el => { if (el) { el.focus(); el.value = ${JSON.stringify(payload.value)}; ` +
+        `el.dispatchEvent(new Event('input', {bubbles:true})); ` +
+        `el.dispatchEvent(new Event('change', {bubbles:true})); } })` +
+        `(document.querySelector(${JSON.stringify(payload.selector)}))`;
+      await cdpSend(wsUrl, 'Runtime.evaluate', { expression: expr });
+      return { ok: true };
+    }
+    default:
+      throw new Error(`未知操作: ${action}。支持: new_tab / navigate / eval / get_html / screenshot / click / fill`);
+  }
+}
+
 const PORT       = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
 const RUNS_DIR   = path.resolve(process.env.RUNS_DIR || path.join(__dirname, '..', 'runs'));
 const AGENT_DIR  = path.resolve(process.env.AGENT_DIR || path.join(__dirname, '..'));
@@ -895,6 +1011,25 @@ const server = http.createServer(async (req, res) => {
       });
       json(200, { ok: true });
     } catch (e) { json(400, { error: String(e) }); }
+    return;
+  }
+
+  // ── POST /api/browser-action ─────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/api/browser-action') {
+    try {
+      const body = JSON.parse(await readBody(req));
+      const { display_id = 'default', action, payload = {} } = body;
+      if (!action) return json(400, { error: 'action is required' });
+
+      if (process.env.ELECTRON) {
+        serverEvents.emit('browser-action', { displayId: display_id, action, payload },
+          result => { if (result.error) json(500, result); else json(200, result); }
+        );
+      } else {
+        const result = await cdpBrowserAction(display_id, action, payload);
+        json(200, result);
+      }
+    } catch (e) { json(500, { error: String(e.message || e) }); }
     return;
   }
 

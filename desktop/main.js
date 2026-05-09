@@ -214,6 +214,70 @@ function startDashboard() {
       if (!mainWindow || mainWindow.isDestroyed()) return;
       openElectronView(displayId, url, title || displayId);
     });
+
+    serverEvents.on('browser-action', async ({ displayId, action, payload }, callback) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return callback({ error: '主窗口不可用' });
+      const id = 'view-' + displayId;
+      const entry = gViews.get(id);
+      if (!entry && action !== 'new_tab') {
+        return callback({ error: `视图 ${displayId} 不存在，请先调用 web_show 创建` });
+      }
+      try {
+        const wc = entry?.view.webContents;
+        switch (action) {
+          case 'new_tab': {
+            openElectronView(displayId, payload.url || 'about:blank', payload.title || displayId);
+            callback({ ok: true });
+            break;
+          }
+          case 'navigate': {
+            await new Promise((resolve) => {
+              wc.once('did-finish-load', resolve);
+              wc.loadURL(payload.url);
+              setTimeout(resolve, 15000);
+            });
+            callback({ ok: true });
+            break;
+          }
+          case 'eval': {
+            const result = await wc.executeJavaScript(payload.code);
+            callback({ ok: true, result });
+            break;
+          }
+          case 'get_html': {
+            const html = await wc.executeJavaScript('document.documentElement.outerHTML');
+            callback({ ok: true, html });
+            break;
+          }
+          case 'screenshot': {
+            const img = await wc.capturePage();
+            callback({ ok: true, data: img.toPNG().toString('base64') });
+            break;
+          }
+          case 'click': {
+            await wc.executeJavaScript(
+              `document.querySelector(${JSON.stringify(payload.selector)})?.click()`
+            );
+            callback({ ok: true });
+            break;
+          }
+          case 'fill': {
+            const expr = `(el => { if (el) { el.focus(); el.value = ${JSON.stringify(payload.value)}; ` +
+              `el.dispatchEvent(new Event('input', {bubbles:true})); ` +
+              `el.dispatchEvent(new Event('change', {bubbles:true})); } })` +
+              `(document.querySelector(${JSON.stringify(payload.selector)}))`;
+            await wc.executeJavaScript(expr);
+            callback({ ok: true });
+            break;
+          }
+          default:
+            callback({ error: `未知操作: ${action}` });
+        }
+      } catch (e) {
+        callback({ error: e.message });
+      }
+    });
+
     console.log('[desktop] Dashboard server started from', serverPath);
   } catch (err) {
     console.error('[desktop] Failed to load dashboard server:', err.message);
