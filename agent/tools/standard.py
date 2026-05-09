@@ -2062,6 +2062,49 @@ def tool_web_notify(
     return ToolResult(success=True, output={"message": message, "display_id": display_id})
 
 
+def tool_web_interact(
+    state: AgentState,
+    action: str,
+    display_id: str = "default",
+    payload: dict | None = None,
+) -> ToolResult:
+    """在浏览器视图中执行自动化操作。
+
+    Electron 模式：直接控制内嵌 WebContentsView，无需额外配置。
+    普通浏览器模式：通过 CDP 控制 Chrome/Edge，需以 --remote-debugging-port=9222 启动浏览器。
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    port = os.environ.get("DASHBOARD_PORT", "8765")
+    req_data = json.dumps(
+        {"display_id": display_id, "action": action, "payload": payload or {}},
+        ensure_ascii=False,
+    ).encode()
+    try:
+        req = _ur.Request(
+            f"http://localhost:{port}/api/browser-action",
+            data=req_data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=20) as resp:
+            result = json.loads(resp.read())
+    except _ue.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        try:
+            err = json.loads(body).get("error", body)
+        except Exception:
+            err = body
+        return ToolResult(success=False, output="", error=err)
+    except Exception as e:
+        return ToolResult(success=False, output="", error=str(e))
+
+    if "error" in result:
+        return ToolResult(success=False, output="", error=result["error"])
+    return ToolResult(success=True, output=result)
+
+
 # ── SKILL 工具 ────────────────────────────────────────────────────────────────
 
 _SKILLS_DIR = Path(__file__).parent.parent.parent / "SKILLS"
@@ -2549,6 +2592,29 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "display_id": "（可选）目标面板 ID，'*' 表示推送到所有面板（默认）",
             },
             fn=tool_web_notify,
+        ),
+        ToolSpec(
+            name="web_interact",
+            description=(
+                "在已打开的浏览器视图中执行自动化操作（导航、JS 执行、截图、点击、填写等）。\n"
+                "Electron 模式：直接控制内嵌标签页，无需额外配置。\n"
+                "普通浏览器模式：需以 --remote-debugging-port=9222 启动 Chrome/Edge，"
+                "否则工具会返回带有具体启动命令的错误提示。\n"
+                "支持的 action：\n"
+                "  - new_tab：打开新标签页，payload: {url?, title?}\n"
+                "  - navigate：跳转 URL 并等待加载完成，payload: {url}\n"
+                "  - eval：执行 JS 并返回结果，payload: {code}\n"
+                "  - get_html：获取页面完整 HTML，payload: {}\n"
+                "  - screenshot：截图，返回 base64 PNG，payload: {}\n"
+                "  - click：点击 CSS 选择器匹配的元素，payload: {selector}\n"
+                "  - fill：填写输入框，payload: {selector, value}"
+            ),
+            args_schema={
+                "action": "操作类型：new_tab / navigate / eval / get_html / screenshot / click / fill",
+                "display_id": "（可选）目标视图 ID，对应 web_show 的 display_id，默认 'default'",
+                "payload": "（可选）操作参数对象，不同 action 所需字段见描述",
+            },
+            fn=tool_web_interact,
         ),
         # ── 模型能力动态控制 ─────────────────────────────────────────────────
         ToolSpec(

@@ -152,7 +152,11 @@ function activateView(id) {
   pushTabsUpdate();
 }
 
-function openElectronView(displayId, url, title) {
+// allowNavigation=false (default): content view locked to dashboard URL,
+//   all link clicks open in the system browser (original web_show behaviour).
+// allowNavigation=true: browser automation view, in-page navigation is
+//   allowed; only new-window requests are sent to the system browser.
+function openElectronView(displayId, url, title, allowNavigation = false) {
   const id = 'view-' + displayId;
   if (gViews.has(id)) {
     // Replace mode: reload the existing view with updated content.
@@ -165,13 +169,14 @@ function openElectronView(displayId, url, title) {
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   });
 
-  // Keep this view locked to its view URL — any link the user clicks inside
-  // the rendered HTML content opens in the system browser instead of
-  // navigating the view or spawning a new Electron window.
-  view.webContents.on('will-navigate', (e, targetUrl) => {
-    e.preventDefault();
-    shell.openExternal(targetUrl);
-  });
+  if (!allowNavigation) {
+    // Lock content views to their dashboard URL.
+    view.webContents.on('will-navigate', (e, targetUrl) => {
+      e.preventDefault();
+      shell.openExternal(targetUrl);
+    });
+  }
+  // In both modes, target="_blank" / window.open goes to the system browser.
   view.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
     shell.openExternal(targetUrl);
     return { action: 'deny' };
@@ -214,6 +219,70 @@ function startDashboard() {
       if (!mainWindow || mainWindow.isDestroyed()) return;
       openElectronView(displayId, url, title || displayId);
     });
+
+    serverEvents.on('browser-action', async ({ displayId, action, payload }, callback) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return callback({ error: '主窗口不可用' });
+      const id = 'view-' + displayId;
+      const entry = gViews.get(id);
+      if (!entry && action !== 'new_tab') {
+        return callback({ error: `视图 ${displayId} 不存在，请先调用 web_show 创建` });
+      }
+      try {
+        const wc = entry?.view.webContents;
+        switch (action) {
+          case 'new_tab': {
+            openElectronView(displayId, payload.url || 'about:blank', payload.title || displayId, true);
+            callback({ ok: true });
+            break;
+          }
+          case 'navigate': {
+            await new Promise((resolve) => {
+              wc.once('did-finish-load', resolve);
+              wc.loadURL(payload.url);
+              setTimeout(resolve, 15000);
+            });
+            callback({ ok: true });
+            break;
+          }
+          case 'eval': {
+            const result = await wc.executeJavaScript(payload.code);
+            callback({ ok: true, result });
+            break;
+          }
+          case 'get_html': {
+            const html = await wc.executeJavaScript('document.documentElement.outerHTML');
+            callback({ ok: true, html });
+            break;
+          }
+          case 'screenshot': {
+            const img = await wc.capturePage();
+            callback({ ok: true, data: img.toPNG().toString('base64') });
+            break;
+          }
+          case 'click': {
+            await wc.executeJavaScript(
+              `document.querySelector(${JSON.stringify(payload.selector)})?.click()`
+            );
+            callback({ ok: true });
+            break;
+          }
+          case 'fill': {
+            const expr = `(el => { if (el) { el.focus(); el.value = ${JSON.stringify(payload.value)}; ` +
+              `el.dispatchEvent(new Event('input', {bubbles:true})); ` +
+              `el.dispatchEvent(new Event('change', {bubbles:true})); } })` +
+              `(document.querySelector(${JSON.stringify(payload.selector)}))`;
+            await wc.executeJavaScript(expr);
+            callback({ ok: true });
+            break;
+          }
+          default:
+            callback({ error: `未知操作: ${action}` });
+        }
+      } catch (e) {
+        callback({ error: e.message });
+      }
+    });
+
     console.log('[desktop] Dashboard server started from', serverPath);
   } catch (err) {
     console.error('[desktop] Failed to load dashboard server:', err.message);
