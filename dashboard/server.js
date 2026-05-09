@@ -1151,7 +1151,7 @@ poll();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('');
-  console.log('  ⚡ QevosAgent Dashboard');
+  console.log(`  🦊 QevosAgent Dashboard  v${APP_VERSION}`);
   console.log('  ─────────────────────────────────────');
   console.log(`  URL      : http://localhost:${PORT}`);
   console.log(`  Runs     : ${RUNS_DIR}`);
