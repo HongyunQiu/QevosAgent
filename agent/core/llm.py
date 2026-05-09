@@ -302,16 +302,22 @@ class OpenAIBackend(LLMBackend):
     def _probe_context_window(self) -> int:
         """Fetch max_model_len from the server's /v1/models endpoint.
 
-        Makes a direct HTTP call (no SDK abstraction) so vendor-specific fields
-        like vLLM's max_model_len are never dropped by Pydantic parsing.
-        Sets LLM_CONTEXT_WINDOW env var as a side-effect so other code that
-        reads the env var directly also sees the discovered value.
-        Falls back to LLM_CONTEXT_WINDOW env var or 131072 on any error.
+        Priority (highest to lowest):
+          1. Server-reported max_model_len  — always preferred when reachable.
+          2. LLM_CONTEXT_WINDOW env var     — fallback when probe fails.
+          3. Hardcoded 131072               — last resort.
+
+        The env var is intentionally NOT used when the server probe succeeds,
+        so that a stale or conservative env var never caps a larger real limit.
+        Makes a direct HTTP call (no SDK abstraction) to avoid vendor-specific
+        fields being silently dropped by Pydantic parsing.
         """
         import os, json as _json, urllib.request
-        fallback = int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
+
         if self._is_official_openai:
-            return fallback
+            # OpenAI's API does not expose max_model_len; rely on env var / default.
+            return int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
+
         try:
             url = (self.base_url or "").rstrip("/") + "/models"
             api_key = getattr(self.client, "api_key", None) or "local"
@@ -325,13 +331,13 @@ class OpenAIBackend(LLMBackend):
                 if item.get("id") == self.model:
                     val = item.get("max_model_len")
                     if val and int(val) > 0:
-                        discovered = int(val)
-                        if "LLM_CONTEXT_WINDOW" not in os.environ:
-                            os.environ["LLM_CONTEXT_WINDOW"] = str(discovered)
-                        return discovered
+                        # Server value wins — do not let env var override it.
+                        return int(val)
         except Exception:
             pass
-        return fallback
+
+        # Probe failed: fall back to env var, then hardcoded default.
+        return int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
 
     @staticmethod
     def _normalize_messages(messages: list[dict]) -> list[dict]:
