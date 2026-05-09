@@ -152,7 +152,11 @@ function activateView(id) {
   pushTabsUpdate();
 }
 
-function openElectronView(displayId, url, title) {
+// allowNavigation=false (default): content view locked to dashboard URL,
+//   all link clicks open in the system browser (original web_show behaviour).
+// allowNavigation=true: browser automation view, in-page navigation is
+//   allowed; only new-window requests are sent to the system browser.
+function openElectronView(displayId, url, title, allowNavigation = false) {
   const id = 'view-' + displayId;
   if (gViews.has(id)) {
     // Replace mode: reload the existing view with updated content.
@@ -165,13 +169,14 @@ function openElectronView(displayId, url, title) {
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   });
 
-  // Keep this view locked to its view URL — any link the user clicks inside
-  // the rendered HTML content opens in the system browser instead of
-  // navigating the view or spawning a new Electron window.
-  view.webContents.on('will-navigate', (e, targetUrl) => {
-    e.preventDefault();
-    shell.openExternal(targetUrl);
-  });
+  if (!allowNavigation) {
+    // Lock content views to their dashboard URL.
+    view.webContents.on('will-navigate', (e, targetUrl) => {
+      e.preventDefault();
+      shell.openExternal(targetUrl);
+    });
+  }
+  // In both modes, target="_blank" / window.open goes to the system browser.
   view.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
     shell.openExternal(targetUrl);
     return { action: 'deny' };
@@ -226,7 +231,7 @@ function startDashboard() {
         const wc = entry?.view.webContents;
         switch (action) {
           case 'new_tab': {
-            openElectronView(displayId, payload.url || 'about:blank', payload.title || displayId);
+            openElectronView(displayId, payload.url || 'about:blank', payload.title || displayId, true);
             callback({ ok: true });
             break;
           }
