@@ -302,29 +302,42 @@ class OpenAIBackend(LLMBackend):
     def _probe_context_window(self) -> int:
         """Fetch max_model_len from the server's /v1/models endpoint.
 
-        vLLM and similar servers expose max_model_len per model; this lets the
-        framework use the real limit instead of the hardcoded 128K fallback.
-        Sets LLM_CONTEXT_WINDOW env var as a side-effect so other code (e.g.
-        test scripts) reading the env var also sees the discovered value.
-        Falls back to LLM_CONTEXT_WINDOW env var or 131072 on any error.
+        Priority (highest to lowest):
+          1. Server-reported max_model_len  — always preferred when reachable.
+          2. LLM_CONTEXT_WINDOW env var     — fallback when probe fails.
+          3. Hardcoded 131072               — last resort.
+
+        The env var is intentionally NOT used when the server probe succeeds,
+        so that a stale or conservative env var never caps a larger real limit.
+        Makes a direct HTTP call (no SDK abstraction) to avoid vendor-specific
+        fields being silently dropped by Pydantic parsing.
         """
-        import os
-        fallback = int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
+        import os, json as _json, urllib.request
+
         if self._is_official_openai:
-            return fallback
+            # OpenAI's API does not expose max_model_len; rely on env var / default.
+            return int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
+
         try:
-            resp = self.client.models.list()
-            for item in getattr(resp, "data", []) or []:
-                if getattr(item, "id", None) == self.model:
-                    val = getattr(item, "max_model_len", None)
+            url = (self.base_url or "").rstrip("/") + "/models"
+            api_key = getattr(self.client, "api_key", None) or "local"
+            req = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                payload = _json.loads(resp.read().decode())
+            for item in (payload.get("data") or []):
+                if item.get("id") == self.model:
+                    val = item.get("max_model_len")
                     if val and int(val) > 0:
-                        discovered = int(val)
-                        if "LLM_CONTEXT_WINDOW" not in os.environ:
-                            os.environ["LLM_CONTEXT_WINDOW"] = str(discovered)
-                        return discovered
+                        # Server value wins — do not let env var override it.
+                        return int(val)
         except Exception:
             pass
-        return fallback
+
+        # Probe failed: fall back to env var, then hardcoded default.
+        return int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
 
     @staticmethod
     def _normalize_messages(messages: list[dict]) -> list[dict]:
