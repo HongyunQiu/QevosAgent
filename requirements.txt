@@ -4,3 +4,5 @@ anthropic
 tiktoken
 json-repair
 ddgs
+Pillow
+opencv-python

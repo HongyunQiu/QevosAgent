@@ -1716,10 +1716,50 @@ def tool_set_thinking_budget(state: AgentState, budget: int = 0) -> ToolResult:
     )
 
 
+def _normalise_image(raw: bytes) -> tuple[str, str]:
+    """Convert raw image bytes to a base64 string + MIME type suitable for LLMs.
+
+    Tries Pillow first so any format (BMP, TIFF, ICO, WebP, …) gets re-encoded
+    as PNG (lossless, universally supported).  JPEG input is kept as JPEG to
+    avoid quality loss from double compression.  Falls back to a straight
+    base64 encode when Pillow is unavailable.
+
+    Returns (base64_str, mime_type).
+    """
+    import base64, io
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(raw))
+        fmt = (img.format or "").upper()
+        if fmt in ("JPEG", "JPG"):
+            if img.mode in ("RGBA", "P", "LA"):
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="JPEG", quality=95)
+            else:
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=95)
+            return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
+        else:
+            if img.mode not in ("RGB", "RGBA", "L", "LA"):
+                img = img.convert("RGBA")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return base64.b64encode(buf.getvalue()).decode(), "image/png"
+    except ImportError:
+        mime = "image/jpeg"
+        if raw[:8] == b"\x89PNG\r\n\x1a\n":
+            mime = "image/png"
+        elif raw[:6] in (b"GIF87a", b"GIF89a"):
+            mime = "image/gif"
+        elif raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            mime = "image/webp"
+        return base64.b64encode(raw).decode(), mime
+
+
 def tool_load_image(state: AgentState, path: str, caption: str = "") -> ToolResult:
     """加载本地图片或远程图片 URL，将其注入下一次 LLM 调用的上下文（多模态）。
 
-    支持：本地文件路径（jpg/png/gif/webp）、http/https URL。
+    支持：本地文件路径（jpg/png/gif/webp/bmp/tiff/ico 等，自动转换为 PNG/JPEG）、http/https URL。
     图片会作为 image content block 附加到对话历史，LLM 在下一轮可直接"看到"该图片。
     caption 会作为图片前的文字说明一并注入。
     """
@@ -1760,12 +1800,22 @@ def tool_load_image(state: AgentState, path: str, caption: str = "") -> ToolResu
     if not fp.exists():
         return ToolResult(success=False, output=None, error=f"文件不存在：{fp}")
 
-    mime, _ = mimetypes.guess_type(str(fp))
-    if not mime or not mime.startswith("image/"):
-        mime = "image/jpeg"
-
     try:
-        data = base64.b64encode(fp.read_bytes()).decode()
+        raw = fp.read_bytes()
+        # Artifact files (e.g. web_interact screenshots saved as .txt) may contain a
+        # Python dict wrapper: {'ok': True, 'data': '<base64_image>'}. Extract the
+        # actual base64 image data instead of re-encoding the wrapper text.
+        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".ico", ".svg"}
+        if fp.suffix.lower() not in _IMAGE_EXTS:
+            try:
+                import ast
+                parsed = ast.literal_eval(raw.decode("utf-8", errors="replace"))
+                if isinstance(parsed, dict) and parsed.get("ok") and isinstance(parsed.get("data"), str):
+                    raw = base64.b64decode(parsed["data"])
+            except Exception:
+                pass
+
+        data, mime = _normalise_image(raw)
     except Exception as e:
         return ToolResult(success=False, output=None, error=f"读取图片失败：{e}")
 
@@ -1778,6 +1828,115 @@ def tool_load_image(state: AgentState, path: str, caption: str = "") -> ToolResu
         output=f"已加载本地图片：{fp.name}（{mime}，{len(data)//1024}KB base64）",
         content_blocks=blocks,
     )
+
+
+def tool_load_video(
+    state: AgentState,
+    path: str,
+    interval: float = 2.0,
+    max_frames: int = 16,
+    start_time: float = 0.0,
+    end_time: float = -1.0,
+    caption: str = "",
+) -> ToolResult:
+    """从本地视频文件中均匀抽取关键帧，注入多模态上下文供 LLM 分析。
+
+    依赖 opencv-python（pip install opencv-python）。
+
+    抽帧策略：
+    - 在 [start_time, end_time] 时间范围内，每 interval 秒取一帧
+    - 若候选帧数超过 max_frames，自动稀疏采样以覆盖整个时间段
+    - end_time=-1 表示视频结尾
+
+    对长视频建议先用大 interval 概览全片，再用 start_time/end_time 锁定感兴趣的段落精细分析。
+    """
+    if state.meta.get("_vision_supported") is False:
+        return ToolResult(
+            success=False,
+            output=None,
+            error="当前 LLM 后端不支持多模态（视觉），无法加载视频帧。",
+        )
+
+    import base64, io
+
+    from ..core.llm import image_block
+
+    try:
+        import cv2
+    except ImportError:
+        return ToolResult(
+            success=False,
+            output=None,
+            error=(
+                "缺少依赖 opencv-python，请执行：pip install opencv-python\n"
+                "安装后重试。"
+            ),
+        )
+
+    fp = Path(path.strip())
+    if not fp.is_absolute():
+        fp = Path(os.getcwd()) / fp
+    if not fp.exists():
+        return ToolResult(success=False, output=None, error=f"文件不存在：{fp}")
+
+    cap = cv2.VideoCapture(str(fp))
+    if not cap.isOpened():
+        return ToolResult(
+            success=False, output=None,
+            error=f"无法打开视频文件：{fp.name}（格式不支持或文件损坏）",
+        )
+
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total_frames / fps
+
+        # 时间范围 → 帧号范围
+        start_frame = max(0, int(start_time * fps))
+        end_frame = total_frames if end_time < 0 else min(total_frames, int(end_time * fps))
+        if start_frame >= end_frame:
+            return ToolResult(
+                success=False, output=None,
+                error=f"时间范围无效：start_time={start_time}s >= end_time（视频时长 {duration:.1f}s）",
+            )
+
+        # 在范围内按 interval 生成候选帧号，超出 max_frames 时均匀稀疏
+        step_frames = max(1, int(fps * interval))
+        candidates = list(range(start_frame, end_frame, step_frames))
+        if len(candidates) > max_frames:
+            step = len(candidates) / max_frames
+            candidates = [candidates[int(i * step)] for i in range(max_frames)]
+
+        blocks = []
+        if caption:
+            blocks.append({"type": "text", "text": caption})
+
+        extracted = 0
+        for frame_idx in candidates:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            ts = frame_idx / fps
+            ok2, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok2:
+                continue
+            data, mime = _normalise_image(buf.tobytes())
+            blocks.append({"type": "text", "text": f"[帧 {extracted + 1}/{len(candidates)}  时间 {ts:.1f}s]"})
+            blocks.append(image_block(data, mime))
+            extracted += 1
+    finally:
+        cap.release()
+
+    if extracted == 0:
+        return ToolResult(success=False, output=None, error="未能从视频中提取到任何帧。")
+
+    range_desc = f"{start_time:.1f}s–{duration:.1f}s" if end_time < 0 else f"{start_time:.1f}s–{end_time:.1f}s"
+    summary = (
+        f"已从视频 {fp.name} 提取 {extracted} 帧"
+        f"（总时长 {duration:.1f}s，分析范围 {range_desc}，fps={fps:.1f}，采样间隔 {interval}s）"
+    )
+    return ToolResult(success=True, output=summary, content_blocks=blocks)
 
 
 def tool_get_env_info(state: AgentState) -> ToolResult:
@@ -2410,13 +2569,32 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description=(
                 "将本地图片文件或远程图片 URL 加载到对话上下文，使 LLM 在下一轮能直接分析图片内容。\n"
                 "适用场景：分析截图、识别图表/表格、检查设计稿、读取扫描件等。\n"
-                "支持 jpg/png/gif/webp；本地路径支持相对路径（相对于当前工作目录）。"
+                "支持 jpg/png/gif/webp/bmp/tiff/ico 等常见格式（自动转换为 PNG/JPEG）；本地路径支持相对路径（相对于当前工作目录）。"
             ),
             args_schema={
                 "path": "图片路径（本地文件路径或 http/https URL）",
                 "caption": "（可选）图片说明文字，会作为图片前的提示注入上下文",
             },
             fn=tool_load_image,
+        ),
+        ToolSpec(
+            name="load_video",
+            description=(
+                "从本地视频文件中均匀抽取关键帧，注入多模态上下文供 LLM 逐帧分析。\n"
+                "适用场景：分析录屏操作步骤、检查视频中的界面/图表、理解动态过程等。\n"
+                "支持 mp4/avi/mov/mkv/webm 等主流格式（依赖 opencv-python）。\n"
+                "对长视频建议两步走：先用大 interval 概览全片，再用 start_time/end_time 锁定片段精细分析。\n"
+                "默认每 2 秒抽一帧，最多 16 帧；超出时自动稀疏以覆盖完整时间段。"
+            ),
+            args_schema={
+                "path": "视频文件路径（本地路径，支持相对路径）",
+                "interval": "（可选）抽帧间隔秒数，默认 2.0",
+                "max_frames": "（可选）最大帧数上限，默认 16",
+                "start_time": "（可选）分析起始时间（秒），默认 0",
+                "end_time": "（可选）分析结束时间（秒），默认 -1 表示视频结尾",
+                "caption": "（可选）整段视频的说明文字，会作为第一条消息注入上下文",
+            },
+            fn=tool_load_video,
         ),
         # ── 环境信息工具 ──────────────────────────────────────────────────────
         ToolSpec(

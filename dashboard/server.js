@@ -143,6 +143,35 @@ function findRuns() {
   } catch { return []; }
 }
 
+// ── JSONL display helper ───────────────────────────────────────────────────
+
+/**
+ * Strip embedded base64 image data from a JSONL string for dashboard display.
+ * Replaces {"type":"image","data":"<long_b64>",...} data fields with a size
+ * placeholder so the file stays readable without the multi-hundred-KB blobs.
+ * The on-disk file is never modified.
+ */
+function stripBase64FromJsonl(text) {
+  return text.split('\n').map(line => {
+    if (!line.trim()) return line;
+    try {
+      const rec = JSON.parse(line);
+      if (!Array.isArray(rec.content)) return line;
+      let changed = false;
+      const stripped = rec.content.map(block => {
+        if (block && block.type === 'image' && typeof block.data === 'string' && block.data.length > 256) {
+          const kb = Math.round(block.data.length * 3 / 4 / 1024);
+          changed = true;
+          return { ...block, data: `[base64 ~${kb} KB, stripped for display]` };
+        }
+        return block;
+      });
+      if (!changed) return line;
+      return JSON.stringify({ ...rec, content: stripped });
+    } catch { return line; }
+  }).join('\n');
+}
+
 // ── short_term.jsonl parser ────────────────────────────────────────────────
 
 function parseLine(raw, lineIdx) {
@@ -153,17 +182,29 @@ function parseLine(raw, lineIdx) {
   if (role === '__token__') {
     return { idx: lineIdx, type: 'token_stats', promptEst: rec.prompt_est, contextWindow: rec.context_window, maxTokens: rec.max_tokens };
   }
-  if (typeof content !== 'string') return null;
 
-  const base = { idx: lineIdx };
+  // Multimodal messages have content as an array of blocks (text + image).
+  // Extract the text blocks for further parsing; note image presence separately.
+  let text;
+  let hasImages = false;
+  if (Array.isArray(content)) {
+    hasImages = content.some(b => b && b.type === 'image');
+    text = content.filter(b => b && b.type === 'text').map(b => b.text || '').join('\n');
+  } else if (typeof content === 'string') {
+    text = content;
+  } else {
+    return null;
+  }
+
+  const base = { idx: lineIdx, hasImages };
 
   if (role === 'assistant') {
     let action;
     try {
       // Strip ```json ... ``` fences — LLM sometimes wraps its JSON in markdown code blocks.
       // This mirrors the fence-stripping logic in llm.py's _parse_llm_output.
-      const fenceMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
-      const jsonStr = fenceMatch ? fenceMatch[1].trim() : content;
+      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      const jsonStr = fenceMatch ? fenceMatch[1].trim() : text;
       action = JSON.parse(jsonStr);
     } catch { return null; }
     const thought = action.thought || null;
@@ -174,14 +215,14 @@ function parseLine(raw, lineIdx) {
       return { ...base, type: 'done', answer: action.final_answer || '', thought };
     }
     if (action.action === 'error') {
-      return { ...base, type: 'error', text: thought || content, thought: null };
+      return { ...base, type: 'error', text: thought || text, thought: null };
     }
     if (thought) return { ...base, type: 'thought', thought };
     return null;
   }
 
   if (role === 'user') {
-    const toolMatch = content.match(/^\[工具:\s*([^\]]+)\]\s*(执行成功|执行失败)\s*\n?([\s\S]*)/);
+    const toolMatch = text.match(/^\[工具:\s*([^\]]+)\]\s*(执行成功|执行失败)\s*\n?([\s\S]*)/);
     if (toolMatch) {
       const toolName = toolMatch[1].trim();
       // ask_user tool_result is redundant — the question is already shown in the tool_call event.
@@ -193,24 +234,24 @@ function parseLine(raw, lineIdx) {
         .trim();
       return { ...base, type: 'tool_result', tool: toolName, success, output: raw_out };
     }
-    if (content.startsWith('[高级指导员')) {
-      const reasonMatch = content.match(/\[高级指导员[^\]]*触发:\s*([^\]]+)\]/);
+    if (text.startsWith('[高级指导员')) {
+      const reasonMatch = text.match(/\[高级指导员[^\]]*触发:\s*([^\]]+)\]/);
       const reason = reasonMatch ? reasonMatch[1].trim() : 'unknown';
-      const bodyMatch = content.match(/^\[[^\]]+\]\s*\n\n([\s\S]*?)(?:\n\n---\n[\s\S]*)?$/);
-      const text = bodyMatch ? bodyMatch[1].trim() : content.replace(/^\[[^\]]+\]\s*\n?/, '').trim();
-      return { ...base, type: 'advisor', reason, text };
+      const bodyMatch = text.match(/^\[[^\]]+\]\s*\n\n([\s\S]*?)(?:\n\n---\n[\s\S]*)?$/);
+      const body = bodyMatch ? bodyMatch[1].trim() : text.replace(/^\[[^\]]+\]\s*\n?/, '').trim();
+      return { ...base, type: 'advisor', reason, text: body };
     }
-    if (content.startsWith('[用户干预注入]') || content.startsWith('[Web看板]')) {
-      return { ...base, type: 'injected', text: content.replace(/^\[[^\]]+\]\s*\n?/, '').trim() };
+    if (text.startsWith('[用户干预注入]') || text.startsWith('[Web看板]')) {
+      return { ...base, type: 'injected', text: text.replace(/^\[[^\]]+\]\s*\n?/, '').trim() };
     }
-    if (content.startsWith('[用户补充信息]')) {
-      return { ...base, type: 'user_answer', text: content.replace(/^\[用户补充信息\]\s*\n?/, '').trim() };
+    if (text.startsWith('[用户补充信息]')) {
+      return { ...base, type: 'user_answer', text: text.replace(/^\[用户补充信息\]\s*\n?/, '').trim() };
     }
     if (lineIdx === 0) {
-      const goalMarker = content.match(/请完成以下目标：\s*\n([\s\S]*)/);
-      return { ...base, type: 'goal', text: goalMarker ? goalMarker[1].trim() : content.trim() };
+      const goalMarker = text.match(/请完成以下目标：\s*\n([\s\S]*)/);
+      return { ...base, type: 'goal', text: goalMarker ? goalMarker[1].trim() : text.trim() };
     }
-    return { ...base, type: 'user_msg', text: content.trim() };
+    return { ...base, type: 'user_msg', text: text.trim() };
   }
   return null;
 }
@@ -849,6 +890,13 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const st = fs.statSync(fullPath);
+      // For JSONL files strip embedded base64 blobs before the size check so
+      // image-heavy conversation logs remain displayable in the dashboard.
+      if (relFile.endsWith('.jsonl')) {
+        const raw = fs.readFileSync(fullPath, 'utf8');
+        json(200, { content: stripBase64FromJsonl(raw), truncated: false });
+        return;
+      }
       if (st.size > 512 * 1024) {
         json(200, { content: `[File too large to display inline: ${(st.size / 1024).toFixed(0)} KB]`, truncated: true });
         return;
