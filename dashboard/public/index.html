@@ -183,6 +183,10 @@ input, textarea { font-family: inherit; font-size: inherit; }
 .theme-btn:hover { border-color: var(--blue); color: var(--blue); }
 
 /* ── Font size toggle ────────────────────────────────────────────────── */
+.app-version {
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+  opacity: 0.7; letter-spacing: 0.3px; white-space: nowrap;
+}
 .font-size-btn {
   display: flex; align-items: center; gap: 3px;
   background: var(--bg3); border: 1px solid var(--border);
@@ -972,6 +976,7 @@ body.large-font .app {
     </div>
     <button class="kill-btn" id="killBtn" onclick="killAgent()" title="Terminate agent process">⏹ Kill</button>
     <div class="topbar-gap"></div>
+    <span class="app-version" id="appVersion"></span>
     <button class="font-size-btn" id="fontSizeBtn" onclick="toggleFontSize()" title="切换字号 / Toggle font size">
       <span class="fs-a fs-a-sm">A</span>
       <span class="fs-a fs-a-lg">A</span>
@@ -2818,6 +2823,11 @@ function toggleTheme() {
 })();
 
 connectWs();
+
+fetch('/api/version').then(r => r.json()).then(d => {
+  const el = document.getElementById('appVersion');
+  if (el && d.version) el.textContent = 'v' + d.version;
+}).catch(() => {});
 </script>
 </body>
 </html>

@@ -151,6 +151,12 @@ const AGENT_DIR  = path.resolve(process.env.AGENT_DIR || path.join(__dirname, '.
 const SKILLS_DIR = path.resolve(process.env.SKILLS_DIR || path.join(AGENT_DIR, 'SKILLS'));
 const PUBLIC     = path.join(__dirname, 'public');
 const POLL_MS    = parseInt(process.env.POLL_MS || '500', 10);
+
+let APP_VERSION = 'dev';
+try {
+  const pkgPath = path.join(__dirname, '..', 'desktop', 'package.json');
+  APP_VERSION = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version || 'dev';
+} catch {}
 // Python command — default to 'python' so the calling conda env is used
 const PYTHON_CMD = process.env.PYTHON_CMD || 'python';
 
@@ -784,6 +790,12 @@ const server = http.createServer(async (req, res) => {
       broadcast();
       json(200, { ok: true, path: relPath });
     } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/version ─────────────────────────────────────────────────────
+  if (req.method === 'GET' && req.url === '/api/version') {
+    json(200, { version: APP_VERSION });
     return;
   }
 
