@@ -79,6 +79,29 @@ function cdpSend(wsUrl, method, params = {}) {
   });
 }
 
+// JS injected into the page to show/update the cursor position overlay.
+// Uses pointer-events:none so it never blocks clicks; z-index max so always on top.
+// The orange dot + coordinate label will appear in screenshots taken by the agent.
+function cursorOverlayJS(x, y) {
+  return `(function(x,y){
+    var c=document.getElementById('__qc__');
+    if(!c){
+      c=document.createElement('div');
+      c.id='__qc__';
+      c.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;display:flex;align-items:center;gap:4px;transform:translate(4px,-50%)';
+      var dot=document.createElement('div');
+      dot.style.cssText='width:14px;height:14px;border-radius:50%;background:rgba(255,90,0,0.9);border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,0.4),0 2px 5px rgba(0,0,0,0.35);flex-shrink:0';
+      var lbl=document.createElement('div');
+      lbl.id='__qc_lbl__';
+      lbl.style.cssText='background:rgba(0,0,0,0.72);color:#fff;font:bold 11px monospace;padding:1px 5px;border-radius:3px;white-space:nowrap';
+      c.appendChild(dot);c.appendChild(lbl);
+      document.documentElement.appendChild(c);
+    }
+    c.style.left=x+'px'; c.style.top=y+'px';
+    document.getElementById('__qc_lbl__').textContent='('+x+', '+y+')';
+  })(${x},${y})`;
+}
+
 // Send multiple commands sequentially on one WebSocket connection.
 function cdpSendSeq(wsUrl, commands) {
   return new Promise((resolve, reject) => {
@@ -182,9 +205,10 @@ async function cdpBrowserAction(displayId, action, payload) {
       return { ok: true };
     }
     case 'mouse_move': {
-      await cdpSend(wsUrl, 'Input.dispatchMouseEvent', {
-        type: 'mouseMoved', x: payload.x, y: payload.y, button: 'none',
-      });
+      await cdpSendSeq(wsUrl, [
+        { method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x: payload.x, y: payload.y, button: 'none' } },
+        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(payload.x, payload.y) } },
+      ]);
       return { ok: true };
     }
     case 'mouse_click': {
@@ -193,21 +217,22 @@ async function cdpBrowserAction(displayId, action, payload) {
         { method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved',   x, y, button: 'none' } },
         { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x, y, button, clickCount: count } },
         { method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased',x, y, button, clickCount: count } },
+        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(x, y) } },
       ]);
       return { ok: true };
     }
     case 'mouse_down': {
-      await cdpSend(wsUrl, 'Input.dispatchMouseEvent', {
-        type: 'mousePressed', x: payload.x, y: payload.y,
-        button: payload.button || 'left', clickCount: 1,
-      });
+      await cdpSendSeq(wsUrl, [
+        { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 } },
+        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(payload.x, payload.y) } },
+      ]);
       return { ok: true };
     }
     case 'mouse_up': {
-      await cdpSend(wsUrl, 'Input.dispatchMouseEvent', {
-        type: 'mouseReleased', x: payload.x, y: payload.y,
-        button: payload.button || 'left', clickCount: 1,
-      });
+      await cdpSendSeq(wsUrl, [
+        { method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 } },
+        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(payload.x, payload.y) } },
+      ]);
       return { ok: true };
     }
     case 'drag': {
@@ -222,6 +247,7 @@ async function cdpBrowserAction(displayId, action, payload) {
         cmds.push({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x, y, button } });
       }
       cmds.push({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: x2, y: y2, button, clickCount: 1 } });
+      cmds.push({ method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(x2, y2) } });
       await cdpSendSeq(wsUrl, cmds);
       return { ok: true };
     }

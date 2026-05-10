@@ -202,6 +202,30 @@ function closeView(id) {
   else pushTabsUpdate();
 }
 
+// ── Cursor overlay helper ──────────────────────────────────────────────────
+// Injects / updates a lightweight DOM element that shows an orange dot and
+// (x, y) label at the given page coordinates.  pointer-events:none means it
+// never blocks real input events, but it DOES appear in capturePage() PNGs so
+// the Agent can verify cursor position from a screenshot.
+
+function cursorOverlayJS(x, y) {
+  return `(function(x,y){
+    var c=document.getElementById('__qc__');
+    if(!c){
+      c=document.createElement('div'); c.id='__qc__';
+      c.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;display:flex;align-items:center;gap:4px;transform:translate(4px,-50%)';
+      var dot=document.createElement('div');
+      dot.style.cssText='width:14px;height:14px;border-radius:50%;background:rgba(255,90,0,0.9);border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,0.4),0 2px 5px rgba(0,0,0,0.35);flex-shrink:0';
+      var lbl=document.createElement('div'); lbl.id='__qc_lbl__';
+      lbl.style.cssText='background:rgba(0,0,0,0.72);color:#fff;font:bold 11px monospace;padding:1px 5px;border-radius:3px;white-space:nowrap';
+      c.appendChild(dot);c.appendChild(lbl);
+      document.documentElement.appendChild(c);
+    }
+    c.style.left=x+'px'; c.style.top=y+'px';
+    document.getElementById('__qc_lbl__').textContent='('+x+', '+y+')';
+  })(${x},${y})`;
+}
+
 // ── Dashboard server ───────────────────────────────────────────────────────
 
 function startDashboard() {
@@ -280,6 +304,7 @@ function startDashboard() {
           }
           case 'mouse_move': {
             wc.sendInputEvent({ type: 'mouseMove', x: payload.x, y: payload.y });
+            wc.executeJavaScript(cursorOverlayJS(payload.x, payload.y)).catch(() => {});
             callback({ ok: true });
             break;
           }
@@ -288,16 +313,19 @@ function startDashboard() {
             wc.sendInputEvent({ type: 'mouseMove', x, y });
             wc.sendInputEvent({ type: 'mouseDown', x, y, button, clickCount: count });
             wc.sendInputEvent({ type: 'mouseUp',   x, y, button, clickCount: count });
+            wc.executeJavaScript(cursorOverlayJS(x, y)).catch(() => {});
             callback({ ok: true });
             break;
           }
           case 'mouse_down': {
             wc.sendInputEvent({ type: 'mouseDown', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 });
+            wc.executeJavaScript(cursorOverlayJS(payload.x, payload.y)).catch(() => {});
             callback({ ok: true });
             break;
           }
           case 'mouse_up': {
             wc.sendInputEvent({ type: 'mouseUp', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 });
+            wc.executeJavaScript(cursorOverlayJS(payload.x, payload.y)).catch(() => {});
             callback({ ok: true });
             break;
           }
@@ -311,6 +339,7 @@ function startDashboard() {
               wc.sendInputEvent({ type: 'mouseMove', x, y });
             }
             wc.sendInputEvent({ type: 'mouseUp', x: x2, y: y2, button, clickCount: 1 });
+            wc.executeJavaScript(cursorOverlayJS(x2, y2)).catch(() => {});
             callback({ ok: true });
             break;
           }
