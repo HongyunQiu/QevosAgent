@@ -138,7 +138,7 @@ function updateLayout() {
 function pushTabsUpdate() {
   if (!tabbarView || tabbarView.webContents.isDestroyed()) return;
   const tabs = [
-    { id: HOME_ID, title: '看板', isHome: true },
+    { id: HOME_ID, title: 'Dashboard', isHome: true },
     ...Array.from(gViews.entries())
       .filter(([id]) => id !== HOME_ID)
       .map(([id, { title }]) => ({ id, title, isHome: false })),
@@ -192,7 +192,7 @@ function openElectronView(displayId, url, title, allowNavigation = false) {
 }
 
 function closeView(id) {
-  if (id === HOME_ID) return; // 看板 is permanent
+  if (id === HOME_ID) return; // Dashboard is permanent
   const entry = gViews.get(id);
   if (!entry) return;
   mainWindow.contentView.removeChildView(entry.view);
@@ -498,7 +498,7 @@ function createWindow() {
     pushTabsUpdate();
   });
 
-  // ── Home (看板) content view ──────────────────────────────────────────────
+  // ── Home (Dashboard) content view ──────────────────────────────────────────────
   const mainView = new WebContentsView({
     webPreferences: {
       nodeIntegration:  false,
@@ -507,7 +507,7 @@ function createWindow() {
     },
   });
   mainWindow.contentView.addChildView(mainView);
-  gViews.set(HOME_ID, { view: mainView, title: '看板' });
+  gViews.set(HOME_ID, { view: mainView, title: 'Dashboard' });
   gActiveId = HOME_ID;
   updateLayout();
 
