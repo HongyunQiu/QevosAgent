@@ -4,13 +4,13 @@
   "description": "QevosAgent Desktop App",
   "main": "main.js",
   "scripts": {
-    "start":     "electron .",
-    "setup":     "node scripts/setup_python.js",
-    "test":      "node --test ./icon-path.test.js ./preserve-paths.test.js",
-    "build":       "electron-builder --win",
-    "build:mac":   "electron-builder --mac",
+    "start": "electron .",
+    "setup": "node scripts/setup_python.js",
+    "test": "node --test ./icon-path.test.js ./preserve-paths.test.js",
+    "build": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
-    "build:dir":   "electron-builder --win --dir"
+    "build:dir": "electron-builder --win --dir"
   },
   "engines": {
     "node": ">=18"
@@ -19,21 +19,36 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "electron":         "^34.0.0",
-    "electron-builder": "^25.0.0"
+    "electron": "^34.0.0",
+    "electron-builder": "^25.0.0",
+    "rcedit": "^5.0.1"
   },
   "build": {
-    "appId":       "com.qevosagent.desktop",
+    "appId": "com.qevosagent.desktop",
     "productName": "QevosAgent",
-    "asar":        false,
+    "asar": false,
+    "afterPack": "./scripts/after-pack.js",
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "build/icon.ico",
       "signAndEditExecutable": false
     },
     "mac": {
       "target": [
-        { "target": "pkg", "arch": ["x64", "arm64"] }
+        {
+          "target": "pkg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
@@ -44,19 +59,26 @@
       "scripts": "pkg-scripts"
     },
     "linux": {
-      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "build/icon.png",
       "category": "Utility"
     },
     "nsis": {
-      "oneClick":                        false,
+      "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "perMachine":                      false,
-      "deleteAppDataOnUninstall":        false,
-      "createDesktopShortcut":           "always",
-      "include":                         "build/installer.nsh",
-      "installerIcon":                   "build/icon.ico",
-      "uninstallerIcon":                 "build/icon.ico"
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": "always",
+      "include": "build/installer.nsh",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "files": [
       "**/*",

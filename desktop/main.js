@@ -32,11 +32,16 @@
  *   tab-settings    → load setup.html in the home view
  */
 
-const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell, nativeImage } = require('electron');
 const path    = require('path');
 const http    = require('http');
 const fs      = require('fs');
 const { getAppIconPath } = require('./icon-path');
+
+// Must be called before app is ready so Windows associates this process
+// with the correct AppUserModelID — without it the taskbar button falls
+// back to the default Electron icon even when BrowserWindow.icon is set.
+app.setAppUserModelId('com.qevosagent.desktop');
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -460,15 +465,24 @@ function registerIPC() {
 // ── BrowserWindow + WebContentsViews ──────────────────────────────────────
 
 function createWindow() {
+  const iconPath = getAppIconPath(__dirname, process.platform, app.isPackaged);
+  const appIcon  = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : undefined;
+
   mainWindow = new BrowserWindow({
     width:           1400,
     height:          900,
     minWidth:        800,
     minHeight:       600,
     title:           'QevosAgent',
-    icon:            getAppIconPath(__dirname, process.platform, app.isPackaged),
+    icon:            appIcon || iconPath,
     backgroundColor: '#0d1117',
   });
+
+  // Explicitly set the icon after HWND is created so the taskbar button
+  // picks up the custom icon even when Windows has a stale icon cache.
+  if (appIcon && !appIcon.isEmpty()) {
+    mainWindow.setIcon(appIcon);
+  }
 
   // ── Tab bar (always visible, pinned to top) ───────────────────────────────
   tabbarView = new WebContentsView({
