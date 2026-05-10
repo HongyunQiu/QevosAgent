@@ -38,7 +38,13 @@
         }
       ],
       "icon": "build/icon.ico",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "extraResources": [
+        {
+          "from": "build/icon.ico",
+          "to": "icon.ico"
+        }
+      ]
     },
     "mac": {
       "target": [
@@ -88,12 +94,6 @@
       "!build/pkg-scripts/**",
       "!scripts/**",
       "!dist/**"
-    ],
-    "extraResources": [
-      {
-        "from": "build/icon.ico",
-        "to": "icon.ico"
-      }
     ],
     "directories": {
       "output": "dist"
