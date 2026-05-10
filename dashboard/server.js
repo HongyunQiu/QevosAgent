@@ -196,6 +196,35 @@ async function cdpBrowserAction(displayId, action, payload) {
       ]);
       return { ok: true };
     }
+    case 'mouse_down': {
+      await cdpSend(wsUrl, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: payload.x, y: payload.y,
+        button: payload.button || 'left', clickCount: 1,
+      });
+      return { ok: true };
+    }
+    case 'mouse_up': {
+      await cdpSend(wsUrl, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: payload.x, y: payload.y,
+        button: payload.button || 'left', clickCount: 1,
+      });
+      return { ok: true };
+    }
+    case 'drag': {
+      const { x1, y1, x2, y2, steps = 10, button = 'left' } = payload;
+      const cmds = [
+        { method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved',   x: x1, y: y1, button: 'none' } },
+        { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: x1, y: y1, button, clickCount: 1 } },
+      ];
+      for (let i = 1; i <= steps; i++) {
+        const x = Math.round(x1 + (x2 - x1) * i / steps);
+        const y = Math.round(y1 + (y2 - y1) * i / steps);
+        cmds.push({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x, y, button } });
+      }
+      cmds.push({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: x2, y: y2, button, clickCount: 1 } });
+      await cdpSendSeq(wsUrl, cmds);
+      return { ok: true };
+    }
     case 'key_type': {
       // Input.insertText bypasses JS event layers — works with React/Vue contenteditable.
       await cdpSend(wsUrl, 'Input.insertText', { text: payload.text });
@@ -210,6 +239,17 @@ async function cdpBrowserAction(displayId, action, payload) {
       ]);
       return { ok: true };
     }
+    case 'key_combo': {
+      const kdef = CDP_KEY_MAP[payload.key] || { key: payload.key, code: payload.key, windowsVirtualKeyCode: 0 };
+      // CDP modifiers bitmask: Alt=1, Ctrl=2, Meta=4, Shift=8
+      const CDP_MOD = { alt: 1, ctrl: 2, control: 2, meta: 4, command: 4, shift: 8 };
+      const modBits = (payload.modifiers || []).reduce((acc, m) => acc | (CDP_MOD[m.toLowerCase()] || 0), 0);
+      await cdpSendSeq(wsUrl, [
+        { method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', ...kdef, modifiers: modBits } },
+        { method: 'Input.dispatchKeyEvent', params: { type: 'keyUp',   ...kdef, modifiers: modBits } },
+      ]);
+      return { ok: true };
+    }
     case 'scroll': {
       await cdpSend(wsUrl, 'Input.dispatchMouseEvent', {
         type: 'mouseWheel', x: payload.x || 0, y: payload.y || 0,
@@ -218,7 +258,7 @@ async function cdpBrowserAction(displayId, action, payload) {
       return { ok: true };
     }
     default:
-      throw new Error(`未知操作: ${action}。支持: new_tab / navigate / eval / get_html / screenshot / click / fill / mouse_move / mouse_click / key_type / key_press / scroll`);
+      throw new Error(`未知操作: ${action}。支持: new_tab / navigate / eval / get_html / screenshot / click / fill / mouse_move / mouse_click / mouse_down / mouse_up / drag / key_type / key_press / key_combo / scroll`);
   }
 }
 

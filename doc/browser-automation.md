@@ -202,6 +202,109 @@ web_interact(action="fill", display_id="browser1", payload={
 
 ---
 
+#### `key_type` — 原生文字输入
+
+向已聚焦元素注入文字，**绕过 React / Vue 的 JS 事件拦截**，适用于 `contenteditable` 富文本框（如 Twitter 发推框、飞书文档等）。
+
+```python
+web_interact(action="key_type", display_id="browser1", payload={"text": "你好世界"})
+```
+
+返回：`{ "ok": true }`
+
+---
+
+#### `key_press` — 按下特殊键
+
+```python
+web_interact(action="key_press", display_id="browser1", payload={"key": "Enter"})
+```
+
+支持的键名：`Enter` / `Tab` / `Escape` / `Backspace` / `Delete` / `ArrowUp` / `ArrowDown` / `ArrowLeft` / `ArrowRight` / `Home` / `End` / `PageUp` / `PageDown` / `Space`
+
+---
+
+#### `key_combo` — 组合键
+
+发送带修饰键的快捷键。
+
+```python
+# Ctrl+A 全选
+web_interact(action="key_combo", display_id="browser1", payload={"key": "A", "modifiers": ["ctrl"]})
+
+# Ctrl+Enter 发送（常见于聊天/发帖场景）
+web_interact(action="key_combo", display_id="browser1", payload={"key": "Enter", "modifiers": ["ctrl"]})
+
+# Ctrl+Shift+Z 重做
+web_interact(action="key_combo", display_id="browser1", payload={"key": "Z", "modifiers": ["ctrl", "shift"]})
+```
+
+支持的修饰键：`ctrl` / `shift` / `alt` / `meta`（macOS Command）
+
+---
+
+#### `mouse_move` — 移动鼠标
+
+```python
+web_interact(action="mouse_move", display_id="browser1", payload={"x": 400, "y": 300})
+```
+
+---
+
+#### `mouse_click` — 坐标点击
+
+```python
+# 单击
+web_interact(action="mouse_click", display_id="browser1", payload={"x": 400, "y": 300})
+
+# 双击
+web_interact(action="mouse_click", display_id="browser1", payload={"x": 400, "y": 300, "count": 2})
+
+# 右键
+web_interact(action="mouse_click", display_id="browser1", payload={"x": 400, "y": 300, "button": "right"})
+```
+
+---
+
+#### `mouse_down` / `mouse_up` — 分离的按下与抬起
+
+用于**长按**：在 `mouse_down` 和 `mouse_up` 之间可插入等待或其他操作。
+
+```python
+# 长按（按住 1 秒）
+web_interact(action="mouse_down", display_id="browser1", payload={"x": 400, "y": 300})
+web_interact(action="eval",       display_id="browser1", payload={"code": "await new Promise(r => setTimeout(r, 1000))"})
+web_interact(action="mouse_up",   display_id="browser1", payload={"x": 400, "y": 300})
+```
+
+---
+
+#### `drag` — 拖拽
+
+从起点平滑移动到终点，中间插值 `steps` 步（默认 10），适用于拖拽排序、滑块控件、画布绘制。
+
+```python
+web_interact(action="drag", display_id="browser1", payload={
+    "x1": 200, "y1": 300,   # 起点
+    "x2": 500, "y2": 300,   # 终点
+    "steps": 20,             # 插值步数，越多越平滑
+})
+```
+
+---
+
+#### `scroll` — 滚动
+
+```python
+# 向下滚动 500px
+web_interact(action="scroll", display_id="browser1", payload={"x": 400, "y": 300, "deltaY": 500})
+
+# 水平滚动
+web_interact(action="scroll", display_id="browser1", payload={"x": 400, "y": 300, "deltaX": 300})
+```
+
+---
+
 ## 典型工作流
 
 ### 打开页面并提取数据
@@ -223,15 +326,47 @@ screenshot = web_interact(action="screenshot", display_id="scraper", payload={})
 web_show(content=screenshot["data"], content_type="image", display_id="result", title="采集结果")
 ```
 
-### 自动化表单提交
+### 自动化表单提交（普通 input）
 
 ```python
 web_interact(action="new_tab",   display_id="form", payload={"url": "https://example.com/login"})
 web_interact(action="fill",      display_id="form", payload={"selector": "#username", "value": "user"})
 web_interact(action="fill",      display_id="form", payload={"selector": "#password", "value": "pass"})
 web_interact(action="click",     display_id="form", payload={"selector": "button[type=submit]"})
-web_interact(action="navigate",  display_id="form", payload={"url": "https://example.com/dashboard"})
-web_interact(action="get_html",  display_id="form", payload={})
+```
+
+### 在 React contenteditable 中发帖（如 Twitter）
+
+```python
+# 1. 截图确认坐标
+shot = web_interact(action="screenshot", display_id="tw", payload={})
+# 2. 点击发推框聚焦（坐标根据截图确定）
+web_interact(action="mouse_click", display_id="tw", payload={"x": 600, "y": 200})
+# 3. 原生键盘输入（绕过 React 拦截）
+web_interact(action="key_type",    display_id="tw", payload={"text": "Hello from QevosAgent!"})
+# 4. 截图确认内容
+web_interact(action="screenshot",  display_id="tw", payload={})
+# 5. 点击发布按钮
+web_interact(action="click",       display_id="tw", payload={"selector": "[data-testid='tweetButton']"})
+```
+
+### 拖拽排序
+
+```python
+web_interact(action="drag", display_id="board", payload={
+    "x1": 200, "y1": 150,   # 拖拽源位置
+    "x2": 200, "y2": 400,   # 目标位置
+    "steps": 20,
+})
+```
+
+### 长按弹出上下文菜单
+
+```python
+web_interact(action="mouse_down", display_id="app", payload={"x": 350, "y": 250})
+web_interact(action="eval",       display_id="app", payload={"code": "await new Promise(r=>setTimeout(r,800))"})
+web_interact(action="mouse_up",   display_id="app", payload={"x": 350, "y": 250})
+web_interact(action="screenshot", display_id="app", payload={})  # 确认菜单已出现
 ```
 
 ---

@@ -291,6 +291,29 @@ function startDashboard() {
             callback({ ok: true });
             break;
           }
+          case 'mouse_down': {
+            wc.sendInputEvent({ type: 'mouseDown', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 });
+            callback({ ok: true });
+            break;
+          }
+          case 'mouse_up': {
+            wc.sendInputEvent({ type: 'mouseUp', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 });
+            callback({ ok: true });
+            break;
+          }
+          case 'drag': {
+            const { x1, y1, x2, y2, steps = 10, button = 'left' } = payload;
+            wc.sendInputEvent({ type: 'mouseMove', x: x1, y: y1 });
+            wc.sendInputEvent({ type: 'mouseDown', x: x1, y: y1, button, clickCount: 1 });
+            for (let i = 1; i <= steps; i++) {
+              const x = Math.round(x1 + (x2 - x1) * i / steps);
+              const y = Math.round(y1 + (y2 - y1) * i / steps);
+              wc.sendInputEvent({ type: 'mouseMove', x, y });
+            }
+            wc.sendInputEvent({ type: 'mouseUp', x: x2, y: y2, button, clickCount: 1 });
+            callback({ ok: true });
+            break;
+          }
           case 'key_type': {
             // insertText bypasses JS event layers — works with React/Vue contenteditable.
             await wc.insertText(payload.text);
@@ -307,6 +330,21 @@ function startDashboard() {
             const keyCode = ELECTRON_KEY_MAP[payload.key] || payload.key;
             wc.sendInputEvent({ type: 'keyDown', keyCode });
             wc.sendInputEvent({ type: 'keyUp',   keyCode });
+            callback({ ok: true });
+            break;
+          }
+          case 'key_combo': {
+            const ELECTRON_KEY_MAP = {
+              Enter: 'Return', Tab: 'Tab', Escape: 'Escape', Backspace: 'Backspace',
+              Delete: 'Delete', ArrowUp: 'Up', ArrowDown: 'Down',
+              ArrowLeft: 'Left', ArrowRight: 'Right',
+              Home: 'Home', End: 'End', PageUp: 'Prior', PageDown: 'Next', Space: 'Space',
+            };
+            const ELECTRON_MOD = { ctrl: 'control', control: 'control', shift: 'shift', alt: 'alt', meta: 'meta', command: 'meta' };
+            const keyCode = ELECTRON_KEY_MAP[payload.key] || payload.key;
+            const modifiers = (payload.modifiers || []).map(m => ELECTRON_MOD[m.toLowerCase()] || m);
+            wc.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+            wc.sendInputEvent({ type: 'keyUp',   keyCode, modifiers });
             callback({ ok: true });
             break;
           }
