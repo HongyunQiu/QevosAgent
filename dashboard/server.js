@@ -43,6 +43,24 @@ function cdpHttp(urlPath) {
   });
 }
 
+// CDP key map: web standard key names → { key, code, windowsVirtualKeyCode }
+const CDP_KEY_MAP = {
+  Enter:      { key: 'Enter',     code: 'Enter',      windowsVirtualKeyCode: 13  },
+  Tab:        { key: 'Tab',       code: 'Tab',        windowsVirtualKeyCode: 9   },
+  Escape:     { key: 'Escape',    code: 'Escape',     windowsVirtualKeyCode: 27  },
+  Backspace:  { key: 'Backspace', code: 'Backspace',  windowsVirtualKeyCode: 8   },
+  Delete:     { key: 'Delete',    code: 'Delete',     windowsVirtualKeyCode: 46  },
+  ArrowUp:    { key: 'ArrowUp',   code: 'ArrowUp',    windowsVirtualKeyCode: 38  },
+  ArrowDown:  { key: 'ArrowDown', code: 'ArrowDown',  windowsVirtualKeyCode: 40  },
+  ArrowLeft:  { key: 'ArrowLeft', code: 'ArrowLeft',  windowsVirtualKeyCode: 37  },
+  ArrowRight: { key: 'ArrowRight',code: 'ArrowRight', windowsVirtualKeyCode: 39  },
+  Home:       { key: 'Home',      code: 'Home',       windowsVirtualKeyCode: 36  },
+  End:        { key: 'End',       code: 'End',        windowsVirtualKeyCode: 35  },
+  PageUp:     { key: 'PageUp',    code: 'PageUp',     windowsVirtualKeyCode: 33  },
+  PageDown:   { key: 'PageDown',  code: 'PageDown',   windowsVirtualKeyCode: 34  },
+  Space:      { key: ' ',         code: 'Space',      windowsVirtualKeyCode: 32  },
+};
+
 // One-shot: open WS, send one command, get result, close.
 function cdpSend(wsUrl, method, params = {}) {
   return new Promise((resolve, reject) => {
@@ -55,6 +73,29 @@ function cdpSend(wsUrl, method, params = {}) {
         clearTimeout(timer); ws.close();
         if (msg.error) reject(new Error(msg.error.message));
         else resolve(msg.result || {});
+      }
+    });
+    ws.once('error', err => { clearTimeout(timer); ws.close(); reject(err); });
+  });
+}
+
+// Send multiple commands sequentially on one WebSocket connection.
+function cdpSendSeq(wsUrl, commands) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl);
+    const results = [];
+    let idx = 0;
+    const timer = setTimeout(() => { ws.terminate(); reject(new Error('CDP timeout')); }, 10000);
+    const sendNext = () => ws.send(JSON.stringify({ id: idx + 1, method: commands[idx].method, params: commands[idx].params || {} }));
+    ws.once('open', sendNext);
+    ws.on('message', raw => {
+      const msg = JSON.parse(String(raw));
+      if (msg.id === idx + 1) {
+        if (msg.error) { clearTimeout(timer); ws.close(); return reject(new Error(msg.error.message)); }
+        results.push(msg.result || {});
+        idx++;
+        if (idx < commands.length) sendNext();
+        else { clearTimeout(timer); ws.close(); resolve(results); }
       }
     });
     ws.once('error', err => { clearTimeout(timer); ws.close(); reject(err); });
@@ -140,8 +181,44 @@ async function cdpBrowserAction(displayId, action, payload) {
       await cdpSend(wsUrl, 'Runtime.evaluate', { expression: expr });
       return { ok: true };
     }
+    case 'mouse_move': {
+      await cdpSend(wsUrl, 'Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: payload.x, y: payload.y, button: 'none',
+      });
+      return { ok: true };
+    }
+    case 'mouse_click': {
+      const { x, y, button = 'left', count = 1 } = payload;
+      await cdpSendSeq(wsUrl, [
+        { method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved',   x, y, button: 'none' } },
+        { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x, y, button, clickCount: count } },
+        { method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased',x, y, button, clickCount: count } },
+      ]);
+      return { ok: true };
+    }
+    case 'key_type': {
+      // Input.insertText bypasses JS event layers — works with React/Vue contenteditable.
+      await cdpSend(wsUrl, 'Input.insertText', { text: payload.text });
+      return { ok: true };
+    }
+    case 'key_press': {
+      const kdef = CDP_KEY_MAP[payload.key];
+      if (!kdef) throw new Error(`不支持的键名: ${payload.key}。支持: ${Object.keys(CDP_KEY_MAP).join(', ')}`);
+      await cdpSendSeq(wsUrl, [
+        { method: 'Input.dispatchKeyEvent', params: { type: 'keyDown', ...kdef } },
+        { method: 'Input.dispatchKeyEvent', params: { type: 'keyUp',   ...kdef } },
+      ]);
+      return { ok: true };
+    }
+    case 'scroll': {
+      await cdpSend(wsUrl, 'Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x: payload.x || 0, y: payload.y || 0,
+        deltaX: payload.deltaX || 0, deltaY: payload.deltaY || 0,
+      });
+      return { ok: true };
+    }
     default:
-      throw new Error(`未知操作: ${action}。支持: new_tab / navigate / eval / get_html / screenshot / click / fill`);
+      throw new Error(`未知操作: ${action}。支持: new_tab / navigate / eval / get_html / screenshot / click / fill / mouse_move / mouse_click / key_type / key_press / scroll`);
   }
 }
 

@@ -2596,21 +2596,36 @@ def get_standard_tools() -> dict[str, ToolSpec]:
         ToolSpec(
             name="web_interact",
             description=(
-                "在已打开的浏览器视图中执行自动化操作（导航、JS 执行、截图、点击、填写等）。\n"
+                "在已打开的浏览器视图中执行自动化操作。\n"
                 "Electron 模式：直接控制内嵌标签页，无需额外配置。\n"
                 "普通浏览器模式：需以 --remote-debugging-port=9222 启动 Chrome/Edge，"
                 "否则工具会返回带有具体启动命令的错误提示。\n"
-                "支持的 action：\n"
+                "【页面控制】\n"
                 "  - new_tab：打开新标签页，payload: {url?, title?}\n"
                 "  - navigate：跳转 URL 并等待加载完成，payload: {url}\n"
                 "  - eval：执行 JS 并返回结果，payload: {code}\n"
                 "  - get_html：获取页面完整 HTML，payload: {}\n"
                 "  - screenshot：截图，返回 base64 PNG，payload: {}\n"
-                "  - click：点击 CSS 选择器匹配的元素，payload: {selector}\n"
-                "  - fill：填写输入框，payload: {selector, value}"
+                "【元素交互（基于 CSS 选择器）】\n"
+                "  - click：点击元素，payload: {selector}\n"
+                "  - fill：填写普通 input/textarea，payload: {selector, value}\n"
+                "【原生输入（可绕过 React/Vue 等框架）】\n"
+                "  - key_type：向已聚焦元素输入文字（原生键盘注入，适合 contenteditable），payload: {text}\n"
+                "  - key_press：按下特殊键，payload: {key}，支持的键名：\n"
+                "      Enter / Tab / Escape / Backspace / Delete /\n"
+                "      ArrowUp / ArrowDown / ArrowLeft / ArrowRight /\n"
+                "      Home / End / PageUp / PageDown / Space\n"
+                "【鼠标操作（基于坐标）】\n"
+                "  - mouse_move：移动鼠标到坐标，payload: {x, y}\n"
+                "  - mouse_click：在坐标处点击，payload: {x, y, button?('left'/'right'/'middle'), count?(1/2)}\n"
+                "  - scroll：在坐标处滚动，payload: {x, y, deltaX?, deltaY?}\n"
+                "【典型用法 — 在 React contenteditable 中输入文字】\n"
+                "  1. mouse_click 聚焦目标区域\n"
+                "  2. key_type 输入文字（原生注入，无视框架拦截）\n"
+                "  3. key_press Enter 提交"
             ),
             args_schema={
-                "action": "操作类型：new_tab / navigate / eval / get_html / screenshot / click / fill",
+                "action": "操作类型（见描述）",
                 "display_id": "（可选）目标视图 ID，对应 web_show 的 display_id，默认 'default'",
                 "payload": "（可选）操作参数对象，不同 action 所需字段见描述",
             },

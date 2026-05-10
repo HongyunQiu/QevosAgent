@@ -278,6 +278,46 @@ function startDashboard() {
             callback({ ok: true });
             break;
           }
+          case 'mouse_move': {
+            wc.sendInputEvent({ type: 'mouseMove', x: payload.x, y: payload.y });
+            callback({ ok: true });
+            break;
+          }
+          case 'mouse_click': {
+            const { x, y, button = 'left', count = 1 } = payload;
+            wc.sendInputEvent({ type: 'mouseMove', x, y });
+            wc.sendInputEvent({ type: 'mouseDown', x, y, button, clickCount: count });
+            wc.sendInputEvent({ type: 'mouseUp',   x, y, button, clickCount: count });
+            callback({ ok: true });
+            break;
+          }
+          case 'key_type': {
+            // insertText bypasses JS event layers — works with React/Vue contenteditable.
+            await wc.insertText(payload.text);
+            callback({ ok: true });
+            break;
+          }
+          case 'key_press': {
+            const ELECTRON_KEY_MAP = {
+              Enter: 'Return', Tab: 'Tab', Escape: 'Escape', Backspace: 'Backspace',
+              Delete: 'Delete', ArrowUp: 'Up', ArrowDown: 'Down',
+              ArrowLeft: 'Left', ArrowRight: 'Right',
+              Home: 'Home', End: 'End', PageUp: 'Prior', PageDown: 'Next', Space: 'Space',
+            };
+            const keyCode = ELECTRON_KEY_MAP[payload.key] || payload.key;
+            wc.sendInputEvent({ type: 'keyDown', keyCode });
+            wc.sendInputEvent({ type: 'keyUp',   keyCode });
+            callback({ ok: true });
+            break;
+          }
+          case 'scroll': {
+            wc.sendInputEvent({
+              type: 'mouseWheel', x: payload.x || 0, y: payload.y || 0,
+              deltaX: payload.deltaX || 0, deltaY: payload.deltaY || 0,
+            });
+            callback({ ok: true });
+            break;
+          }
           default:
             callback({ error: `未知操作: ${action}` });
         }
