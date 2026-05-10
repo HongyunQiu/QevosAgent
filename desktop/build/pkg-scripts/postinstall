@@ -1,0 +1,36 @@
+#!/bin/bash
+#
+# Runs AFTER the new app bundle has been extracted.
+# $2 = destination volume root (typically "/")
+#
+# Restores the user-modifiable files that preinstall backed up,
+# overwriting the freshly installed defaults.
+
+VENDOR_DIR="${2}/Applications/QevosAgent.app/Contents/Resources/app/vendor/app"
+BACKUP_DIR="/tmp/.qevosagent-install-backup"
+
+PRESERVE_PATHS=(
+  "AGENTS.md"
+  "ADVISOR.md"
+  "SKILLS"
+  "runs"
+  "memory_episodic.jsonl"
+  "memory_macro.md"
+  "agent_tools.json"
+)
+
+if [ ! -d "$BACKUP_DIR" ]; then
+  exit 0
+fi
+
+for rel in "${PRESERVE_PATHS[@]}"; do
+  src="$BACKUP_DIR/$rel"
+  if [ -e "$src" ]; then
+    dst="$VENDOR_DIR/$rel"
+    rm -rf "$dst"
+    cp -rp "$src" "$dst"
+  fi
+done
+
+rm -rf "$BACKUP_DIR"
+exit 0

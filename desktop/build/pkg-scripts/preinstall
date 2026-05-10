@@ -1,0 +1,50 @@
+#!/bin/bash
+#
+# Runs BEFORE the new app bundle is extracted.
+# $2 = destination volume root (typically "/")
+#
+# Backs up user-modifiable files from the existing installation so that
+# postinstall can restore them after the new bundle overwrites them.
+
+set -e
+
+VENDOR_DIR="${2}/Applications/QevosAgent.app/Contents/Resources/app/vendor/app"
+BACKUP_DIR="/tmp/.qevosagent-install-backup"
+
+PRESERVE_PATHS=(
+  "AGENTS.md"
+  "ADVISOR.md"
+  "SKILLS"
+  "runs"
+  "memory_episodic.jsonl"
+  "memory_macro.md"
+  "agent_tools.json"
+)
+
+# Remove any stale backup from a previous failed install
+rm -rf "$BACKUP_DIR"
+
+# Nothing to backup if the app is not already installed
+if [ ! -d "$VENDOR_DIR" ]; then
+  exit 0
+fi
+
+mkdir -p "$BACKUP_DIR"
+backed_up=0
+
+for rel in "${PRESERVE_PATHS[@]}"; do
+  src="$VENDOR_DIR/$rel"
+  if [ -e "$src" ]; then
+    dst_parent="$BACKUP_DIR/$(dirname "$rel")"
+    mkdir -p "$dst_parent"
+    cp -rp "$src" "$BACKUP_DIR/$rel"
+    backed_up=1
+  fi
+done
+
+# If nothing was backed up, remove the empty backup dir to signal postinstall
+if [ "$backed_up" -eq 0 ]; then
+  rm -rf "$BACKUP_DIR"
+fi
+
+exit 0

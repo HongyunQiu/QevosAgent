@@ -32,10 +32,16 @@
       "signAndEditExecutable": false
     },
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "target": [
+        { "target": "pkg", "arch": ["x64", "arm64"] }
+      ],
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
       "identity": null
+    },
+    "pkg": {
+      "installLocation": "/Applications",
+      "scripts": "pkg-scripts"
     },
     "linux": {
       "target": [{ "target": "AppImage", "arch": ["x64"] }],
@@ -57,6 +63,7 @@
       "!**/*.test.js",
       "!build/installer.nsh",
       "!build/preserve-paths.nsh",
+      "!build/pkg-scripts/**",
       "!scripts/**",
       "!dist/**"
     ],
