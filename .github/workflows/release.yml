@@ -122,6 +122,7 @@ jobs:
           EP_DRAFT: false
           PUBLISH_FOR_PULL_REQUEST: false
           GH_TOKEN: ""
+          DEBUG: "electron-builder"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
