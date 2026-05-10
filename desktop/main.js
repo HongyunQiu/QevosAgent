@@ -208,8 +208,8 @@ function closeView(id) {
 // never blocks real input events, but it DOES appear in capturePage() PNGs so
 // the Agent can verify cursor position from a screenshot.
 
-function cursorOverlayJS(x, y) {
-  return `(function(x,y){
+function cursorOverlayJS(x, y, code) {
+  return `(function(x,y,code){
     var c=document.getElementById('__qc__');
     if(!c){
       c=document.createElement('div'); c.id='__qc__';
@@ -222,8 +222,14 @@ function cursorOverlayJS(x, y) {
       document.documentElement.appendChild(c);
     }
     c.style.left=x+'px'; c.style.top=y+'px';
-    document.getElementById('__qc_lbl__').textContent='('+x+', '+y+')';
-  })(${x},${y})`;
+    c.dataset.code=code;
+    document.getElementById('__qc_lbl__').textContent='#'+code+' ('+x+','+y+')';
+  })(${x},${y},${JSON.stringify(code)})`;
+}
+
+/** Generate a 4-char uppercase hex nonce for one cursor overlay update. */
+function cursorCode() {
+  return Math.random().toString(16).slice(2, 6).toUpperCase();
 }
 
 // ── Dashboard server ───────────────────────────────────────────────────────
@@ -303,34 +309,39 @@ function startDashboard() {
             break;
           }
           case 'mouse_move': {
+            const code = cursorCode();
             wc.sendInputEvent({ type: 'mouseMove', x: payload.x, y: payload.y });
-            wc.executeJavaScript(cursorOverlayJS(payload.x, payload.y)).catch(() => {});
-            callback({ ok: true });
+            wc.executeJavaScript(cursorOverlayJS(payload.x, payload.y, code)).catch(() => {});
+            callback({ ok: true, cursor: { code, x: payload.x, y: payload.y } });
             break;
           }
           case 'mouse_click': {
             const { x, y, button = 'left', count = 1 } = payload;
+            const code = cursorCode();
             wc.sendInputEvent({ type: 'mouseMove', x, y });
             wc.sendInputEvent({ type: 'mouseDown', x, y, button, clickCount: count });
             wc.sendInputEvent({ type: 'mouseUp',   x, y, button, clickCount: count });
-            wc.executeJavaScript(cursorOverlayJS(x, y)).catch(() => {});
-            callback({ ok: true });
+            wc.executeJavaScript(cursorOverlayJS(x, y, code)).catch(() => {});
+            callback({ ok: true, cursor: { code, x, y } });
             break;
           }
           case 'mouse_down': {
+            const code = cursorCode();
             wc.sendInputEvent({ type: 'mouseDown', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 });
-            wc.executeJavaScript(cursorOverlayJS(payload.x, payload.y)).catch(() => {});
-            callback({ ok: true });
+            wc.executeJavaScript(cursorOverlayJS(payload.x, payload.y, code)).catch(() => {});
+            callback({ ok: true, cursor: { code, x: payload.x, y: payload.y } });
             break;
           }
           case 'mouse_up': {
+            const code = cursorCode();
             wc.sendInputEvent({ type: 'mouseUp', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 });
-            wc.executeJavaScript(cursorOverlayJS(payload.x, payload.y)).catch(() => {});
-            callback({ ok: true });
+            wc.executeJavaScript(cursorOverlayJS(payload.x, payload.y, code)).catch(() => {});
+            callback({ ok: true, cursor: { code, x: payload.x, y: payload.y } });
             break;
           }
           case 'drag': {
             const { x1, y1, x2, y2, steps = 10, button = 'left' } = payload;
+            const code = cursorCode();
             wc.sendInputEvent({ type: 'mouseMove', x: x1, y: y1 });
             wc.sendInputEvent({ type: 'mouseDown', x: x1, y: y1, button, clickCount: 1 });
             for (let i = 1; i <= steps; i++) {
@@ -339,8 +350,8 @@ function startDashboard() {
               wc.sendInputEvent({ type: 'mouseMove', x, y });
             }
             wc.sendInputEvent({ type: 'mouseUp', x: x2, y: y2, button, clickCount: 1 });
-            wc.executeJavaScript(cursorOverlayJS(x2, y2)).catch(() => {});
-            callback({ ok: true });
+            wc.executeJavaScript(cursorOverlayJS(x2, y2, code)).catch(() => {});
+            callback({ ok: true, cursor: { code, x: x2, y: y2 } });
             break;
           }
           case 'key_type': {

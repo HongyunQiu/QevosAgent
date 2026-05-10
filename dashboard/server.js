@@ -81,9 +81,11 @@ function cdpSend(wsUrl, method, params = {}) {
 
 // JS injected into the page to show/update the cursor position overlay.
 // Uses pointer-events:none so it never blocks clicks; z-index max so always on top.
-// The orange dot + coordinate label will appear in screenshots taken by the agent.
-function cursorOverlayJS(x, y) {
-  return `(function(x,y){
+// The orange dot + label "#CODE (x, y)" appears in screenshots taken by the agent.
+// `code` is a fresh 4-hex nonce generated per action so the LLM can unambiguously
+// locate *this* overlay rather than any similar-looking element on the page.
+function cursorOverlayJS(x, y, code) {
+  return `(function(x,y,code){
     var c=document.getElementById('__qc__');
     if(!c){
       c=document.createElement('div');
@@ -98,8 +100,14 @@ function cursorOverlayJS(x, y) {
       document.documentElement.appendChild(c);
     }
     c.style.left=x+'px'; c.style.top=y+'px';
-    document.getElementById('__qc_lbl__').textContent='('+x+', '+y+')';
-  })(${x},${y})`;
+    c.dataset.code=code;
+    document.getElementById('__qc_lbl__').textContent='#'+code+' ('+x+','+y+')';
+  })(${x},${y},${JSON.stringify(code)})`;
+}
+
+/** Generate a 4-char uppercase hex nonce for one cursor overlay update. */
+function cursorCode() {
+  return Math.random().toString(16).slice(2, 6).toUpperCase();
 }
 
 // Send multiple commands sequentially on one WebSocket connection.
@@ -205,38 +213,43 @@ async function cdpBrowserAction(displayId, action, payload) {
       return { ok: true };
     }
     case 'mouse_move': {
+      const code = cursorCode();
       await cdpSendSeq(wsUrl, [
         { method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x: payload.x, y: payload.y, button: 'none' } },
-        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(payload.x, payload.y) } },
+        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(payload.x, payload.y, code) } },
       ]);
-      return { ok: true };
+      return { ok: true, cursor: { code, x: payload.x, y: payload.y } };
     }
     case 'mouse_click': {
       const { x, y, button = 'left', count = 1 } = payload;
+      const code = cursorCode();
       await cdpSendSeq(wsUrl, [
         { method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved',   x, y, button: 'none' } },
         { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x, y, button, clickCount: count } },
         { method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased',x, y, button, clickCount: count } },
-        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(x, y) } },
+        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(x, y, code) } },
       ]);
-      return { ok: true };
+      return { ok: true, cursor: { code, x, y } };
     }
     case 'mouse_down': {
+      const code = cursorCode();
       await cdpSendSeq(wsUrl, [
         { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 } },
-        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(payload.x, payload.y) } },
+        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(payload.x, payload.y, code) } },
       ]);
-      return { ok: true };
+      return { ok: true, cursor: { code, x: payload.x, y: payload.y } };
     }
     case 'mouse_up': {
+      const code = cursorCode();
       await cdpSendSeq(wsUrl, [
         { method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: payload.x, y: payload.y, button: payload.button || 'left', clickCount: 1 } },
-        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(payload.x, payload.y) } },
+        { method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(payload.x, payload.y, code) } },
       ]);
-      return { ok: true };
+      return { ok: true, cursor: { code, x: payload.x, y: payload.y } };
     }
     case 'drag': {
       const { x1, y1, x2, y2, steps = 10, button = 'left' } = payload;
+      const code = cursorCode();
       const cmds = [
         { method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved',   x: x1, y: y1, button: 'none' } },
         { method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: x1, y: y1, button, clickCount: 1 } },
@@ -247,9 +260,9 @@ async function cdpBrowserAction(displayId, action, payload) {
         cmds.push({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseMoved', x, y, button } });
       }
       cmds.push({ method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: x2, y: y2, button, clickCount: 1 } });
-      cmds.push({ method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(x2, y2) } });
+      cmds.push({ method: 'Runtime.evaluate', params: { expression: cursorOverlayJS(x2, y2, code) } });
       await cdpSendSeq(wsUrl, cmds);
-      return { ok: true };
+      return { ok: true, cursor: { code, x: x2, y: y2 } };
     }
     case 'key_type': {
       // Input.insertText bypasses JS event layers — works with React/Vue contenteditable.
