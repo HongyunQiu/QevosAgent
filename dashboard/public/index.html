@@ -103,7 +103,21 @@ input, textarea { font-family: inherit; font-size: inherit; }
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
   z-index: 20;
+  position: relative;
 }
+.topbar-skills {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+  max-width: 38%;
+}
+.topbar-skills:empty { display: none; }
 
 .logo {
   display: flex;
@@ -969,6 +983,7 @@ body.large-font .app {
       <img class="logo-icon" src="/LOGO_256.png" alt="QevosAgent">
       QevosAgent
 </div>
+    <div class="topbar-skills" id="topbarSkills"></div>
     <div class="topbar-sep"></div>
     <div class="run-pill" id="runPill">
       <div class="status-dot" id="statusDot"></div>
@@ -1078,10 +1093,6 @@ body.large-font .app {
         <div class="bar-gap"></div>
         <button class="icon-btn" onclick="loadSkills()">↺ Refresh</button>
         <button class="icon-btn" onclick="skillsNewPrompt()">＋ New</button>
-      </div>
-      <!-- active skills bar -->
-      <div class="skills-active-bar empty" id="skillsActiveBar">
-        <span style="color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px">Activated:</span>
       </div>
       <div class="skills-body">
         <!-- left: list with checkboxes -->
@@ -1264,6 +1275,8 @@ let gPendingToolIdx = null;       // idx of the tool_call we're currently stream
 const gJobExpanded = {};          // { jobId: boolean } — which job cards are expanded
 const gJobPollers  = {};          // { jobId: intervalId } — polling timers for running jobs
 let gNostop        = false;       // whether to launch agent in --nostop (continuous) mode
+let gElapsedTimer  = null;        // setInterval handle for the elapsed-time counter
+let gElapsedStart  = null;        // Date when current run started (parsed from run ID)
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
 function connectWs() {
@@ -1381,12 +1394,31 @@ function renderTopBar(data, rid) {
   }
 
   const s = (data.status && data.status.status) || 'unknown';
-  // Use agentAlive (process liveness) for the "live" pill highlight — accurate
-  // even in nostop-idle state where status may be "idle" but process is running.
   pill.className = 'run-pill' + (data.agentAlive ? ' live' : '');
   dot.className  = 'status-dot ' + s;
-  label.textContent = fmtRunId(rid);
   kill.className = (data.agentAlive && data.agentPid) ? 'kill-btn visible' : 'kill-btn';
+
+  const startDate = parseRunIdDate(rid);
+  if (data.agentAlive && startDate) {
+    if (!gElapsedTimer || gElapsedStart !== startDate.getTime()) {
+      clearInterval(gElapsedTimer);
+      gElapsedStart = startDate.getTime();
+      const tick = () => { label.textContent = fmtElapsed(Date.now() - gElapsedStart); };
+      tick();
+      gElapsedTimer = setInterval(tick, 1000);
+    }
+  } else {
+    clearInterval(gElapsedTimer);
+    gElapsedTimer = null;
+    gElapsedStart = null;
+    // Use actual start/end timestamps from status.json — deterministic, won't drift on re-render
+    const st = data.status;
+    if (st && st.started_at && st.updated_at) {
+      label.textContent = fmtElapsed(new Date(st.updated_at) - new Date(st.started_at));
+    } else {
+      label.textContent = startDate ? fmtElapsed(Date.now() - startDate.getTime()) : fmtRunId(rid);
+    }
+  }
 }
 
 function renderSidebar(data, rid) {
@@ -1993,6 +2025,21 @@ function fmtRunId(rid) {
   return rid;
 }
 
+function parseRunIdDate(rid) {
+  if (!/^\d{8}-\d{6}$/.test(rid)) return null;
+  const Y = +rid.slice(0,4), M = +rid.slice(4,6)-1, D = +rid.slice(6,8);
+  const h = +rid.slice(9,11), m = +rid.slice(11,13), s = +rid.slice(13,15);
+  return new Date(Y, M, D, h, m, s);
+}
+
+function fmtElapsed(ms) {
+  const s  = Math.floor(Math.max(0, ms) / 1000);
+  const hh = String(Math.floor(s / 3600)).padStart(2, '0');
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return hh + ':' + mm + ':' + ss;
+}
+
 function fmtArgs(args) {
   if (!args || Object.keys(args).length === 0) return '';
   try { const s = JSON.stringify(args, null, 2); return s.length > 400 ? s.slice(0,400)+'\n…' : s; }
@@ -2197,19 +2244,13 @@ function renderSkillsSelCount() {
 }
 
 function renderSkillsActiveBar() {
-  const bar = document.getElementById('skillsActiveBar');
-  // Remove old tags (keep the label span)
-  [...bar.querySelectorAll('.skill-tag')].forEach(t => t.remove());
-  if (gActiveSkills.size === 0) {
-    bar.classList.add('empty');
-  } else {
-    bar.classList.remove('empty');
-    for (const n of gActiveSkills) {
-      const tag = document.createElement('span');
-      tag.className = 'skill-tag';
-      tag.textContent = n;
-      bar.appendChild(tag);
-    }
+  const bar = document.getElementById('topbarSkills');
+  bar.innerHTML = '';
+  for (const n of gActiveSkills) {
+    const tag = document.createElement('span');
+    tag.className = 'skill-tag';
+    tag.textContent = n;
+    bar.appendChild(tag);
   }
 }
 
