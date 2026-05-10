@@ -6,6 +6,7 @@
   "scripts": {
     "start":     "electron .",
     "setup":     "node scripts/setup_python.js",
+    "test":      "node --test ./icon-path.test.js ./preserve-paths.test.js",
     "build":       "electron-builder --win",
     "build:mac":   "electron-builder --mac",
     "build:linux": "electron-builder --linux",
@@ -45,12 +46,25 @@
       "oneClick":                        false,
       "allowToChangeInstallationDirectory": true,
       "perMachine":                      false,
-      "deleteAppDataOnUninstall":        false
+      "deleteAppDataOnUninstall":        false,
+      "createDesktopShortcut":           "always",
+      "include":                         "build/installer.nsh",
+      "installerIcon":                   "build/icon.ico",
+      "uninstallerIcon":                 "build/icon.ico"
     },
     "files": [
       "**/*",
+      "!**/*.test.js",
+      "!build/installer.nsh",
+      "!build/preserve-paths.nsh",
       "!scripts/**",
       "!dist/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
     ],
     "directories": {
       "output": "dist"

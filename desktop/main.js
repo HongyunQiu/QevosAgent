@@ -36,7 +36,7 @@ const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell } = require('e
 const path    = require('path');
 const http    = require('http');
 const fs      = require('fs');
-const Updater = require('./updater');
+const { getAppIconPath } = require('./icon-path');
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -102,8 +102,6 @@ let mainWindow       = null;
 let tabbarView       = null;
 let dashboardStarted = false;
 
-const updater        = new Updater(VENDOR_APP);
-let pendingManifest  = null;
 
 // ── Layout ─────────────────────────────────────────────────────────────────
 
@@ -457,33 +455,6 @@ function registerIPC() {
   ipcMain.on('tab-activate', (_, id)  => activateView(id));
   ipcMain.on('tab-close',    (_, id)  => closeView(id));
   ipcMain.on('tab-settings', ()       => showSetup());
-
-  // ── Update IPC ────────────────────────────────────────────────────────────
-
-  ipcMain.handle('update:start', async () => {
-    if (!pendingManifest) return { ok: false, error: '没有待执行的更新' };
-    try {
-      await updater.downloadUpdate(pendingManifest, (percent, file) => {
-        if (tabbarView && !tabbarView.webContents.isDestroyed()) {
-          tabbarView.webContents.send('update:progress', { percent, file });
-        }
-      });
-      updater.applyUpdate(pendingManifest);
-      pendingManifest = null;
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: err.message };
-    }
-  });
-
-  ipcMain.on('update:relaunch', () => {
-    app.relaunch();
-    app.quit();
-  });
-
-  ipcMain.on('update:open-releases', () => {
-    shell.openExternal('https://github.com/HongyunQiu/QevosAgent/releases/latest');
-  });
 }
 
 // ── BrowserWindow + WebContentsViews ──────────────────────────────────────
@@ -495,10 +466,7 @@ function createWindow() {
     minWidth:        800,
     minHeight:       600,
     title:           'QevosAgent',
-    icon:            path.join(__dirname, 'build',
-                       process.platform === 'darwin' ? 'icon.icns'
-                     : process.platform === 'linux'  ? 'icon.png'
-                     : 'icon.ico'),
+    icon:            getAppIconPath(__dirname, process.platform, app.isPackaged),
     backgroundColor: '#0d1117',
   });
 
@@ -512,25 +480,8 @@ function createWindow() {
   });
   mainWindow.contentView.addChildView(tabbarView);
   tabbarView.webContents.loadFile(path.join(__dirname, 'tabbar.html'));
-  // Push initial state once the tab bar has finished rendering, then check
-  // for content updates in the background (3 s delay to not block startup).
   tabbarView.webContents.once('did-finish-load', () => {
     pushTabsUpdate();
-    setTimeout(async () => {
-      try {
-        const result = await updater.checkForUpdate();
-        if (result.hasUpdate && !tabbarView.webContents.isDestroyed()) {
-          pendingManifest = result.manifest;
-          tabbarView.webContents.send('update:available', {
-            current:         result.current,
-            latest:          result.latest,
-            isContentUpdate: result.isContentUpdate,
-          });
-        }
-      } catch (e) {
-        console.log('[updater] 检查更新失败:', e.message);
-      }
-    }, 3000);
   });
 
   // ── Home (看板) content view ──────────────────────────────────────────────
