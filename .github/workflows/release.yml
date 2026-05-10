@@ -175,8 +175,7 @@ jobs:
       - name: Rename to stable download names
         run: |
           find artifacts -name "*.exe"       -exec cp {} artifacts/QevosAgent-Setup.exe \;
-          find artifacts -name "*arm64*.pkg" -exec cp {} artifacts/QevosAgent-macOS-arm64.pkg \;
-          find artifacts -name "*.pkg" ! -name "*arm64*" -exec cp {} artifacts/QevosAgent-macOS-x64.pkg \;
+          find artifacts -name "*.pkg" -exec cp {} artifacts/QevosAgent-macOS-arm64.pkg \;
           find artifacts -name "*.AppImage"  -exec cp {} artifacts/QevosAgent.AppImage \;
           find artifacts -name "*.apk"       -exec cp {} artifacts/QevosAgent-Android.apk \;
 
