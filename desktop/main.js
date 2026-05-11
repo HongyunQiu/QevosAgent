@@ -237,12 +237,9 @@ function cursorCode() {
 
 function findFreePort(startPort) {
   return new Promise(resolve => {
-    const srv = net.createServer();
-    srv.listen(startPort, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', () => resolve(findFreePort(startPort + 1)));
+    const sock = net.connect(startPort, '127.0.0.1');
+    sock.once('connect', () => { sock.destroy(); findFreePort(startPort + 1).then(resolve); });
+    sock.once('error',   () => { sock.destroy(); resolve(startPort); });
   });
 }
 

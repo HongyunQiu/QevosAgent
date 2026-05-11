@@ -1308,14 +1308,15 @@ poll();
 
 const net = require('net');
 
+// Connect-probe: tries to reach the port. If connect succeeds → port is in
+// use; if it errors → port is free. Works correctly on Windows where
+// SO_REUSEADDR lets multiple sockets bind to the same port, which makes the
+// common createServer-probe approach return false "free" results.
 function findFreePort(startPort) {
   return new Promise(resolve => {
-    const srv = net.createServer();
-    srv.listen(startPort, '0.0.0.0', () => {
-      const p = srv.address().port;
-      srv.close(() => resolve(p));
-    });
-    srv.on('error', () => findFreePort(startPort + 1).then(resolve));
+    const sock = net.connect(startPort, '127.0.0.1');
+    sock.once('connect', () => { sock.destroy(); findFreePort(startPort + 1).then(resolve); });
+    sock.once('error',   () => { sock.destroy(); resolve(startPort); });
   });
 }
 
