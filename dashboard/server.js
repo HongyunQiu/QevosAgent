@@ -1181,11 +1181,6 @@ const server = http.createServer(async (req, res) => {
         json(200, { content: stripBase64FromJsonl(raw), truncated: false });
         return;
       }
-      const mdExts = ['.md', '.markdown', '.txt'];
-      if (st.size > 512 * 1024 && !mdExts.includes(path.extname(relFile).toLowerCase())) {
-        json(200, { content: `[File too large to display inline: ${(st.size / 1024).toFixed(0)} KB]`, truncated: true });
-        return;
-      }
       const content = fs.readFileSync(fullPath, 'utf8');
       json(200, { content });
     } catch (e) {
