@@ -1306,17 +1306,23 @@ process.on('exit',    cleanup);
 setInterval(poll, POLL_MS);
 poll();
 
-function startListen(port) {
-  server.once('error', err => {
-    if (err.code === 'EADDRINUSE') {
-      console.log(`  端口 ${port} 已被占用，尝试 ${port + 1}…`);
-      startListen(port + 1);
-    } else {
-      throw err;
-    }
+const net = require('net');
+
+function findFreePort(startPort) {
+  return new Promise(resolve => {
+    const srv = net.createServer();
+    srv.listen(startPort, '0.0.0.0', () => {
+      const p = srv.address().port;
+      srv.close(() => resolve(p));
+    });
+    srv.on('error', () => findFreePort(startPort + 1).then(resolve));
   });
+}
+
+findFreePort(PORT).then(port => {
+  if (port !== PORT) console.log(`  端口 ${PORT} 已被占用，改用 ${port}`);
+  process.env.DASHBOARD_PORT = String(port);
   server.listen(port, '0.0.0.0', () => {
-    process.env.DASHBOARD_PORT = String(port);
     console.log('');
     console.log(`  🦊 QevosAgent Dashboard  v${APP_VERSION}`);
     console.log('  ─────────────────────────────────────');
@@ -1332,5 +1338,4 @@ function startListen(port) {
     console.log('  Press Ctrl+C to stop.');
     console.log('');
   });
-}
-startListen(PORT);
+});
