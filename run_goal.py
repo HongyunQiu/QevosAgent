@@ -566,6 +566,8 @@ def main():
             state.meta["_user_goal"]     = _raw_next_goal
             state.meta.pop("_loop_warn_counts", None)
             state.meta.pop("_call_sig_history", None)
+            state.meta.pop("_advisor_last_iter", None)
+            state.meta.pop("_advisor_tried_for_loop", None)
             state.iteration = 0   # 重置迭代计数，新一轮可使用完整 max_iterations
             os.environ["USER_GOAL"] = _raw_next_goal
 

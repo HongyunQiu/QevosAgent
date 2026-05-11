@@ -513,6 +513,10 @@ def run(
                 )
                 if _should_advise:
                     _advice = run_advisor(state, llm, _advisor_sys, trigger_reason=_advise_reason)
+                    # Always record the attempt so we don't retry every subsequent iteration
+                    # when run_advisor fails or returns empty (which leaves _advisor_last_iter
+                    # unchanged, causing should_trigger_advisor to return True again immediately).
+                    state.meta["_advisor_last_iter"] = state.iteration
                     if _advice:
                         inject_advisor_advice(state, _advice, _advise_reason)
                         if hooks.on_advisor:
