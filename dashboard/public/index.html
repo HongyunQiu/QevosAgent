@@ -2672,7 +2672,13 @@ function applyPreview(content, filePath, preview) {
 
   // HTML — sandboxed iframe
   if (ext === 'html' || ext === 'htm') {
-    htmlFr.srcdoc = content;
+    const dir = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/') + 1) : '';
+    const baseHref = `/api/run-file-raw/${encodeURIComponent(gFilesRunId)}/${dir}`;
+    const baseTag = `<base href="${baseHref}">`;
+    const injected = /(<head[^>]*>)/i.test(content)
+      ? content.replace(/(<head[^>]*>)/i, `$1${baseTag}`)
+      : baseTag + content;
+    htmlFr.srcdoc = injected;
     showOnly(htmlFr);
     return;
   }
