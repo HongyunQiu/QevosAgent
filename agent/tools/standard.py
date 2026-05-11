@@ -2165,6 +2165,118 @@ def tool_read_skill(state: AgentState, name: str) -> ToolResult:
         return ToolResult(success=False, output=None, error=str(e))
 
 
+def tool_ssh_execute(state: AgentState, **kwargs) -> ToolResult:
+    """通过 SSH 在远程服务器执行命令。支持密码/密钥认证、sudo 密码注入、严格 timeout 和 /stop 中断。"""
+    host = kwargs.get("host", "")
+    port = int(kwargs.get("port", 22))
+    username = kwargs.get("username", "")
+    password = kwargs.get("password", None)
+    command = kwargs.get("command", "")
+    timeout = float(kwargs.get("timeout", 30))
+    key_file = kwargs.get("key_file", None)
+    sudo_password = kwargs.get("sudo_password", None)
+
+    if not host or not username or not command:
+        return ToolResult(success=False, output="", error="缺少必要参数: host, username, command")
+    if not password and not key_file:
+        return ToolResult(success=False, output="", error="必须提供 password 或 key_file 之一")
+
+    if sudo_password:
+        if "sudo" in command:
+            command = command.replace("sudo", "sudo -S", 1)
+        else:
+            command = "sudo -S " + command
+        # 用 printf 避免密码含单引号时 shell 解析错误
+        escaped = sudo_password.replace("'", "'\\''")
+        command = f"printf '%s\\n' '{escaped}' | " + command
+
+    try:
+        import paramiko
+    except ImportError:
+        return ToolResult(
+            success=False, output="",
+            error="缺少依赖 paramiko，请执行：pip install paramiko",
+        )
+
+    try:
+        import time as _time
+
+        _ih = state.meta.get("_interrupt_handler")
+
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        connect_kwargs = {
+            "hostname": host,
+            "port": port,
+            "username": username,
+            "timeout": min(timeout, 15),
+        }
+        if key_file:
+            connect_kwargs["key_filename"] = key_file
+        else:
+            connect_kwargs["password"] = password
+
+        ssh.connect(**connect_kwargs)
+
+        try:
+            stdin, stdout, stderr = ssh.exec_command(command, timeout=timeout)
+            channel = stdout.channel
+
+            start = _time.time()
+            stdout_data = b""
+            stderr_data = b""
+
+            while True:
+                if _ih and getattr(_ih, "force_stop", False):
+                    _ih.force_stop = False
+                    channel.close()
+                    return ToolResult(success=False, output="", error="SSH 命令被用户中断 (/stop)")
+
+                if _time.time() - start > timeout:
+                    channel.close()
+                    return ToolResult(success=False, output="", error=f"SSH 命令超时（{timeout}s）")
+
+                if channel.exit_status_ready():
+                    break
+
+                if channel.recv_ready():
+                    stdout_data += channel.recv(4096)
+                if channel.recv_stderr_ready():
+                    stderr_data += channel.recv_stderr(4096)
+
+                _time.sleep(0.1)
+
+            stdout_data += stdout.read()
+            stderr_data += stderr.read()
+            returncode = channel.recv_exit_status()
+
+            stdout_str = stdout_data.decode("utf-8", errors="replace")
+            stderr_str = stderr_data.decode("utf-8", errors="replace")
+
+            parts = []
+            if stdout_str:
+                parts.append("[stdout]\n" + stdout_str)
+            if stderr_str:
+                parts.append("[stderr]\n" + stderr_str)
+            output = "\n".join(parts)
+
+            if returncode == 0:
+                return ToolResult(success=True, output=output)
+            else:
+                return ToolResult(success=False, output=output, error=f"命令退出码: {returncode}")
+
+        finally:
+            ssh.close()
+
+    except paramiko.AuthenticationException:
+        return ToolResult(success=False, output="", error="SSH 认证失败：用户名或密码错误")
+    except paramiko.SSHException as e:
+        return ToolResult(success=False, output="", error=f"SSH 错误: {e}")
+    except Exception as e:
+        return ToolResult(success=False, output="", error=f"{type(e).__name__}: {e}")
+
+
 def get_standard_tools() -> dict[str, ToolSpec]:
     """返回标准工具集（直接传给 agent.run()）。"""
     specs = [
@@ -2708,6 +2820,22 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "caption": "（可选）整段视频的说明文字，会作为第一条消息注入上下文",
             },
             fn=tool_load_video,
+        ),
+        # ── SSH 工具 ──────────────────────────────────────────────────────────
+        ToolSpec(
+            name="ssh_execute",
+            description="通过 SSH 在远程服务器执行命令。支持密码/密钥认证、sudo 密码注入、严格 timeout 和 /stop 中断。",
+            args_schema={
+                "host": "远程服务器主机地址或 IP",
+                "port": "SSH 端口，默认 22",
+                "username": "登录用户名",
+                "password": "登录密码（用于密码认证）",
+                "command": "要在远程服务器执行的命令",
+                "timeout": "命令执行超时时间（秒），默认 30",
+                "key_file": "SSH 私钥文件路径（用于密钥认证，与 password 二选一）",
+                "sudo_password": "sudo 密码（可选）。若指定，会自动在命令前注入 echo pwd | sudo -S 前缀",
+            },
+            fn=tool_ssh_execute,
         ),
         # ── 环境信息工具 ──────────────────────────────────────────────────────
         ToolSpec(
