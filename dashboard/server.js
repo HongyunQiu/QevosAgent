@@ -1306,19 +1306,31 @@ process.on('exit',    cleanup);
 setInterval(poll, POLL_MS);
 poll();
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('');
-  console.log(`  🦊 QevosAgent Dashboard  v${APP_VERSION}`);
-  console.log('  ─────────────────────────────────────');
-  console.log(`  URL      : http://localhost:${PORT}`);
-  console.log(`  Runs     : ${RUNS_DIR}`);
-  console.log(`  Agent    : ${AGENT_DIR}`);
-  console.log(`  Python   : ${PYTHON_CMD}`);
-  console.log(`  Poll     : every ${POLL_MS}ms`);
-  console.log('');
-  console.log('  Tip: activate your conda env before running this server');
-  console.log('       so that the correct python is used when launching agents.');
-  console.log('');
-  console.log('  Press Ctrl+C to stop.');
-  console.log('');
-});
+function startListen(port) {
+  server.once('error', err => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(`  端口 ${port} 已被占用，尝试 ${port + 1}…`);
+      startListen(port + 1);
+    } else {
+      throw err;
+    }
+  });
+  server.listen(port, '0.0.0.0', () => {
+    process.env.DASHBOARD_PORT = String(port);
+    console.log('');
+    console.log(`  🦊 QevosAgent Dashboard  v${APP_VERSION}`);
+    console.log('  ─────────────────────────────────────');
+    console.log(`  URL      : http://localhost:${port}`);
+    console.log(`  Runs     : ${RUNS_DIR}`);
+    console.log(`  Agent    : ${AGENT_DIR}`);
+    console.log(`  Python   : ${PYTHON_CMD}`);
+    console.log(`  Poll     : every ${POLL_MS}ms`);
+    console.log('');
+    console.log('  Tip: activate your conda env before running this server');
+    console.log('       so that the correct python is used when launching agents.');
+    console.log('');
+    console.log('  Press Ctrl+C to stop.');
+    console.log('');
+  });
+}
+startListen(PORT);

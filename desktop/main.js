@@ -35,6 +35,7 @@
 const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell, nativeImage } = require('electron');
 const path    = require('path');
 const http    = require('http');
+const net     = require('net');
 const fs      = require('fs');
 const { getAppIconPath } = require('./icon-path');
 
@@ -95,7 +96,7 @@ if (fs.existsSync(EMBEDDED_PYTHON)) {
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
-const PORT  = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
+let PORT  = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
 const TAB_H = 33; // matches the dashboard topbar height (grid-template-rows: 33px …)
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -234,10 +235,22 @@ function cursorCode() {
 
 // ── Dashboard server ───────────────────────────────────────────────────────
 
-function startDashboard() {
+function findFreePort(startPort) {
+  return new Promise(resolve => {
+    const srv = net.createServer();
+    srv.listen(startPort, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+    srv.on('error', () => resolve(findFreePort(startPort + 1)));
+  });
+}
+
+async function startDashboard() {
   if (dashboardStarted) return;
   dashboardStarted = true;
 
+  PORT = await findFreePort(PORT);
   process.env.DASHBOARD_PORT   = String(PORT);
   process.env.PYTHONUTF8       = '1';
   process.env.PYTHONIOENCODING = 'utf-8';
@@ -537,8 +550,8 @@ function registerIPC() {
     return { ok: true };
   });
 
-  ipcMain.handle('dashboard:open', () => {
-    startDashboard();
+  ipcMain.handle('dashboard:open', async () => {
+    await startDashboard();
     navigateToDashboard();
     return { ok: true };
   });
@@ -650,8 +663,7 @@ function createWindow() {
   mainWindow.on('closed',     () => { mainWindow = null; });
 
   if (isConfigured()) {
-    startDashboard();
-    navigateToDashboard();
+    startDashboard().then(() => navigateToDashboard());
   } else {
     mainView.webContents.loadFile(path.join(__dirname, 'setup.html'));
   }
