@@ -2067,11 +2067,17 @@ def tool_web_interact(
     action: str,
     display_id: str = "default",
     payload: dict | None = None,
+    inject: bool = True,
 ) -> ToolResult:
     """在浏览器视图中执行自动化操作。
 
     Electron 模式：直接控制内嵌 WebContentsView，无需额外配置。
     普通浏览器模式：通过 CDP 控制 Chrome/Edge，需以 --remote-debugging-port=9222 启动浏览器。
+
+    inject 参数仅对 action="screenshot" 有效：
+      True（默认）：截图结果直接作为图像块注入对话上下文，LLM 下一轮即可直接"看到"图像，
+                    无需再调用 load_image。
+      False：只返回 base64 数据字符串，不注入视觉上下文（用于纯数据处理场景）。
     """
     import urllib.request as _ur
     import urllib.error as _ue
@@ -2102,6 +2108,21 @@ def tool_web_interact(
 
     if "error" in result:
         return ToolResult(success=False, output="", error=result["error"])
+
+    # screenshot + inject=True：将图像直接附加为 content_blocks，
+    # loop.py 会把它注入 short_term，LLM 下一轮直接看到图像，无需额外 load_image。
+    if action == "screenshot" and inject and result.get("data"):
+        from ..core.llm import image_block as _image_block
+        summary = f"截图完成（display_id={display_id}）"
+        cursor = result.get("cursor")
+        if cursor:
+            summary += f"  光标标识码：#{cursor['code']} 位于 ({cursor['x']}, {cursor['y']})"
+        return ToolResult(
+            success=True,
+            output=summary,
+            content_blocks=[_image_block(result["data"], "image/png")],
+        )
+
     return ToolResult(success=True, output=result)
 
 
@@ -2605,7 +2626,8 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "  - navigate：跳转 URL 并等待加载完成，payload: {url}\n"
                 "  - eval：执行 JS 并返回结果，payload: {code}\n"
                 "  - get_html：获取页面完整 HTML，payload: {}\n"
-                "  - screenshot：截图，返回 base64 PNG，payload: {}\n"
+                "  - screenshot：截图并直接注入视觉上下文（LLM 下一轮即可看到图像），payload: {}\n"
+                "    inject=False 时改为只返回 base64 数据，不注入视觉上下文\n"
                 "【元素交互（基于 CSS 选择器）】\n"
                 "  - click：点击元素，payload: {selector}\n"
                 "  - fill：填写普通 input/textarea，payload: {selector, value}\n"
@@ -2626,6 +2648,8 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "  - key_combo：组合键，payload: {key, modifiers(['ctrl','shift','alt','meta'])}\n"
                 "    示例：Ctrl+A 全选={key:'A',modifiers:['ctrl']}，Ctrl+Enter 发送\n"
                 "【典型用法】\n"
+                "  截图确认：screenshot → 直接看到图（inject 默认 True，无需 load_image）\n"
+                "  光标确认：mouse_click → screenshot → 在图中找 #CODE 标签确认位置\n"
                 "  长按：mouse_down → eval(sleep) → mouse_up\n"
                 "  拖拽排序：drag {x1,y1,x2,y2,steps:20}\n"
                 "  React输入框：mouse_click聚焦 → key_type输入 → key_press Enter\n"
@@ -2635,6 +2659,7 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "action": "操作类型（见描述）",
                 "display_id": "（可选）目标视图 ID，对应 web_show 的 display_id，默认 'default'",
                 "payload": "（可选）操作参数对象，不同 action 所需字段见描述",
+                "inject": "（可选，仅对 screenshot 有效）True（默认）：截图直接注入视觉上下文；False：只返回 base64 数据",
             },
             fn=tool_web_interact,
         ),
