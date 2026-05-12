@@ -265,6 +265,9 @@ body.large-font .app {
 .goal-text { color: var(--cyan); font-size: 12.5px; line-height: 1.5; height: calc(1.5em * 5); overflow-y: auto; overflow-x: hidden; }
 
 .runs-scroller { flex: 1; overflow-y: auto; }
+.runs-search { width: 90px; flex-shrink: 0; margin-left: auto; margin-right: 4px; background: var(--bg3); border: 1px solid transparent; border-radius: 3px; color: var(--text); font-size: 10.5px; padding: 1px 6px; outline: none; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.runs-search:focus { border-color: var(--blue); }
+.runs-search::placeholder { color: var(--muted); }
 .run-item {
   display: flex; align-items: center; gap: 8px;
   padding: 7px 14px; cursor: pointer; transition: background 0.1s;
@@ -272,10 +275,13 @@ body.large-font .app {
 .run-item:hover { background: var(--bg3); }
 .run-item.selected { background: rgba(88,166,255,0.08); }
 .run-item.selected .run-id { color: var(--blue); }
+.run-item.search-match { background: rgba(210,153,34,0.12); }
+.run-item.search-match.selected { background: rgba(88,166,255,0.12); }
 .run-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
 .run-dot.active { background: var(--green); }
 .run-id { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-tag { margin-left: auto; font-size: 10px; color: var(--muted); background: var(--bg4); border-radius: 3px; padding: 1px 5px; }
+mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
 
 /* ── Events panel ────────────────────────────────────────────────────── */
 .events-panel { grid-area: events; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
@@ -1039,7 +1045,7 @@ body.large-font .app {
       <div class="goal-text" id="goalText">No active goal</div>
     </div>
 
-    <div class="section-head">Runs</div>
+    <div class="section-head">Runs<input class="runs-search" id="runsSearch" type="text" placeholder="Search…" oninput="onRunsSearch(this.value)"></div>
     <div class="runs-scroller" id="runsList"></div>
   </aside>
 
@@ -1264,6 +1270,7 @@ body.large-font .app {
 // ── State ─────────────────────────────────────────────────────────────────
 let gState         = null;
 let gViewRunId     = null;
+let gRunSearch     = '';
 let gAutoScroll    = true;
 let gWs            = null;
 let gReconnTimer   = null;
@@ -1454,8 +1461,22 @@ function renderSidebar(data, rid) {
     const gev = evs.find(e => e.type === 'goal');
     goalText = gev ? gev.text.slice(0, 300) : 'No active goal';
   }
-  document.getElementById('goalText').textContent = goalText;
+  document.getElementById('goalText').innerHTML = hlText(goalText, gRunSearch);
   renderRunsList(data.runs || (gState && gState.runs) || [], rid);
+}
+
+function hlText(text, q) {
+  if (!q) return esc(text);
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx === -1) return esc(text);
+  return esc(text.slice(0, idx)) +
+    '<mark class="sh">' + esc(text.slice(idx, idx + q.length)) + '</mark>' +
+    hlText(text.slice(idx + q.length), q);
+}
+
+function onRunsSearch(val) {
+  gRunSearch = val.trim();
+  renderRunsList((gState && gState.runs) || [], gViewRunId);
 }
 
 function renderRunsList(runs, activeId) {
@@ -1464,9 +1485,9 @@ function renderRunsList(runs, activeId) {
     list.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 14px;">No runs yet</div>';
     return;
   }
-  list.innerHTML = [...runs].reverse().map(r => {
+  const q = gRunSearch.toLowerCase();
+  const items = [...runs].reverse().map(r => {
     const isActive   = r === (gState && gState.activeRunId);
-    // Green dot only when the run is active AND the process is confirmed alive
     const isLive     = isActive && !!(gState && gState.agentAlive);
     const isSelected = r === activeId;
     const tag        = isActive ? (isLive ? '<span class="run-tag">live</span>' : '<span class="run-tag">latest</span>') : '';
@@ -1474,12 +1495,16 @@ function renderRunsList(runs, activeId) {
     const summary    = summaries[r];
     const label      = summary || fmtRunId(r);
     const timestamp  = fmtRunId(r);
-    return `<div class="run-item ${isSelected ? 'selected' : ''}" onclick="selectRun('${r}')">
+    const matched    = q && label.toLowerCase().includes(q);
+    if (q && !matched) return '';
+    const cls = ['run-item', isSelected ? 'selected' : '', matched ? 'search-match' : ''].filter(Boolean).join(' ');
+    return `<div class="${cls}" onclick="selectRun('${r}')">
       <div class="run-dot ${isLive ? 'active' : ''}"></div>
-      <span class="run-id" title="${summary ? timestamp + ' — ' + esc(summary) : timestamp}">${esc(label)}</span>
+      <span class="run-id" title="${summary ? timestamp + ' — ' + esc(summary) : timestamp}">${hlText(label, gRunSearch)}</span>
       ${tag}
     </div>`;
   }).join('');
+  list.innerHTML = items || '<div style="color:var(--muted);font-size:12px;padding:12px 14px;">No matches</div>';
 }
 
 // ── Main area rendering ───────────────────────────────────────────────────
