@@ -29,6 +29,25 @@ const EventEmitter = require('events');
 const serverEvents = new EventEmitter();
 module.exports = { serverEvents };
 
+// ── Load .env (standalone mode — Electron already loads it in main.js) ────────
+// Only sets keys that are not already present in process.env.
+try {
+  const envPath = path.join(__dirname, '..', '.env');
+  for (const rawLine of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 1) continue;
+    const key = line.slice(0, eq).trim();
+    if (!key || key in process.env) continue;
+    let val = line.slice(eq + 1).trim();
+    if (val.length >= 2 && val[0] === val[val.length - 1] && (val[0] === '"' || val[0] === "'")) {
+      val = val.slice(1, -1);
+    }
+    process.env[key] = val;
+  }
+} catch { /* .env not found — fine */ }
+
 // ── Language ──────────────────────────────────────────────────────────────────
 const LANG = (() => {
   const override = process.env.QEVOS_LANG || '';
