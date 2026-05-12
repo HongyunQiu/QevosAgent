@@ -29,6 +29,16 @@ const EventEmitter = require('events');
 const serverEvents = new EventEmitter();
 module.exports = { serverEvents };
 
+// ── Language ──────────────────────────────────────────────────────────────────
+const LANG = (() => {
+  const override = process.env.QEVOS_LANG || '';
+  if (override) return override.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  try {
+    const sys = Intl.DateTimeFormat().resolvedOptions().locale || process.env.LANG || '';
+    return sys.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  } catch { return 'zh'; }
+})();
+
 // ── CDP browser automation (non-Electron mode) ─────────────────────────────
 const CDP_PORT = parseInt(process.env.CDP_PORT || '9222', 10);
 const cdpTargets = new Map(); // display_id → CDP targetId
@@ -1328,6 +1338,7 @@ findFreePort(PORT).then(port => {
     console.log(`  Agent    : ${AGENT_DIR}`);
     console.log(`  Python   : ${PYTHON_CMD}`);
     console.log(`  Poll     : every ${POLL_MS}ms`);
+    console.log(`  Language : ${LANG}`);
     console.log('');
     console.log('  Tip: activate your conda env before running this server');
     console.log('       so that the correct python is used when launching agents.');
