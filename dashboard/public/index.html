@@ -979,6 +979,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+<script src="/ui_i18n.js"></script>
 </head>
 <body>
 <div class="app">
@@ -1257,7 +1258,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
            placeholder="/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20"
            onkeydown="onCmdKey(event)">
     <button class="cmd-send" id="cmdSendBtn" onclick="sendCmd()">Send</button>
-    <button class="nostop-btn" id="nostopBtn" onclick="toggleNostop()" title="持续对话模式：完成任务后不退出，等待下一个目标">⟳ nostop</button>
+    <button class="nostop-btn" id="nostopBtn" onclick="toggleNostop()">⟳ nostop</button>
   </div>
 </div>
 
@@ -1451,7 +1452,8 @@ function renderSidebar(data, rid) {
     const parts = st.goal.split(/\n\n+/);
     for (let i = parts.length - 1; i >= 0; i--) {
       const p = parts[i].trim();
-      if (p && !p.startsWith('#') && !p.startsWith('【') && !p.startsWith('本次运行') && !p.startsWith('提示') && !p.startsWith('你必须')) {
+      const _goalFilterPfx = uiT('goal.filter.prefixes');
+      if (p && !_goalFilterPfx.some(px => p.startsWith(px))) {
         goalText = p;
         break;
       }
@@ -1540,7 +1542,7 @@ function updateCmdBarMode(data) {
     sendBtn.textContent = 'Send Goal';
     cmdbar.classList.add('nostop-idle');
     cmdbar.classList.remove('awaiting');
-    bannerQ.textContent = (data.meta && data.meta.awaiting_input) || '任务完成 — 请输入下一个目标';
+    bannerQ.textContent = (data.meta && data.meta.awaiting_input) || uiT('nostop.idle_banner');
     banner.className    = 'ask-banner nostop-idle visible';
     // Auto-focus for quick re-entry
     if (document.activeElement !== input) input.focus();
@@ -1653,7 +1655,7 @@ function renderEvent(ev) {
         const thought = ev.thought ? `<div class="ev-mini-thought">💭 ${esc(ev.thought)}</div>` : '';
         return `<div class="ev ev-ask-user">
           ${thought}
-          <div class="ev-ask-label">💬 Agent 向你提问</div>
+          <div class="ev-ask-label">${uiT('ask_user.label')}</div>
           <div class="ev-ask-q">${esc(q)}</div>
         </div>`;
       }
@@ -2365,7 +2367,7 @@ async function skillsNewPrompt() {
   const name = prompt('New skill name (e.g. "devops", "writing"):');
   if (!name || !name.trim()) return;
   const safeName = name.trim().replace(/[^a-zA-Z0-9_\-]/g, '_');
-  const defaultContent = `# SKILL: ${safeName}\n\n适用领域：\n\n## 规范\n\n`;
+  const defaultContent = uiT('skill.default_content', { name: safeName });
   try {
     const res  = await fetch('/api/skill/' + encodeURIComponent(safeName), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2454,7 +2456,7 @@ async function loadConceptMemory() {
     } else if (data.exists === false || data.content === null) {
       gConceptOrig = '';
       view.innerHTML = `<span class="files-placeholder" style="padding:14px 18px;display:block">`
-        + `memory_macro.md 尚不存在。`
+        + uiT('concept.missing')
         + `<a href="#" style="color:var(--blue);margin-left:6px" onclick="createConcept();return false">✚ Create</a></span>`;
     } else {
       gConceptOrig = data.content || '';
@@ -2500,7 +2502,7 @@ async function saveConcept() {
         ? marked.parse(gConceptOrig)
         : `<pre style="white-space:pre-wrap;padding:14px 18px">${esc(gConceptOrig)}</pre>`;
       cancelConceptEdit();
-      toast('✓ 宏观工作记忆已保存');
+      toast(uiT('concept.saved'));
     } else {
       toast('✗ Save failed: ' + (data.error || 'unknown'));
     }
@@ -2508,7 +2510,7 @@ async function saveConcept() {
 }
 
 function createConcept() {
-  gConceptOrig = '# 宏观工作记忆\n\n## \n\n';
+  gConceptOrig = uiT('concept.default');
   const view = document.getElementById('conceptView');
   view.innerHTML = typeof marked !== 'undefined'
     ? marked.parse(gConceptOrig)
@@ -2519,7 +2521,7 @@ function createConcept() {
 // ── Episodic (JSONL cards) ────────────────────────────────────────────────
 function _renderEpisodicCards(raw) {
   const lines = (raw || '').split('\n').map(l => l.trim()).filter(Boolean);
-  if (!lines.length) return `<span class="files-placeholder" style="padding:14px 18px;display:block">暂无记录</span>`;
+  if (!lines.length) return `<span class="files-placeholder" style="padding:14px 18px;display:block">${uiT('episodic.empty')}</span>`;
   // Show most recent first
   const cards = [...lines].reverse().map((line, idx) => {
     try {
@@ -2556,11 +2558,11 @@ async function loadEpisodicMemory() {
     } else if (data.exists === false || data.content === null) {
       gEpisodicOrig = '';
       count.textContent = '';
-      view.innerHTML = `<span class="files-placeholder" style="padding:14px 18px;display:block">memory_episodic.jsonl 尚不存在</span>`;
+      view.innerHTML = `<span class="files-placeholder" style="padding:14px 18px;display:block">${uiT('episodic.missing')}</span>`;
     } else {
       gEpisodicOrig = data.content || '';
       const n = gEpisodicOrig.split('\n').filter(l => l.trim()).length;
-      count.textContent = `${n} 条`;
+      count.textContent = uiT('episodic.count', { n });
       view.innerHTML = _renderEpisodicCards(gEpisodicOrig);
     }
   } catch (e) {
@@ -2594,7 +2596,7 @@ async function saveEpisodic() {
     try { JSON.parse(l); return false; } catch { return true; }
   });
   if (badLines.length) {
-    toast(`✗ 第 ${rawText.split('\n').findIndex(l => l.trim() === badLines[0].trim()) + 1} 行 JSON 无效`);
+    toast(uiT('episodic.invalid_json', { line: rawText.split('\n').findIndex(l => l.trim() === badLines[0].trim()) + 1 }));
     return;
   }
   try {
@@ -2605,7 +2607,7 @@ async function saveEpisodic() {
     if (res.ok && data.ok) {
       gEpisodicOrig = rawText;
       const n = gEpisodicOrig.split('\n').filter(l => l.trim()).length;
-      document.getElementById('episodicCount').textContent = `${n} 条`;
+      document.getElementById('episodicCount').textContent = uiT('episodic.count', { n });
       document.getElementById('episodicView').innerHTML = _renderEpisodicCards(gEpisodicOrig);
       cancelEpisodicEdit();
       toast('✓ Episodic memory saved');
@@ -2898,6 +2900,7 @@ function toggleTheme() {
 })();
 
 document.getElementById('wsPort').textContent = ':' + (location.port || '80');
+document.getElementById('nostopBtn').title = uiT('nostop.title');
 connectWs();
 
 fetch('/api/version').then(r => r.json()).then(d => {

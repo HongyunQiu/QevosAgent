@@ -5,6 +5,7 @@
 """
 
 from .types_def import Action, AgentState, ToolResult
+from ..i18n import t
 
 
 def execute(action: Action, state: AgentState) -> ToolResult:
@@ -21,7 +22,7 @@ def execute(action: Action, state: AgentState) -> ToolResult:
         return ToolResult(
             success=False,
             output=None,
-            error=f"工具 '{tool_name}' 不存在。当前可用工具: {available}"
+            error=t("exec.not_found", name=tool_name, available=available)
         )
 
     try:
@@ -47,11 +48,11 @@ def execute(action: Action, state: AgentState) -> ToolResult:
         return ToolResult(
             success=False,
             output=None,
-            error=f"工具参数错误: {e}{hint}"
+            error=t("exec.arg_error", e=e, hint=hint)
         )
     except Exception as e:
         return ToolResult(
             success=False,
             output=None,
-            error=f"工具执行异常: {type(e).__name__}: {e}"
+            error=t("exec.exec_error", etype=type(e).__name__, e=e)
         )

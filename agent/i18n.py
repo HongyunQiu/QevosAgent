@@ -409,6 +409,45 @@ _STRINGS: dict[str, dict[str, str]] = {
   （/status 和 /log 在工具执行中也会立即响应）
 提示: 只需输入 / 即可暂停，完整命令后按回车生效。
 """,
+
+        # ── run_goal.py — LLM-facing goal prefix strings ──────────────────────
+        "rg.prefix_preloaded": "工具、细粒度记忆和概念记忆已自动预加载，请直接完成任务。\n\n",
+        "rg.agents_md_rule":   "【总规范】你必须遵守仓库根目录的 AGENTS.md（运行规范）。\n",
+        "rg.run_dir_with_agents": "本次运行 RUN_DIR={run_dir}；所有临时/中间产物必须写入 {run_dir}/artifacts/。\n\n",
+        "rg.run_dir_hint":     "提示：本次运行 RUN_DIR={run_dir}。建议将临时/中间产物写入 {run_dir}/artifacts/。\n\n",
+        "rg.skills_header":    "【领域技能】以下是本次任务激活的领域专业规范，请遵守：\n\n",
+        "rg.nostop_await":     "任务完成，进入持续对话模式。请输入下一个目标，或 /exit 退出：",
+        "rg.scratchpad_init":  "任务描述:\n{goal}\n",
+        "rg.next_goal_msg":    "请完成以下目标：\n\n{goal}",
+
+        # ── run_goal.py — terminal strings ────────────────────────────────────
+        "rg.hint_header": (
+            "[提示] Agent 运行期间可随时输入干预命令（以 / 开头）：\n"
+            "  /help   显示所有命令    /stop   停止当前工具\n"
+            "  /exit   退出程序        /inject <消息>  注入上下文\n"
+            "  /status 查看当前状态   /+N  增加 N 次迭代\n"
+        ),
+        "rg.hint_nostop": (
+            "  /newtask <目标>  注入新目标（nostop 模式专用）\n"
+            "  [nostop 模式已启用] 任务完成后将持续等待下一个目标。\n"
+        ),
+        "rg.intervention_header":  "─── 干预模式 ────────────────────────────────────────",
+        "rg.intervention_prompt": (
+            "输入 /命令（如 /stop /exit /inject <消息>）\n"
+            "或直接输入文字，将自动注入到 Agent 上下文（效果等同 /inject）："
+        ),
+        "rg.intervention_timeout": "[干预] 未收到输入，恢复执行。",
+        "rg.user_confirmed":       "[run_goal] 用户确认完成，退出。",
+        "rg.nostop_done":          "[nostop] ✅ 第 {n} 轮任务完成。",
+        "rg.nostop_prompt":        "[nostop] 请输入下一个目标（/exit 退出）：",
+
+        # ── marker: user supplementary info ──────────────────────────────────
+        "marker.user_info": "[用户补充信息]\n{content}",
+
+        # ── agent/core/executor.py — LLM-facing error messages ────────────────
+        "exec.not_found":  "工具 '{name}' 不存在。当前可用工具: {available}",
+        "exec.arg_error":  "工具参数错误: {e}{hint}",
+        "exec.exec_error": "工具执行异常: {etype}: {e}",
     },
 
     "en": {
@@ -785,6 +824,45 @@ Before calling action='done', you MUST complete the following two steps:
             "For example, calling ask_user:\n"
             '{{"thought":"...","action":"tool_call","tool":"ask_user","args":{{"question":"your question"}}}}'
         ),
+
+        # ── run_goal.py — LLM-facing goal prefix strings ──────────────────────
+        "rg.prefix_preloaded": "Tools, fine-grained memory, and concept memory have been pre-loaded. Please proceed directly with the task.\n\n",
+        "rg.agents_md_rule":   "[RULES] You must follow AGENTS.md (repository conventions) in the root directory.\n",
+        "rg.run_dir_with_agents": "This run: RUN_DIR={run_dir}; all temporary/intermediate artifacts must be written to {run_dir}/artifacts/.\n\n",
+        "rg.run_dir_hint":     "Note: this run RUN_DIR={run_dir}. Recommended to write temporary/intermediate artifacts to {run_dir}/artifacts/.\n\n",
+        "rg.skills_header":    "[DOMAIN SKILLS] The following domain-specific rules are active for this task. Please follow them:\n\n",
+        "rg.nostop_await":     "Task complete — entering continuous dialogue mode. Enter the next goal, or /exit to quit:",
+        "rg.scratchpad_init":  "Task description:\n{goal}\n",
+        "rg.next_goal_msg":    "Please complete the following goal:\n\n{goal}",
+
+        # ── run_goal.py — terminal strings ────────────────────────────────────
+        "rg.hint_header": (
+            "[Hint] You can send intervention commands at any time while the Agent is running (prefix with /):\n"
+            "  /help   show all commands    /stop   stop current tool\n"
+            "  /exit   quit program         /inject <msg>  inject context\n"
+            "  /status show current state   /+N  add N iterations\n"
+        ),
+        "rg.hint_nostop": (
+            "  /newtask <goal>  inject a new goal (nostop mode)\n"
+            "  [nostop mode enabled] Agent will wait for the next goal after each task.\n"
+        ),
+        "rg.intervention_header":  "─── Intervention mode ───────────────────────────────",
+        "rg.intervention_prompt": (
+            "Enter a /command (e.g. /stop /exit /inject <msg>)\n"
+            "or type plain text to inject it into the Agent context (equivalent to /inject):"
+        ),
+        "rg.intervention_timeout": "[Interrupt] No input received — resuming.",
+        "rg.user_confirmed":       "[run_goal] User confirmed done — exiting.",
+        "rg.nostop_done":          "[nostop] ✅ Round {n} complete.",
+        "rg.nostop_prompt":        "[nostop] Enter the next goal (/exit to quit):",
+
+        # ── marker: user supplementary info ──────────────────────────────────
+        "marker.user_info": "[User input]\n{content}",
+
+        # ── agent/core/executor.py — LLM-facing error messages ────────────────
+        "exec.not_found":  "Tool '{name}' does not exist. Available tools: {available}",
+        "exec.arg_error":  "Tool argument error: {e}{hint}",
+        "exec.exec_error": "Tool execution error: {etype}: {e}",
     },
 }
 

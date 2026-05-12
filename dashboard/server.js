@@ -899,9 +899,16 @@ function serveStatic(req, res) {
   const fp  = path.join(PUBLIC, urlPath);
   const ext = path.extname(fp).toLowerCase();
   try {
-    const content = fs.readFileSync(fp);
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain' });
-    res.end(content);
+    let content = fs.readFileSync(fp);
+    if (ext === '.html') {
+      const langScript = `<script>window.QEVOS_LANG="${LANG}";</script>`;
+      const html = content.toString('utf8').replace('</head>', langScript + '</head>');
+      res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain' });
+      res.end(html, 'utf8');
+    } else {
+      res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain' });
+      res.end(content);
+    }
   } catch {
     res.writeHead(404);
     res.end('Not found');

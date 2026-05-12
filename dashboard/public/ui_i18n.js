@@ -1,0 +1,81 @@
+// UI i18n — reads window.QEVOS_LANG injected by server.js
+(function () {
+  const LANG = (window.QEVOS_LANG || 'zh').startsWith('zh') ? 'zh' : 'en';
+
+  const STRINGS = {
+    zh: {
+      // index.html
+      'nostop.title':          '持续对话模式：完成任务后不退出，等待下一个目标',
+      'nostop.idle_banner':    '任务完成 — 请输入下一个目标',
+      'ask_user.label':        '💬 Agent 向你提问',
+      'skill.default_content': '# SKILL: {name}\n\n适用领域：\n\n## 规范\n\n',
+      'concept.missing':       'memory_macro.md 尚不存在。',
+      'concept.saved':         '✓ 宏观工作记忆已保存',
+      'concept.default':       '# 宏观工作记忆\n\n## \n\n',
+      'episodic.missing':      'memory_episodic.jsonl 尚不存在',
+      'episodic.empty':        '暂无记录',
+      'episodic.count':        '{n} 条',
+      'episodic.invalid_json': '✗ 第 {line} 行 JSON 无效',
+      'goal.filter.prefixes':  ['#', '【', '本次运行', '提示：', '你必须', '[RULES]', 'This run', 'Note: this run', 'Tools,', '[DOMAIN'],
+
+      // view.html
+      'view.waiting':          '等待 agent 调用 web_show…',
+      'view.empty_p1':         'Agent 尚未发布任何内容',
+      'view.empty_p2':         '调用 <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">web_show</code> 工具后内容将实时出现',
+      'view.attach_title':     '附加图片',
+      'view.input_placeholder':'向 Agent 发消息…',
+      'view.send_btn':         '发送',
+      'view.user_label':       '你',
+      'view.img_alt':          '图片',
+      'view.remove_title':     '移除',
+      'view.chart_error':      '图表渲染失败:\n{e}\n\n原始数据:\n{data}',
+      'view.empty_table':      '空表格',
+      'view.web_user_prefix':  '[Web用户]',
+      'view.send_failed':      '⚠ 发送失败: {msg}',
+    },
+    en: {
+      // index.html
+      'nostop.title':          'Continuous dialogue mode: stay running after task completion and wait for the next goal',
+      'nostop.idle_banner':    'Task complete — enter the next goal',
+      'ask_user.label':        '💬 Agent is asking you',
+      'skill.default_content': '# SKILL: {name}\n\nApplicable domain:\n\n## Rules\n\n',
+      'concept.missing':       'memory_macro.md does not exist yet.',
+      'concept.saved':         '✓ Macro memory saved',
+      'concept.default':       '# Macro working memory\n\n## \n\n',
+      'episodic.missing':      'memory_episodic.jsonl does not exist yet',
+      'episodic.empty':        'No records yet',
+      'episodic.count':        '{n} record(s)',
+      'episodic.invalid_json': '✗ Line {line}: invalid JSON',
+      'goal.filter.prefixes':  ['#', '【', '本次运行', '提示：', '你必须', '[RULES]', 'This run', 'Note: this run', 'Tools,', '[DOMAIN'],
+
+      // view.html
+      'view.waiting':          'Waiting for agent to call web_show…',
+      'view.empty_p1':         'Agent has not published any content yet',
+      'view.empty_p2':         'Content will appear here after <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:3px;">web_show</code> is called',
+      'view.attach_title':     'Attach image',
+      'view.input_placeholder':'Send a message to Agent…',
+      'view.send_btn':         'Send',
+      'view.user_label':       'You',
+      'view.img_alt':          'image',
+      'view.remove_title':     'Remove',
+      'view.chart_error':      'Chart render failed:\n{e}\n\nRaw data:\n{data}',
+      'view.empty_table':      'Empty table',
+      'view.web_user_prefix':  '[Web user]',
+      'view.send_failed':      '⚠ Send failed: {msg}',
+    },
+  };
+
+  const table = STRINGS[LANG] || STRINGS.zh;
+
+  window.uiT = function (key, vars) {
+    let s = table[key];
+    if (s === undefined) s = (STRINGS.zh[key] !== undefined ? STRINGS.zh[key] : key);
+    if (Array.isArray(s)) return s;
+    if (vars) {
+      s = s.replace(/\{(\w+)\}/g, (_, k) => (vars[k] !== undefined ? vars[k] : '{' + k + '}'));
+    }
+    return s;
+  };
+
+  window.UI_LANG = LANG;
+})();

@@ -135,6 +135,7 @@ def format_probe_summary(probe: dict) -> str:
 
 def main():
     ensure_env_defaults()
+    from agent.i18n import t  # import after env defaults so QEVOS_LANG from .env is visible
     probe = probe_openai_configuration()
     print(format_probe_summary(probe))
 
@@ -164,11 +165,11 @@ def main():
     _parser.add_argument("goal", nargs="*", help="Goal/task for the agent")
     _parser.add_argument(
         "--nostop", action="store_true",
-        help="完成任务后不退出，持续等待下一个目标（持续对话模式）",
+        help="Do not exit after task completion; wait for the next goal (continuous dialogue mode)",
     )
     _parser.add_argument(
         "--skills", default="",
-        help="逗号分隔的技能名列表（如 coding,data_analysis），或 'all' 加载全部技能",
+        help="Comma-separated skill names (e.g. coding,data_analysis), or 'all' to load all skills",
     )
     _pargs = _parser.parse_args()
     goal   = " ".join(_pargs.goal).strip()
@@ -263,9 +264,7 @@ def main():
     # ── 目标前缀 ──────────────────────────────────────────────────────────────
     # 工具和记忆已由 Python 层预加载，无需 LLM 主动调用恢复命令。
     # 结束时告知 LLM 应调用 append_episodic 记录本次摘要。
-    prefix = (
-        "工具、细粒度记忆和概念记忆已自动预加载，请直接完成任务。\n\n"
-    )
+    prefix = t("rg.prefix_preloaded")
 
     # Load repo conventions (OpenClaw-style) if present.
     # Keep it short; it's a hard constraint but should not bloat prompts.
@@ -280,13 +279,13 @@ def main():
     if conventions:
         prefix = (
             prefix
-            + "【总规范】你必须遵守仓库根目录的 AGENTS.md（运行规范）。\n"
-            + f"本次运行 RUN_DIR={run_dir}；所有临时/中间产物必须写入 {run_dir}/artifacts/。\n\n"
+            + t("rg.agents_md_rule")
+            + t("rg.run_dir_with_agents", run_dir=run_dir)
             + conventions
             + "\n\n"
         )
     else:
-        prefix = prefix + f"提示：本次运行 RUN_DIR={run_dir}。建议将临时/中间产物写入 {run_dir}/artifacts/。\n\n"
+        prefix = prefix + t("rg.run_dir_hint", run_dir=run_dir)
 
     # ── (5) 加载领域技能（SKILLS/*.md）────────────────────────────────────────
     _skills_env = os.environ.get("AGENT_SKILLS", "").strip()
@@ -315,7 +314,7 @@ def main():
         if skill_blocks:
             prefix = (
                 prefix
-                + "【领域技能】以下是本次任务激活的领域专业规范，请遵守：\n\n"
+                + t("rg.skills_header")
                 + "\n\n---\n\n".join(skill_blocks)
                 + "\n\n"
             )
@@ -344,17 +343,8 @@ def main():
     GREEN = "\033[92m"
     BLUE  = "\033[94m"
     RESET = "\033[0m"
-    _nostop_hint = (
-        f"  /newtask <目标>  注入新目标（nostop 模式专用）\n"
-        f"  [nostop 模式已启用] 任务完成后将持续等待下一个目标。\n"
-    ) if nostop else ""
-    print(
-        f"{BLUE}[提示] Agent 运行期间可随时输入干预命令（以 / 开头）：\n"
-        f"  /help   显示所有命令    /stop   停止当前工具\n"
-        f"  /exit   退出程序        /inject <消息>  注入上下文\n"
-        f"  /status 查看当前状态   /+N  增加 N 次迭代\n"
-        f"{_nostop_hint}{RESET}"
-    )
+    _nostop_hint = t("rg.hint_nostop") if nostop else ""
+    print(f"{BLUE}{t('rg.hint_header')}{_nostop_hint}{RESET}")
 
     persistence = RunPersistence(run_dir)
     state = None
@@ -385,9 +375,8 @@ def main():
                 if state.meta.get("user_typing_pause"):
                     # 用户按下 / 触发的暂停：等待完整命令或纯文本（自动包装为 /inject）
                     print(
-                        f"\n{BLUE}─── 干预模式 ────────────────────────────────────────{RESET}\n"
-                        f"{BLUE}输入 /命令（如 /stop /exit /inject <消息>）\n"
-                        f"或直接输入文字，将自动注入到 Agent 上下文（效果等同 /inject）：{RESET}"
+                        f"\n{BLUE}{t('rg.intervention_header')}{RESET}\n"
+                        f"{BLUE}{t('rg.intervention_prompt')}{RESET}"
                     )
                     cmd = None
                     import time as _time
@@ -412,7 +401,7 @@ def main():
 
                     if cmd is None:
                         # 超时，没有任何输入 → 恢复执行
-                        print(f"{BLUE}[干预] 未收到输入，恢复执行。{RESET}")
+                        print(f"{BLUE}{t('rg.intervention_timeout')}{RESET}")
                         state.meta.pop("paused", None)
                         state.meta.pop("awaiting_input", None)
                         state.meta.pop("user_typing_pause", None)
@@ -484,12 +473,12 @@ def main():
                 if user_input.strip() in ("完成", "done", "finish", "finished", "ok", "好", "好的", "不用了"):
                     state.meta.pop("paused", None)
                     state.meta.pop("awaiting_input", None)
-                    print("[run_goal] 用户确认完成，退出。")
+                    print(t("rg.user_confirmed"))
                     break
 
                 state.short_term.append({
                     "role": "user",
-                    "content": f"[用户补充信息]\n{user_input}",
+                    "content": t("marker.user_info", content=user_input),
                 })
                 if state.persistence is not None:
                     state.persistence.append_short_term(state.short_term[-1])
@@ -508,7 +497,7 @@ def main():
             # session_answers.md 记录的目标使用原始用户输入（不含 prefix），可读性更佳
             _raw_goal  = state.meta.get("_task_desc") or current_goal
             print(f"\n{GREEN}{'='*60}{RESET}")
-            print(f"{GREEN}[nostop] ✅ 第 {_round_n} 轮任务完成。{RESET}")
+            print(f"{GREEN}{t('rg.nostop_done', n=_round_n)}{RESET}")
             if _final:
                 _preview = _final[:300] + ("…" if len(_final) > 300 else "")
                 print(f"{GREEN}{_preview}{RESET}")
@@ -532,14 +521,12 @@ def main():
 
             # 写 idle 状态供看板感知
             state.meta["nostop_idle"]    = True
-            state.meta["awaiting_input"] = (
-                "任务完成，进入持续对话模式。请输入下一个目标，或 /exit 退出："
-            )
+            state.meta["awaiting_input"] = t("rg.nostop_await")
             if state.persistence is not None:
                 state.persistence.checkpoint(state, status="idle")
 
             print(
-                f"\n{BLUE}[nostop] 请输入下一个目标（/exit 退出）：{RESET}",
+                f"\n{BLUE}{t('rg.nostop_prompt')}{RESET}",
                 end="", flush=True,
             )
             next_input = interrupt_handler.get_user_input("")
@@ -561,7 +548,7 @@ def main():
             #   2. LLM 复用上一轮 final_answer（而非重新执行新目标）
             #   3. 验收/acceptance 状态混淆
             state.short_term.clear()
-            state.meta["scratchpad"]     = f"任务描述:\n{_raw_next_goal}\n"
+            state.meta["scratchpad"]     = t("rg.scratchpad_init", goal=_raw_next_goal)
             state.meta["_task_desc"]     = _raw_next_goal
             state.meta["_user_goal"]     = _raw_next_goal
             state.meta.pop("_loop_warn_counts", None)
@@ -578,7 +565,7 @@ def main():
             # 此处手动补充，确保 LLM 第一条消息就是新一轮目标
             state.short_term.append({
                 "role": "user",
-                "content": f"请完成以下目标：\n\n{current_goal}",
+                "content": t("rg.next_goal_msg", goal=current_goal),
             })
             # continue → 回到 while True 顶部，以新 goal 继续
 
