@@ -32,13 +32,20 @@ def _make_summary(text: str, max_len: int = 40) -> str:
 
 
 _COMPLETION_PREFIXES = (
+    # 中文
     "已成功完成了", "已成功地完成了", "已成功完成", "已成功地完成",
     "成功完成了", "成功完成",
     "已经完成了", "已经完成",
     "已完成了", "已完成",
     "完成了",
     "已成功", "成功地",
+    # English
+    "Successfully completed", "I have successfully", "I've successfully",
+    "The task has been", "I have completed", "I've completed",
 )
+
+_FAILURE_MARKERS = ("执行失败", "execution failed", "[TOOL ERROR]")
+_JSON_ERR_MARKERS = ("JSON 解析失败", "JSON parse error")
 
 def _make_completion_summary(text: str, max_len: int = 40) -> str:
     """取 final_answer 第一句并剥离冗余完成前缀，避免列表里每条都以"已完成"开头。"""
@@ -160,7 +167,7 @@ class RunPersistence:
                 if match:
                     used_tools.append(match.group(1))
 
-            if "执行失败" in content or "[TOOL ERROR]" in content:
+            if any(m in content for m in _FAILURE_MARKERS):
                 failures.append(content[:800])
                 issues.append(
                     {
@@ -170,7 +177,7 @@ class RunPersistence:
                     }
                 )
 
-            if "JSON 解析失败" in content:
+            if any(m in content for m in _JSON_ERR_MARKERS):
                 json_parse_errors += 1
                 issues.append(
                     {
@@ -180,8 +187,9 @@ class RunPersistence:
                     }
                 )
 
+        _SELF_HEAL_MARKERS = ("[自我修复]", "[Self-heal]", "[RUN_OK]")
         for item in long_term:
-            if isinstance(item, str) and ("[自我修复]" in item or "[RUN_OK]" in item):
+            if isinstance(item, str) and any(m in item for m in _SELF_HEAL_MARKERS):
                 self_heal_notes.append(item)
 
         used_tools = list(dict.fromkeys(used_tools))

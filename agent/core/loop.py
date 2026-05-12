@@ -1117,12 +1117,12 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
         # 若后端已标记不支持视觉，降级为纯文字摘要
         _vision_ok = state.meta.get("_vision_supported", True) if state else True
         if result.content_blocks and _vision_ok:
-            text = f"[工具: {action.tool}] 执行成功\n{result.to_str()}" + repeat_warning
+            text = f"{t('marker.tool_prefix', name=action.tool)} {t('marker.tool_success')}\n{result.to_str()}" + repeat_warning
             return [{"type": "text", "text": text}] + list(result.content_blocks)
         elif result.content_blocks and not _vision_ok:
             # 降级：只保留文字描述，丢弃图片块
             return (
-                f"[工具: {action.tool}] 执行成功（图片已跳过：当前模型不支持多模态）\n"
+                f"{t('marker.tool_prefix', name=action.tool)} {t('marker.tool_success')}（{t('marker.vision_skip')}）\n"
                 f"{result.to_str()}" + repeat_warning
             )
 
@@ -1134,29 +1134,29 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             if spill_path:
                 preview = _summarize_large_text(out, 800)
                 return (
-                    f"[工具: {action.tool}] 执行成功\n"
-                    f"输出较大（{len(out)} 字符），已完整保存至：{spill_path}\n"
-                    f"如需读取完整内容，请使用 shell 或 run_python 分段读取该文件。\n"
-                    f"内容预览：\n{preview}"
+                    f"{t('marker.tool_prefix', name=action.tool)} {t('marker.tool_success')}\n"
+                    f"{t('marker.spill_saved', chars=len(out), path=spill_path)}\n"
+                    f"{t('marker.spill_hint')}\n"
+                    f"{t('marker.spill_preview')}\n{preview}"
                     + repeat_warning
                 )
             # RUN_DIR 不可用时降级为截断（保持原有行为）
             out2 = _summarize_large_text(out, max_chars)
             return (
-                f"[工具: {action.tool}] 执行成功\n"
-                f"输出(可能已截断):\n{out2}"
+                f"{t('marker.tool_prefix', name=action.tool)} {t('marker.tool_success')}\n"
+                f"{t('marker.output_truncated')}\n{out2}"
                 + repeat_warning
             )
 
         return (
-            f"[工具: {action.tool}] 执行成功\n"
-            f"输出:\n{out}"
+            f"{t('marker.tool_prefix', name=action.tool)} {t('marker.tool_success')}\n"
+            f"{t('marker.output')}\n{out}"
             + repeat_warning
         )
     else:
         return (
-            f"[工具: {action.tool}] 执行失败\n"
-            f"错误: {result.error}\n"
-            f"请分析原因，调整策略后重试（可换用其他工具或修改参数）。"
+            f"{t('marker.tool_prefix', name=action.tool)} {t('marker.tool_failure')}\n"
+            f"{t('marker.error_label')} {result.error}\n"
+            f"{t('marker.retry_hint')}"
             + repeat_warning
         )

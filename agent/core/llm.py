@@ -11,109 +11,10 @@ from urllib.parse import urlparse
 from typing import Optional, Iterable
 
 from .types_def import Action, ActionType, AgentState, ToolSpec
+from ..i18n import t
 
 
 # ── JSON 错误反馈（内联，仅 parse_response 使用）─────────────────────────────
-
-def _build_prose_feedback(raw: str) -> str:
-    return (
-        "【JSON 格式错误】你的上一条输出是纯文本（其中虽含有 '{' 字符，但没有合法的 JSON 结构）。\n"
-        "错误类型：prose_with_json - 纯文本误判为 JSON\n"
-        "问题描述：输出中包含了 '{' 字符，但没有形成合法的 JSON 对象结构。\n\n"
-        "正确格式示例：\n"
-        "1. 完成任务时：{\\\"thought\\\": \\\"思考内容...\\\", \\\"action\\\": \\\"done\\\", \\\"final_answer\\\": \\\"最终答案...\\\"}\n"
-        "2. 调用工具时：{\\\"thought\\\": \\\"思考内容...\\\", \\\"action\\\": \\\"tool_call\\\", \\\"tool\\\": \\\"工具名\\\", \\\"args\\\": {...}}\n\n"
-        "请严格按照上述 JSON 格式重新输出，确保：\n"
-        "- 使用双引号（\\\"）包裹所有键名和字符串值\n"
-        "- 所有字符串内的换行符转义为\\\\n\n"
-        "- 所有字符串内的反斜杠转义为\\\\\\\\\n"
-        "- 不要输出任何 Markdown 代码块标记（```json ... ```）\n\n"
-        f"你的原始输出（前 200 字符）：{raw[:200]}..."
-    )
-
-
-def _build_backslash_feedback(raw: str) -> str:
-    return (
-        "【JSON 格式错误】字符串内包含未转义的反斜杠。\n"
-        "错误类型：invalid_escape - 无效的转义字符\n"
-        "问题描述：Windows 路径（如 C:\\\\Users\\\foo 或 runs\\\20260413）中的 \\\\ 在 JSON 字符串里\n"
-        "            必须写成 \\\\\\，否则解析器会把 \\U、\\2 等当成非法的转义序列。\n"
-        "错误修复示例：\n"
-        "  错误：{\\\"path\\\": \\\"runs\\\20260413\\\file.txt\\\"}\n"
-        "  正确：{\\\"path\\\": \\\"runs\\\\\\\20260413\\\\\\\file.txt\\\"}\n\n"
-        "建议：在 thought / final_answer 中引用路径时，可以改用正斜杠（/）来避免此问题，\n"
-        "例如 runs/20260413-140101 或 C:/Users/92680。\n"
-        f"原始输出 (截断): {raw[:300]}"
-    )
-
-
-def _build_newline_feedback(raw: str) -> str:
-    return (
-        "【JSON 格式错误】字符串内包含未转义的换行符。\n"
-        "错误类型：unescaped_newline - 未转义的换行符\n"
-        "问题描述：JSON 字符串值内不能直接包含换行符，必须转义为\\n。\n"
-        "错误修复示例：\n"
-        "  错误：{\\\"thought\\\": \\\"这是第一行\n这是第二行\\\"}\n"
-        "  正确：{\\\"thought\\\": \\\"这是第一行\\n这是第二行\\\"}\n\n"
-        "请检查所有字符串值内的换行是否都转义成了\\n。\n"
-        f"原始输出 (截断): {raw[:300]}"
-    )
-
-
-def _build_single_quote_feedback(raw: str) -> str:
-    return (
-        "【JSON 格式错误】使用了单引号而不是双引号。\n"
-        "错误类型：single_quote_key - 单引号键名\n"
-        "问题描述：JSON 标准要求使用双引号（\\\"）包裹键名和字符串值，不能使用单引号（'）。\n"
-        "错误修复示例：\n"
-        "  错误：{'thought': '测试', 'action': 'done'}\n"
-        "  正确：{\\\"thought\\\": \\\"测试\\\", \\\"action\\\": \\\"done\\\"}\n\n"
-        "请将所有单引号替换为双引号。\n"
-        f"原始输出 (截断): {raw[:300]}"
-    )
-
-
-def _build_unquoted_value_feedback(raw: str) -> str:
-    return (
-        "【JSON 格式错误】字符串值缺少双引号。\n"
-        "错误类型：unquoted_string_value - 未引用的字符串值\n"
-        "问题描述：JSON 要求所有字符串值都必须用双引号包裹。\n"
-        "错误修复示例：\n"
-        "  错误：{\\\"thought\\\": 用户要求测试，\\\"action\\\": done}\n"
-        "  正确：{\\\"thought\\\": \\\"用户要求测试\\\", \\\"action\\\": \\\"done\\\"}\n\n"
-        "请检查 thought、action、tool、final_answer 等所有字段的字符串值是否都用双引号包裹。\n"
-        f"原始输出 (截断): {raw[:300]}"
-    )
-
-
-def _build_split_structure_feedback(raw: str) -> str:
-    return (
-        "【JSON 格式错误】JSON 结构被分割。\n"
-        "错误类型：split_structure - 分割的 JSON 结构\n"
-        "问题描述：JSON 对象被提前闭合，导致后续字段悬空。\n"
-        "错误修复示例：\n"
-        "  错误：{\\\"thought\\\": \\\"测试\\\"}, \\\"action\\\": \\\"done\\\"}\n"
-        "  正确：{\\\"thought\\\": \\\"测试\\\", \\\"action\\\": \\\"done\\\"}\n\n"
-        "请确保所有字段都在同一个 JSON 对象内，不要在中间闭合花括号。\n"
-        f"原始输出 (截断): {raw[:300]}"
-    )
-
-
-def _build_generic_feedback(raw: str, exc: Exception) -> str:
-    return (
-        f"【JSON 格式错误】无法解析你的输出。\n"
-        f"错误信息：{exc}\n\n"
-        "请检查你的输出是否符合以下 JSON 格式：\n"
-        "1. 完成任务时：{\\\"thought\\\": \\\"思考内容...\\\", \\\"action\\\": \\\"done\\\", \\\"final_answer\\\": \\\"最终答案...\\\"}\n"
-        "2. 调用工具时：{\\\"thought\\\": \\\"思考内容...\\\", \\\"action\\\": \\\"tool_call\\\", \\\"tool\\\": \\\"工具名\\\", \\\"args\\\": {...}}\n\n"
-        "常见错误及修复：\n"
-        "- 使用双引号（\\\"）而不是单引号（'）\n"
-        "- 字符串内的换行符转义为\\n\n"
-        "- 字符串内的反斜杠转义为\\\\\n"
-        "- 不要在字符串值中直接包含未转义的特殊字符\n\n"
-        f"原始输出 (截断): {raw[:300]}"
-    )
-
 
 def generate_error_feedback(raw: str, exc: Exception):
     """根据错误特征生成详细的 JSON 格式错误反馈。返回 (thought, error_type)。"""
@@ -128,20 +29,23 @@ def generate_error_feedback(raw: str, exc: Exception):
         raw,
     ))
 
+    raw200 = raw[:200] + "..." if len(raw) > 200 else raw
+    raw300 = raw[:300]
+
     if looks_like_prose:
-        return _build_prose_feedback(raw), "prose_with_json"
+        return t("err.prose", raw=raw200), "prose_with_json"
     elif has_unescaped_backslash and not has_bare_newline:
-        return _build_backslash_feedback(raw), "invalid_escape"
+        return t("err.backslash", raw=raw300), "invalid_escape"
     elif has_bare_newline:
-        return _build_newline_feedback(raw), "unescaped_newline"
+        return t("err.newline", raw=raw300), "unescaped_newline"
     elif has_single_quote_key:
-        return _build_single_quote_feedback(raw), "single_quote_key"
+        return t("err.single_quote", raw=raw300), "single_quote_key"
     elif has_unquoted_string_value:
-        return _build_unquoted_value_feedback(raw), "unquoted_string_value"
+        return t("err.unquoted_value", raw=raw300), "unquoted_string_value"
     elif has_split_structure:
-        return _build_split_structure_feedback(raw), "split_structure"
+        return t("err.split_structure", raw=raw300), "split_structure"
     else:
-        return _build_generic_feedback(raw, exc), "json_parse_error"
+        return t("err.generic", exc=exc, raw=raw300), "json_parse_error"
 
 
 def _estimate_tokens_heuristic(texts: Iterable[str]) -> int:
@@ -153,10 +57,10 @@ def _estimate_tokens_heuristic(texts: Iterable[str]) -> int:
     This is only for guarding against context overflow.
     """
     total = 0
-    for t in texts:
-        if not t:
+    for text_chunk in texts:
+        if not text_chunk:
             continue
-        s = str(t)
+        s = str(text_chunk)
         # If lots of non-ascii (likely CJK), assume denser tokenization.
         non_ascii = sum(1 for ch in s if ord(ch) > 127)
         ratio = non_ascii / max(1, len(s))
@@ -595,116 +499,72 @@ def build_system_prompt(
         args_desc = "\n".join(
             f"    - {k}: {v}" for k, v in spec.args_schema.items()
         )
-        tag = " [进化工具]" if spec.is_evolve_tool else ""
+        tag = t("sys.evolved_tag") if spec.is_evolve_tool else ""
         tool_docs.append(
-            f"• {name}{tag}: {spec.description}\n  参数:\n{args_desc}"
+            f"• {name}{tag}: {spec.description}\n{t('sys.params_label')}\n{args_desc}"
         )
 
-    tools_section = "\n".join(tool_docs) if tool_docs else "（暂无可用工具）"
+    tools_section = "\n".join(tool_docs) if tool_docs else t("sys.tools_none")
 
     concept_section = ""
     if concept_memory and concept_memory.strip():
-        concept_section = (
-            "\n\n## 宏观工作记忆\n"
-            + concept_memory.strip()
-        )
+        concept_section = f"\n\n{t('sys.concept_header')}\n{concept_memory.strip()}"
 
     memory_section = ""
     if long_term:
-        memory_section = "\n\n## 细粒度记忆（近期任务经验）\n" + "\n".join(
+        memory_section = f"\n\n{t('sys.memory_header')}\n" + "\n".join(
             f"- {m}" for m in long_term
         )
 
     patches_section = ""
     if runtime_patches:
         patches_section = (
-            "\n\n## 运行时格式规范（自动生成，必须严格遵守）\n"
+            f"\n\n{t('sys.patches_header')}\n"
             + "\n".join(f"- {p}" for p in runtime_patches)
         )
 
     scratchpad_section = ""
     if scratchpad and scratchpad.strip():
         scratchpad_section = (
-            "\n\n## 草稿本（可编辑的工作短期记忆，去噪后的关键信息/计划）\n"
-            "- 要求：简短、结构化、可随时重写；不要粘贴原始大段内容（原文应写入 raw_memory 或文件并引用路径）。\n"
-            "- 建议长度：<= 2000 字符。\n\n"
+            f"\n\n{t('sys.sp_header')}\n"
+            f"{t('sys.sp_rules')}\n\n"
             + scratchpad.strip()
         )
 
     import os as _os
     _note_mode = scratchpad_note_mode or _os.environ.get("SCRATCHPAD_NOTE_MODE", "mini_call")
     _inline_note_field = (
-        '\n  "scratchpad_note": "（可选）对上一步工具结果的1-2条关键新发现，将自动追加草稿本，每条<=40字",'
+        f"\n{t('sys.note_field')}"
         if _note_mode == "inline" else ""
     )
 
-    return f"""你是一个通用自主智能体。你通过循环调用工具来完成任意目标。
+    return f"""{t('sys.preamble')}
 
-## 输出格式（严格遵守，必须是合法 JSON）
+{t('sys.format_header')}
 {{
-  "thought": "你当前的推理过程，分析情况、决定下一步",{_inline_note_field}
+  "thought": "{t('sys.thought_hint')}",{_inline_note_field}
   "action": "tool_call" | "done",
-  "tool": "工具名（action=tool_call 时必填）",
+  "tool": "{t('sys.tool_hint')}",
   "args": {{...}},
-  "final_answer": "最终结论（action=done 时填写，其他时候省略）"
+  "final_answer": "{t('sys.answer_hint')}"
 }}
 
-## 可用工具
+{t('sys.tools_header')}
 {tools_section}
 {concept_section}
 {memory_section}
 {patches_section}
 {scratchpad_section}
 
-## 完成任务前的必要步骤（重要！）
+{t('sys.completion_header')}
 
-在调用 action='done' 之前，你必须完成以下两个步骤：
+{t('sys.completion_body')}
 
-1. **提交完成报告**：调用 submit_completion_report 工具，提供详细的完成报告，包括：
-   - goal_understanding: 你对任务目标的理解
-   - completed_work: 已完成的工作列表
-   - remaining_gaps: 未完成的工作列表（如果有）
-   - evidence_type: 证据类型（artifact/tool_result/observation/none）
-   - evidence: 证据列表（根据 evidence_type 提供）
-   - outcome: 完成状态（done/done_partial/done_blocked）
-   - confidence: 完成信心（low/medium/high）
+{t('sys.behavior_header')}
+{t('sys.behavior_body')}
 
-2. **记录情景记忆**：调用 append_episodic 工具，记录本次执行的关键信息，包括：
-   - path: 记忆文件路径（默认 ./memory_episodic.jsonl）
-   - summary: 一段话概括（100-300 字），包含关键操作、重要发现、最终结果
-   - tags: 逗号分隔的关键词，便于日后检索
-
-**重要提示**：仅仅在 final_answer 中声称"已提交完成报告并记录情景记忆"是无效的。你必须真正调用相应的工具，否则验收会失败，任务会继续循环直到你正确提交。
-    
-**强烈建议**：在每次任务结束时，按以下顺序操作：
-    1. 先调用 submit_completion_report 提交完成报告
-    2. 再调用 append_episodic 记录情景记忆
-    3. 最后才调用 action='done' 结束任务
-    
-**记住**：系统会严格检查这两个步骤，缺一不可！
-
-## 行为准则
-1. 每次只做一个动作（一次工具调用）
-2. 用 thought 展示完整推理，不要跳过
-3. 遇到错误，分析原因后换一种方式重试
-4. 目标完成后，用 action=done 退出并给出 final_answer
-5. 优先利用长期记忆中的经验，避免重复犯错
-6. 如果已有进化工具出现定义/契约错误，优先使用 `validate_tool_recipe`、`repair_tool_candidate`、`promote_tool_candidate` 修复旧工具；不要仅仅换名字继续注册同义新工具
-7. **WEB 展示交互模式**：调用 `web_show` 后，用户会停留在 WEB 页面，通过页面下方聊天框继续与你交流。此时你必须先调用 `web_notify` 邀请用户互动，再调用 `ask_user` 暂停等待——不得在未收到用户明确"结束"指令前直接走完成流程（submit_completion_report → done）。
-
-## 草稿本（scratchpad）使用规则（强制）
-- 草稿本用于“执行过程中的中间记录与分析”，是你在多步任务中的工作台。
-- 当任务需要多步执行时：
-  1) 在开始执行前，先用 scratchpad_set 写出一个简短计划/分解（3-8 条即可）。
-  2) 每次工具调用得到关键新信息后，用 scratchpad_append 追加“关键发现/结论/下一步”。
-- 在准备结束(action=done)之前，必须在草稿本追加一个 **ACCEPTANCE** 区块（验收自评）：
-  - criteria: 本次任务的验收标准
-  - evidence_type: `artifact` | `tool_result` | `observation` | `none`
-  - evidence: 证据。只有当 `evidence_type=artifact` 时才填写真实文件路径；其他类型写简短文字说明即可
-  - verdict: PASS/FAIL
-- 默认优先根据任务选择合适的 `evidence_type`：只有真正生成了文件产物时才使用 `artifact`
-- 草稿本必须：简短、结构化、可随时重写；禁止粘贴大段原文（原文应写入 artifacts 文件并在草稿本引用路径）。
-- 长度限制：<= 2000 字符（系统会截断）。
+{t('sys.sp_rules_header')}
+{t('sys.sp_rules_body')}
 """
 
 
@@ -851,15 +711,7 @@ def parse_response(raw: str) -> Action:
                     thought="(auto-wrapped plain text as final answer)",
                     final_answer=stripped_raw,
                 )
-            thought = (
-                "你的上一条输出是纯文本，没有任何 JSON 结构。\n"
-                "无论任务是否完成，都必须通过 JSON 格式输出，不能直接输出纯文本。\n"
-                "如果任务已完成，请使用：\n"
-                '{"thought": "...", "action": "done", "final_answer": "..."}\n'
-                "如果需要继续调用工具，请使用：\n"
-                '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
-            )
-            return Action(type=ActionType.ERROR, thought=thought, error_type="prose_no_json")
+            return Action(type=ActionType.ERROR, thought=t("parse.prose_no_json"), error_type="prose_no_json")
         else:
             # JSON-like content found but failed to parse — use enhanced error feedback.
             thought, _error_type = generate_error_feedback(raw, exc)
@@ -898,49 +750,16 @@ def parse_response(raw: str) -> Action:
             and not _has_unquoted_string_value2
         )
         if _has_unescaped_backslash:
-            _prose_thought = (
-                "JSON 格式错误：字符串内包含未转义的反斜杠。\n"
-                "原因：Windows 路径（如 C:\\Users\\foo 或 runs\\20260413）中的 \\ 在 JSON 字符串里"
-                "必须写成 \\\\，否则解析器会把 \\U、\\2 等当成非法的转义序列并丢失字段。\n"
-                "错误修复示例：\n"
-                '  错误: {"thought": "路径是 C:\\Users\\92680"}\n'
-                '  正确: {"thought": "路径是 C:\\\\Users\\\\92680"}\n'
-                "提示：在 thought / final_answer 中引用路径时，可以改用正斜杠（/）来避免此问题，"
-                "例如 runs/20260413-140101 或 C:/Users/92680。\n"
-                f"原始输出(截断): {raw[:300]}"
-            )
+            _prose_thought = t("parse.backslash_error", raw=raw[:300])
             _prose_error_type = "unescaped_backslash"
         elif _has_unquoted_string_value2:
-            _prose_thought = (
-                "JSON 格式错误：字符串值缺少开头的双引号。\n"
-                '原因：某字段的值直接写了内容，而没有先写开头的 "。\n'
-                "错误示例：\n"
-                '  错误: {"thought": 用户要求做一个游戏, "action": "tool_call"}\n'
-                '  正确: {"thought": "用户要求做一个游戏", "action": "tool_call"}\n'
-                "请确保每个字符串值都用双引号包裹，包括 thought、final_answer 等所有字段。\n"
-                f"原始输出(截断): {raw[:300]}"
-            )
+            _prose_thought = t("parse.unquoted_error", raw=raw[:300])
             _prose_error_type = "unquoted_string_value"
         elif _has_unescaped_string_quote:
-            _prose_thought = (
-                "JSON 格式错误：字符串值内含有未转义的双引号。\n"
-                '原因：thought / final_answer 等字段的值中，如果内容本身含有 " 引号（如引用文字、英文名称），\n'
-                '必须将其写成 \\"，否则 JSON 解析器会误把它当作字符串结束符，导致后续字段全部丢失。\n'
-                "错误示例：\n"
-                '  错误: {"thought": "描述为"the open-source code"，这是重名"}\n'
-                '  正确: {"thought": "描述为\\"the open-source code\\"，这是重名"}\n'
-                f"原始输出(截断): {raw[:300]}"
-            )
+            _prose_thought = t("parse.string_quote_error", raw=raw[:300])
             _prose_error_type = "unescaped_string_quote"
         else:
-            _prose_thought = (
-                "你的上一条输出是纯文本（其中虽包含 JSON 片段，但不包含 thought / action 字段）。\n"
-                "无论任务是否完成，都必须通过 JSON 格式输出，不能直接输出纯文本。\n"
-                "如果任务已完成，请使用：\n"
-                '{"thought": "...", "action": "done", "final_answer": "..."}\n'
-                "如果需要继续调用工具，请使用：\n"
-                '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
-            )
+            _prose_thought = t("parse.prose_with_json")
             _prose_error_type = "prose_with_json"
         return Action(
             type=ActionType.ERROR,
@@ -950,7 +769,7 @@ def parse_response(raw: str) -> Action:
     if not isinstance(data, dict):
         return Action(
             type=ActionType.ERROR,
-            thought=f"JSON 顶层必须是 object，但得到: {type(data).__name__}={data!r}. 原始输出: {raw[:300]}",
+            thought=t("parse.not_object", typename=type(data).__name__, val=repr(data), raw=raw[:300]),
             error_type="unknown",
         )
 
@@ -984,13 +803,7 @@ def parse_response(raw: str) -> Action:
         else:
             return Action(
                 type=ActionType.ERROR,
-                thought=(
-                    f"action='{action_str}' 不合法，action 只能是 'tool_call' 或 'done'。\n"
-                    f"如需调用工具，请严格使用以下格式：\n"
-                    f'{{"thought":"...","action":"tool_call","tool":"工具名","args":{{...}}}}\n'
-                    f"例如调用 ask_user：\n"
-                    f'{{"thought":"...","action":"tool_call","tool":"ask_user","args":{{"question":"你的问题"}}}}'
-                ),
+                thought=t("parse.invalid_action", action=action_str),
                 error_type="unknown",
             )
 
@@ -1000,33 +813,16 @@ def parse_response(raw: str) -> Action:
     if not tool:
         # Case A: tool field was present in raw but lost during parse (split-structure).
         if re.search(r'"tool"\s*:\s*"[^"]+"', raw):
-            hint = (
-                "注意：原始输出中包含 \"tool\" 字段，但解析后丢失了——"
-                "这通常是因为 thought 提前闭合（即 thought 自己构成了独立的 {}，"
-                "导致 tool/args 等字段脱落在外）。\n"
-                "请将所有字段写在同一个顶层 {} 内：\n"
-                '{"thought": "...", "action": "tool_call", "tool": "工具名", "args": {...}}'
-            )
+            hint = t("parse.missing_tool_split")
         # Case B: JSON only contains 'thought', and the raw output has prose text after the
         # JSON block — model tried to ask the user by writing the question as plain text.
         elif '"action"' not in raw and re.search(r'[？?]', raw):
-            hint = (
-                "检测到你在 JSON 外面用纯文本向用户提问。\n"
-                "正确做法：使用 ask_user 工具，将问题放在 args.question 里：\n"
-                '{"thought": "...", "action": "tool_call", "tool": "ask_user", '
-                '"args": {"question": "你的问题"}}'
-            )
+            hint = t("parse.missing_tool_question")
         else:
-            hint = (
-                '正确格式：{"action":"tool_call","tool":"工具名","args":{...}}'
-            )
+            hint = t("parse.missing_tool_default")
         return Action(
             type=ActionType.ERROR,
-            thought=(
-                f"action=tool_call 但解析结果中缺少 tool 字段。\n"
-                f"{hint}\n"
-                f"thought: {thought}"
-            ),
+            thought=t("parse.missing_tool_msg", hint=hint, thought=thought),
             error_type="unknown",
         )
 

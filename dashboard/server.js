@@ -500,33 +500,34 @@ function parseLine(raw, lineIdx) {
   }
 
   if (role === 'user') {
-    const toolMatch = text.match(/^\[工具:\s*([^\]]+)\]\s*(执行成功|执行失败)\s*\n?([\s\S]*)/);
+    const toolMatch = text.match(/^\[(?:工具|Tool):\s*([^\]]+)\]\s*(执行成功|执行失败|executed successfully|execution failed)\s*\n?([\s\S]*)/);
     if (toolMatch) {
       const toolName = toolMatch[1].trim();
       // ask_user tool_result is redundant — the question is already shown in the tool_call event.
       if (toolName === 'ask_user') return null;
-      const success = toolMatch[2] === '执行成功';
+      const success = toolMatch[2] === '执行成功' || toolMatch[2] === 'executed successfully';
       const raw_out = toolMatch[3]
-        .replace(/^输出\(可能已截断\):\n?/, '')
-        .replace(/^错误:\n?/, '')
+        .replace(/^(?:输出\(可能已截断\)|Output \(may be truncated\)):\n?/, '')
+        .replace(/^(?:输出|Output):\n?/, '')
+        .replace(/^(?:错误|Error):\n?/, '')
         .trim();
       return { ...base, type: 'tool_result', tool: toolName, success, output: raw_out };
     }
-    if (text.startsWith('[高级指导员')) {
-      const reasonMatch = text.match(/\[高级指导员[^\]]*触发:\s*([^\]]+)\]/);
+    if (text.startsWith('[高级指导员') || text.startsWith('[Advisor')) {
+      const reasonMatch = text.match(/\[(?:高级指导员[^\]]*触发|Advisor[^\]]*trigger):\s*([^\]]+)\]/);
       const reason = reasonMatch ? reasonMatch[1].trim() : 'unknown';
       const bodyMatch = text.match(/^\[[^\]]+\]\s*\n\n([\s\S]*?)(?:\n\n---\n[\s\S]*)?$/);
       const body = bodyMatch ? bodyMatch[1].trim() : text.replace(/^\[[^\]]+\]\s*\n?/, '').trim();
       return { ...base, type: 'advisor', reason, text: body };
     }
-    if (text.startsWith('[用户干预注入]') || text.startsWith('[Web看板]')) {
+    if (text.startsWith('[用户干预注入]') || text.startsWith('[User Injection]') || text.startsWith('[Web看板]')) {
       return { ...base, type: 'injected', text: text.replace(/^\[[^\]]+\]\s*\n?/, '').trim() };
     }
-    if (text.startsWith('[用户补充信息]')) {
-      return { ...base, type: 'user_answer', text: text.replace(/^\[用户补充信息\]\s*\n?/, '').trim() };
+    if (text.startsWith('[用户补充信息]') || text.startsWith('[User Info]')) {
+      return { ...base, type: 'user_answer', text: text.replace(/^\[(?:用户补充信息|User Info)\]\s*\n?/, '').trim() };
     }
     if (lineIdx === 0) {
-      const goalMarker = text.match(/请完成以下目标：\s*\n([\s\S]*)/);
+      const goalMarker = text.match(/(?:请完成以下目标：|Please complete the following goal:)\s*\n?([\s\S]*)/);
       return { ...base, type: 'goal', text: goalMarker ? goalMarker[1].trim() : text.trim() };
     }
     return { ...base, type: 'user_msg', text: text.trim() };

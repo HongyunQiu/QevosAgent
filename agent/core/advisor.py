@@ -25,6 +25,7 @@ from typing import Optional, Tuple
 
 from .types_def import AgentState
 from .llm import LLMBackend
+from ..i18n import t
 
 
 # ── 上下文构建 ────────────────────────────────────────────────────────────────
@@ -52,26 +53,26 @@ def _build_advisor_context(state: AgentState) -> str:
             continue
         # 截断过长内容，避免 advisor 上下文膨胀
         if len(content) > 400:
-            content = content[:400] + "…[截断]"
+            content = content[:400] + t("advisor.ctx.truncated")
         recent_msgs.append(f"[{role}] {content}")
 
     # 取最后 15 条
     recent_msgs = recent_msgs[-15:]
-    history_text = "\n---\n".join(recent_msgs) if recent_msgs else "（暂无历史记录）"
+    history_text = "\n---\n".join(recent_msgs) if recent_msgs else t("advisor.ctx.no_history")
 
     iteration = getattr(state, "iteration", 0)
 
     parts = [
-        f"## 当前迭代轮次\n第 {iteration} 轮",
-        f"## 任务目标\n{raw_goal[:800]}",
+        t("advisor.ctx.iter", iter=iteration),
+        t("advisor.ctx.goal", goal=raw_goal[:800]),
     ]
 
     if scratchpad:
-        parts.append(f"## 草稿本（Agent 当前工作状态）\n{scratchpad[:1500]}")
+        parts.append(t("advisor.ctx.sp", sp=scratchpad[:1500]))
     else:
-        parts.append("## 草稿本\n（草稿本为空）")
+        parts.append(t("advisor.ctx.sp_empty"))
 
-    parts.append(f"## 最近执行历史（最后 {len(recent_msgs)} 条）\n{history_text}")
+    parts.append(t("advisor.ctx.history", n=len(recent_msgs), hist=history_text))
 
     return "\n\n".join(parts)
 
@@ -129,11 +130,7 @@ def run_advisor(
     context: Optional[str] = None
     try:
         context = _build_advisor_context(state)
-        user_msg = (
-            f"触发原因：{trigger_reason}\n\n"
-            f"请审视以下 Agent 的当前状态，给出战略性指导意见。\n\n"
-            f"---\n{context}\n---"
-        )
+        user_msg = t("advisor.trigger_msg", reason=trigger_reason, context=context)
 
         max_tokens = int(os.environ.get("ADVISOR_MAX_TOKENS", "800"))
         advice = llm.complete_text(
@@ -192,11 +189,9 @@ def inject_advisor_advice(
     msg = {
         "role": "user",
         "content": (
-            f"[高级指导员 · 触发: {reason}]\n\n"
+            f"{t('marker.advisor_prefix', reason=reason)}\n\n"
             f"{advice}\n\n"
-            "---\n"
-            "以上是来自独立视角的战略性审视意见，供参考。"
-            "请结合当前任务状态判断是否调整策略。"
+            f"---\n{t('marker.advisor_ref')}"
         ),
     }
     state.short_term.append(msg)

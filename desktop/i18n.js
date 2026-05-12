@@ -32,6 +32,17 @@ const _STRINGS = {
     'app.load_error':     '无法加载 Dashboard：{error}',
     'app.server_not_ready':
       'Dashboard 未能在端口 {port} 启动\n（已等待 {secs} 秒）',
+
+    // Internal protocol markers — must mirror agent/i18n.py marker.* keys
+    'marker.tool_prefix':    '[工具: {name}]',
+    'marker.tool_success':   '执行成功',
+    'marker.tool_failure':   '执行失败',
+    'marker.advisor_prefix': '[高级指导员',
+    'marker.user_inject':    '[用户干预注入]',
+    'marker.user_info':      '[用户补充信息]',
+    'marker.goal_marker':    '请完成以下目标：',
+    'marker.system_prefix':  '[系统]',
+    'marker.system_cmd':     '[系统指令]',
   },
   en: {
     'menu.about': 'About QevosAgent',

@@ -28,6 +28,7 @@ from typing import Optional
 from .types_def import Action, AgentHooks, AgentState, ToolResult
 from .llm import LLMBackend, build_system_prompt, build_context_messages, _extract_json
 from ..runtime.persistence import RunPersistence
+from ..i18n import t
 
 
 # 这些工具的成功 ACK 对模型无信息价值（结果已通过 system prompt 中的 scratchpad 反映）
@@ -126,16 +127,9 @@ def _trim_short_term(state: AgentState, keep_last: int = 8):
 
     scratchpad = (state.meta.get("scratchpad") or "").strip()
     if scratchpad:
-        bridge_content = (
-            f"[系统] 早期对话记录（共 {dropped} 条）已压缩以节省上下文空间。"
-            f"执行过程的关键发现与进度已归纳在 system prompt 的草稿本中，请以草稿本内容作为早期历史的参考依据。"
-            f"以下为最近 {keep_last} 条执行记录。"
-        )
+        bridge_content = t("compress.bridge_sp", dropped=dropped, keep=keep_last)
     else:
-        bridge_content = (
-            f"[系统] 早期对话记录（共 {dropped} 条）已压缩以节省上下文空间。"
-            f"以下为最近 {keep_last} 条执行记录。"
-        )
+        bridge_content = t("compress.bridge_no_sp", dropped=dropped, keep=keep_last)
 
     bridge = {"role": "user", "content": bridge_content}
     state.short_term = head + [bridge] + tail
@@ -156,28 +150,12 @@ def _llm_compress_full_history(messages: list[dict], state: AgentState, llm: LLM
 
     goal_text = (getattr(state, "goal", "") or "")[:400]
 
-    compress_system = (
-        "你是一个智能体执行历史的压缩专家。\n"
-        "你将收到一段智能体与工具交互的完整消息历史。\n"
-        "请将其压缩为简洁、结构化的执行摘要，作为后续步骤的工作记忆。\n\n"
-        "输出格式（直接输出纯文本，不要 JSON，不要标题装饰）：\n"
-        "• 已完成：逐条列出已完成的步骤及其关键结果\n"
-        "• 关键发现：执行中发现的重要事实、数据或结论\n"
-        "• 遇到的问题：障碍及采取的应对方式（若有）\n"
-        "• 当前状态：目前进展到哪一步，下一步计划是什么\n\n"
-        "压缩原则：\n"
-        "- 保留：步骤结果、关键数据、重要决策、有效的解决路径\n"
-        "- 丢弃：工具原始输出的冗长内容、重复失败的重试、无结论的中间思考\n"
-        "- 总长控制在 500 字以内，语言简洁直接"
-    )
+    compress_system = t("compress.system")
 
     # 在现有消息末尾追加压缩请求，让模型基于完整上下文输出
     compress_request = {
         "role": "user",
-        "content": (
-            f"[系统指令] 请将以上执行历史压缩为结构化摘要。\n"
-            f"任务目标参考：{goal_text}"
-        ),
+        "content": t("compress.request", goal=goal_text),
     }
 
     try:
@@ -403,17 +381,8 @@ def _auto_scratchpad_note(
         args_text   = json.dumps(action.args, ensure_ascii=False)[:120]
         result_text = out[:1000]
 
-        mini_system = (
-            "你是一个简洁的信息提取助手。"
-            "根据任务目标，从工具结果中提取1-2条最关键的新发现。"
-            "要求：每条一行，不超过40字，直接输出文字，不要JSON，不要编号，不要重复草稿中已有的内容。"
-        )
-        mini_user = (
-            f"任务目标: {goal_text}\n"
-            f"当前草稿摘要: {sp_text}\n"
-            f"工具: {action.tool}  参数: {args_text}\n"
-            f"工具结果:\n{result_text}"
-        )
+        mini_system = t("note.system")
+        mini_user = t("note.user", goal=goal_text, sp=sp_text, tool=action.tool, args=args_text, result=result_text)
 
         note = llm.complete_text(
             messages=[{"role": "user", "content": mini_user}],
