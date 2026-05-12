@@ -75,8 +75,6 @@ pip install -r requirements.txt
 copy .env.example .env
 # Edit .env and fill in your API Key
 
-# Run a task from the command line
-python run_goal.py "your task here"
 
 # Launch the web dashboard
 cd dashboard
@@ -191,18 +189,14 @@ copy .env.example .env
 
 Edit the `.env` file and set your API key (or use a local model for zero cost).
 
-#### 5. Run Your First Task
 
-```powershell
-python run_goal.py "Summarize today's news for me"
-```
-
-#### 6. Launch the Dashboard (Optional)
+#### 5. Launch the Dashboard (Optional)
 
 ```powershell
 cd dashboard
 npm install
-npm start
+cd ..
+node dashboard/server.js
 ```
 
 Open [http://localhost:8765](http://localhost:8765) in your browser to monitor task execution in real time.
@@ -288,8 +282,6 @@ pip install -r requirements.txt
 copy .env.example .env
 # 编辑 .env 填入 API Key
 
-# 命令行运行测试
-python run_goal.py "你的任务"
 
 # 使用 Dashboard 看板
 cd dashboard
@@ -404,18 +396,14 @@ copy .env.example .env
 
 编辑 `.env` 文件，设置你的 API 密钥（或使用本地模型实现零成本）。
 
-#### 5. 运行第一个任务
 
-```powershell
-python run_goal.py "帮我总结一下今天的新闻"
-```
-
-#### 6. 启动 Dashboard（可选）
+#### 5. 启动 Dashboard（可选）
 
 ```powershell
 cd dashboard
 npm install
-npm start
+cd ..
+node dashboard/server.js
 ```
 
 在浏览器打开 [http://localhost:8765](http://localhost:8765)，即可实时监控任务执行。
