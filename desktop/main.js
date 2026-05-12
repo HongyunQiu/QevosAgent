@@ -33,6 +33,7 @@
  */
 
 const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell, nativeImage } = require('electron');
+const { t } = require('./i18n');
 const path    = require('path');
 const http    = require('http');
 const net     = require('net');
@@ -434,7 +435,7 @@ function waitForServer(maxRetries, intervalMs, callback) {
     req.on('error', () => {
       if (--retries <= 0) {
         callback(new Error(
-          `Dashboard 未能在端口 ${PORT} 启动\n（已等待 ${(maxRetries * intervalMs / 1000).toFixed(0)} 秒）`
+          t('app.server_not_ready', { port: PORT, secs: (maxRetries * intervalMs / 1000).toFixed(0) })
         ));
         return;
       }
@@ -468,7 +469,7 @@ function navigateToDashboard() {
 
   if (startDashboard._error) {
     mv.webContents.once('did-finish-load', () => {
-      notifyLoadingError(`无法加载 Dashboard：${startDashboard._error}`);
+      notifyLoadingError(t('app.load_error', { error: startDashboard._error }));
     });
     return;
   }
@@ -502,9 +503,9 @@ function setupNativeMenu() {
       {
         label: 'QevosAgent',
         submenu: [
-          { role: 'about',     label: '关于 QevosAgent' },
+          { role: 'about',     label: t('menu.about') },
           { type: 'separator' },
-          { role: 'quit',      label: '退出' },
+          { role: 'quit',      label: t('menu.quit') },
         ],
       },
     ]));
@@ -560,7 +561,7 @@ function registerIPC() {
         const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
         url = new URL(base + '/models');
       } catch {
-        return resolve({ ok: false, error: '无效的 API 地址格式' });
+        return resolve({ ok: false, error: t('app.invalid_url') });
       }
       const mod = url.protocol === 'https:' ? require('https') : require('http');
       const options = {
@@ -577,7 +578,7 @@ function registerIPC() {
           ? { ok: true,  status: res.statusCode }
           : { ok: false, status: res.statusCode, error: `HTTP ${res.statusCode}` });
       });
-      req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: '连接超时（8 秒）' }); });
+      req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: t('app.timeout') }); });
       req.on('error',   err => resolve({ ok: false, error: err.message }));
       req.end();
     });

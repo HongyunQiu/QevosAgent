@@ -25,6 +25,7 @@ from .compression import (
     _apply_runtime_patch,
 )
 from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice
+from agent.i18n import t
 
 
 
@@ -293,68 +294,58 @@ def console_hooks() -> AgentHooks:
     def on_iter(i, state):
         max_i = state.meta.get("_max_iterations", "?")
         print(f"\n{GRAY}{'─'*60}{RESET}")
-        print(f"{GRAY}[迭代 {i}/{max_i}]  工具数: {len(state.tools)}  长期记忆: {len(state.long_term)} 条{RESET}")
+        print(f"{GRAY}{t('loop.iter_header', i=i, max_i=max_i, tools=len(state.tools), lt=len(state.long_term))}{RESET}")
 
-    def on_thought(t):
-        print(f"{CYAN}💭 思考: {t}{RESET}")
+    def on_thought(thought):
+        print(f"{CYAN}{t('loop.thought', t=thought)}{RESET}")
 
     def on_tool(name, args):
         args_str = json.dumps(args, ensure_ascii=False)
-        print(f"{YELLOW}🔧 调用工具: {name}({args_str}){RESET}")
+        print(f"{YELLOW}{t('loop.tool_call', name=name, args=args_str)}{RESET}")
 
     def on_result(r):
         icon = "✅" if r.success else "❌"
         text = r.to_str()
-        # 截断过长输出（可配置，避免刷屏）
         import os
         max_len = int(os.environ.get("TOOL_RESULT_PRINT_MAX_CHARS", "5000"))
         if len(text) > max_len:
-            text = text[:max_len] + "...[截断]"
-        print(f"{icon} 结果: {text}")
+            text = text[:max_len] + t("loop.truncated")
+        print(f"{icon} {t('loop.result', text=text)}")
 
     def on_done(ans):
         print(f"\n{GREEN}{'='*60}{RESET}")
-        print(f"{GREEN}✨ 完成！{RESET}")
+        print(f"{GREEN}{t('loop.done')}{RESET}")
         print(f"{GREEN}{ans}{RESET}")
         print(f"{GREEN}{'='*60}{RESET}")
 
     def on_error(msg):
-        print(f"{RED}⚠️  错误: {msg}{RESET}")
+        print(f"{RED}{t('loop.error', msg=msg)}{RESET}")
 
     def on_note(tool_name: str, note: str):
-        """草稿本自动笔记提炼成功时的提示（品红色）。"""
-        print(f"{MAGENTA}📓 草稿本笔记 [{tool_name}]: {note}{RESET}")
+        print(f"{MAGENTA}{t('loop.note', tool=tool_name, note=note)}{RESET}")
 
     def on_rebuild(blocked_tool: str, msg_count: int):
-        """上下文重建时的醒目提示（橙色 + 边框）。"""
         bar = "═" * 60
         print(f"\n{ORANGE}{BOLD}{bar}{RESET}")
-        print(f"{ORANGE}{BOLD}🔄 上下文重建  ·  封锁工具: {blocked_tool}  ·  重建后消息数: {msg_count}{RESET}")
-        print(f"{ORANGE}   原因: 反复忽略循环警告，已清除污染上下文并注入新起点{RESET}")
+        print(f"{ORANGE}{BOLD}{t('loop.rebuild', tool=blocked_tool, count=msg_count)}{RESET}")
+        print(f"{ORANGE}{t('loop.rebuild_reason')}{RESET}")
         print(f"{ORANGE}{BOLD}{bar}{RESET}\n")
 
     TEAL   = "\033[36m"
 
-    _PATCH_EVENT_LABELS = {
-        "rule_added":          "新增规则",
-        "candidate_recorded":  "候选记录",
-        "candidate_promoted":  "候选晋升",
-    }
-
     def on_patch(event: str, error_type: str, rule: str):
-        label = _PATCH_EVENT_LABELS.get(event, event)
-        print(f"{TEAL}🩹 运行时补丁 [{label}|{error_type}]: {rule}{RESET}")
+        label = t(f"loop.patch.{event}", **{}) or event
+        print(f"{TEAL}{t('loop.patch', label=label, etype=error_type, rule=rule)}{RESET}")
 
     PURPLE = "\033[35m"
 
     def on_advisor(reason: str, advice: str):
-        """高级指导员介入时的提示（紫色边框）。"""
         bar = "─" * 60
         preview = advice[:200].replace("\n", " ")
         if len(advice) > 200:
             preview += "…"
         print(f"\n{PURPLE}{bar}{RESET}")
-        print(f"{PURPLE}[高级指导员 · {reason}]{RESET}")
+        print(f"{PURPLE}{t('loop.advisor', reason=reason)}{RESET}")
         print(f"{PURPLE}{preview}{RESET}")
         print(f"{PURPLE}{bar}{RESET}\n")
 

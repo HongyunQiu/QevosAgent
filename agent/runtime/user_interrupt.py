@@ -22,23 +22,10 @@ import sys
 import threading
 from typing import Optional
 
+from agent.i18n import t
+
 BLUE  = "\033[94m"
 RESET = "\033[0m"
-
-HELP_TEXT = """\
-[用户干预命令] - 输入 / 即可触发：
-  /help              立即显示此帮助（不等当前工具结束）
-  /stop              终止当前正在执行的工具，Agent 继续下一步
-  /exit              退出整个 Agent 程序
-  /inject <消息>     将消息注入 Agent 上下文，下轮 LLM 可感知
-  /newtask <目标>    注入新任务目标（nostop 模式专用，解除等待并开始新一轮）
-  /compress [N]      下次 LLM 调用前压缩上下文（保留最近 N 条，默认 8）
-  /status            显示当前状态：迭代号、正在执行的工具、草稿本
-  /log [N]           显示最近 N 条执行记录（默认 5 条）
-  /+N                增加 N 次最大迭代次数（例如 /+50）
-  （/status 和 /log 在工具执行中也会立即响应）
-提示: 只需输入 / 即可暂停，完整命令后按回车生效。
-"""
 
 # 可在后台线程立即处理的命令（不需要 state）
 _IMMEDIATE_CMDS = {"/help"}
@@ -109,7 +96,7 @@ class UserInterruptHandler:
                     except OSError:
                         pass
                     if cmd:
-                        print(f"\n{BLUE}[Web看板] 注入命令: {cmd}{RESET}", flush=True)
+                        print(f"\n{BLUE}{t('interrupt.webcmd', cmd=cmd)}{RESET}", flush=True)
                         self._finish_line(cmd)
             except Exception:
                 pass
@@ -278,11 +265,7 @@ class UserInterruptHandler:
             return  # 已经在等待中，避免重复投哨兵
         self.pause_requested = True
         self._cmd_queue.put("/__pause__")   # 哨兵：确保主循环收到暂停信号
-        print(
-            f"\n{BLUE}[干预] 检测到 /，Agent 将在当前操作结束后暂停。"
-            f"请输入命令后回车，或直接回车显示帮助：{RESET}",
-            flush=True,
-        )
+        print(f"\n{BLUE}{t('interrupt.pause_detected')}{RESET}", flush=True)
 
     def _finish_line(self, line: str) -> None:
         """用户按下回车后调用，分发完整行。"""
@@ -315,14 +298,11 @@ class UserInterruptHandler:
     def _handle_immediate(self, name: str) -> None:
         """在后台线程立即执行的命令（不依赖 state）。"""
         if name == "/help":
-            print(f"\n{BLUE}{HELP_TEXT}{RESET}", flush=True)
+            print(f"\n{BLUE}{t('interrupt.help')}{RESET}", flush=True)
 
     def _ack_deferred(self, name: str) -> None:
         """对延迟命令给出即时回执。"""
-        print(
-            f"\n{BLUE}[用户干预] 已收到 {name}，将在当前工具调用结束后生效。{RESET}",
-            flush=True,
-        )
+        print(f"\n{BLUE}{t('interrupt.ack', name=name)}{RESET}", flush=True)
 
     # ── 供主循环和 run_goal.py 调用 ───────────────────────────────────────────
 
@@ -362,32 +342,24 @@ class UserInterruptHandler:
             return "pause"
 
         if name == "/stop":
-            # 仅取消当前工具（force_stop 已在 _finish_line 里设置）
-            # 工具被放弃后 Agent 会继续下一步，无需让主循环 break
-            print(
-                f"\n{BLUE}[用户干预] /stop 已生效：当前工具将被终止，Agent 继续执行。"
-                f"（如需退出程序，请输入 /exit）{RESET}",
-                flush=True,
-            )
+            print(f"\n{BLUE}{t('interrupt.stop')}{RESET}", flush=True)
             return "continue"
 
         if name in ("/exit", "/quit"):
-            print(f"\n{BLUE}[用户干预] /exit：Agent 即将退出。{RESET}", flush=True)
+            print(f"\n{BLUE}{t('interrupt.exit')}{RESET}", flush=True)
             return "stop"
 
         if name == "/newtask":
             if not arg:
-                print(f"\n{BLUE}[用户干预] 用法: /newtask <新任务目标>{RESET}", flush=True)
+                print(f"\n{BLUE}{t('interrupt.newtask_usage')}{RESET}", flush=True)
                 return "continue"
-            # 路由到 _input_queue（而非 _cmd_queue），解除 get_user_input() 阻塞
-            # nostop idle 等待时，外层循环将其视为新目标并开始新一轮
             self._input_queue.put(arg.strip())
-            print(f"\n{BLUE}[用户干预] 新目标已注入：{arg.strip()[:80]}{RESET}", flush=True)
+            print(f"\n{BLUE}{t('interrupt.newtask_done', arg=arg.strip()[:80])}{RESET}", flush=True)
             return "continue"
 
         if name == "/inject":
             if not arg:
-                print(f"\n{BLUE}[用户干预] 用法: /inject <消息内容>{RESET}", flush=True)
+                print(f"\n{BLUE}{t('interrupt.inject_usage')}{RESET}", flush=True)
                 return "continue"
             state.short_term.append({
                 "role": "user",
@@ -399,22 +371,18 @@ class UserInterruptHandler:
                     persistence.append_short_term(state.short_term[-1])
             except Exception:
                 pass
-            print(f"\n{BLUE}[用户干预] 消息已注入，下轮 LLM 可感知。{RESET}", flush=True)
+            print(f"\n{BLUE}{t('interrupt.inject_done')}{RESET}", flush=True)
             return "continue"
 
         if name == "/compress":
             try:
                 keep = int(arg) if arg.strip() else 8
-                keep = max(2, keep)  # 至少保留 2 条，防止过度压缩
+                keep = max(2, keep)
             except ValueError:
                 keep = 8
             before = len(state.short_term)
             state.meta["_compress_requested"] = keep
-            print(
-                f"\n{BLUE}[压缩] 已标记：下次 LLM 调用前将压缩上下文，"
-                f"保留最近 {keep} 条（当前共 {before} 条）。{RESET}",
-                flush=True,
-            )
+            print(f"\n{BLUE}{t('interrupt.compress', keep=keep, before=before)}{RESET}", flush=True)
             return "continue"
 
         if name == "/status":
@@ -434,23 +402,13 @@ class UserInterruptHandler:
             if suffix.isdigit() and int(suffix) > 0:
                 n = int(suffix)
                 state.meta["_add_iterations"] = state.meta.get("_add_iterations", 0) + n
-                print(
-                    f"\n{BLUE}[用户干预] 已增加 {n} 次迭代，"
-                    f"累计待增加: {state.meta['_add_iterations']} 次。{RESET}",
-                    flush=True,
-                )
+                print(f"\n{BLUE}{t('interrupt.add_iters', n=n, total=state.meta['_add_iterations'])}{RESET}", flush=True)
                 return "continue"
             else:
-                print(
-                    f"\n{BLUE}[用户干预] 用法: /+<正整数>，例如 /+50{RESET}",
-                    flush=True,
-                )
+                print(f"\n{BLUE}{t('interrupt.add_iters_usage')}{RESET}", flush=True)
                 return "continue"
 
-        print(
-            f"\n{BLUE}[用户干预] 未知命令: {name}。输入 /help 查看可用命令。{RESET}",
-            flush=True,
-        )
+        print(f"\n{BLUE}{t('interrupt.unknown_cmd', name=name)}{RESET}", flush=True)
         return "continue"
 
 
@@ -466,23 +424,20 @@ def _print_status(state) -> None:
 
     lines = [f"\n{CYAN}{'─'*56}{RESET}"]
     lines.append(
-        f"{CYAN}[状态]  迭代: {state.iteration}  "
-        f"工具数: {len(state.tools)}  长期记忆: {len(state.long_term)} 条{RESET}"
+        f"{CYAN}{t('status.header', i=state.iteration, tools=len(state.tools), lt=len(state.long_term))}{RESET}"
     )
 
-    # 当前正在执行的工具
     cur_tool = state.meta.get("_current_tool")
     cur_start = state.meta.get("_current_tool_start")
     if cur_tool:
         elapsed = f"{_time.time() - cur_start:.0f}s" if cur_start else "?"
-        lines.append(f"{CYAN}  当前工具: {cur_tool}  已耗时: {elapsed}{RESET}")
+        lines.append(f"{CYAN}{t('status.current_tool', tool=cur_tool, elapsed=elapsed)}{RESET}")
     else:
-        lines.append(f"{GRAY}  当前工具: (空闲中){RESET}")
+        lines.append(f"{GRAY}{t('status.idle')}{RESET}")
 
-    # 草稿本摘要
     scratchpad = (state.meta.get("scratchpad") or "").strip()
-    sp_preview = scratchpad[:400] + "\n...[截断]" if len(scratchpad) > 400 else scratchpad
-    lines.append(f"{CYAN}草稿本:{RESET}")
+    sp_preview = scratchpad[:400] + t("status.truncated") if len(scratchpad) > 400 else scratchpad
+    lines.append(f"{CYAN}{t('status.scratchpad')}{RESET}")
     for ln in sp_preview.splitlines():
         lines.append(f"  {ln}")
 
@@ -504,29 +459,27 @@ def _print_log(state, n: int = 5) -> None:
     recent = history[-n:] if len(history) > n else history
 
     print(f"\n{CYAN}{'─'*56}{RESET}", flush=True)
-    print(f"{CYAN}[执行记录] 最近 {len(recent)} / 共 {len(history)} 条{RESET}", flush=True)
+    print(f"{CYAN}{t('log.header', n=len(recent), total=len(history))}{RESET}", flush=True)
 
     for i, msg in enumerate(recent, start=len(history) - len(recent)):
         role = msg.get("role", "?")
         content = msg.get("content", "")
 
-        # 尝试解析 assistant JSON（思考/工具调用/完成）
         if role == "assistant":
             try:
                 obj = _json.loads(content) if isinstance(content, str) else content
                 thought = obj.get("thought", "")
-                action  = obj.get("action", "")
                 tool    = obj.get("tool", "")
                 ans     = obj.get("final_answer", "")
                 if tool:
-                    label = f"{YELLOW}🔧 [#{i}] 工具: {tool}{RESET}"
+                    label = f"{YELLOW}{t('log.tool', i=i, tool=tool)}{RESET}"
                     detail = _json.dumps(obj.get("args", {}), ensure_ascii=False)
                     detail = detail[:200] + "..." if len(detail) > 200 else detail
                 elif ans:
-                    label = f"{GREEN}✨ [#{i}] 完成{RESET}"
+                    label = f"{GREEN}{t('log.done', i=i)}{RESET}"
                     detail = ans[:200] + "..." if len(ans) > 200 else ans
                 else:
-                    label = f"{CYAN}💭 [#{i}] 思考{RESET}"
+                    label = f"{CYAN}{t('log.thought', i=i)}{RESET}"
                     detail = (thought[:200] + "...") if len(thought) > 200 else thought
                 print(f"  {label}", flush=True)
                 if detail:
@@ -535,13 +488,11 @@ def _print_log(state, n: int = 5) -> None:
             except Exception:
                 pass
 
-        # user / system 消息
         preview = str(content)
         if len(preview) > 300:
             preview = preview[:300] + "..."
         color = GRAY if role == "user" else CYAN
-        # 对工具结果做简化显示
-        tag = "📥 结果" if "[工具结果]" in preview or "[系统]" in preview else f"{'👤' if role=='user' else '🤖'} {role}"
+        tag = t("log.result_tag") if "[工具结果]" in preview or "[系统]" in preview else f"{'👤' if role=='user' else '🤖'} {role}"
         first_line = preview.splitlines()[0] if preview else ""
         print(f"  {color}[#{i}] {tag}: {first_line}{RESET}", flush=True)
 
