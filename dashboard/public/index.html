@@ -910,6 +910,27 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 .mobile-overlay.visible { display: block; }
 
+/* ── Custom prompt modal (replaces window.prompt for Electron compatibility) */
+.cprompt-backdrop {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.55); z-index: 200;
+  align-items: center; justify-content: center;
+}
+.cprompt-backdrop.visible { display: flex; }
+.cprompt-box {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 20px 24px; min-width: 320px; max-width: 480px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.cprompt-msg { font-size: 13px; color: var(--fg); }
+.cprompt-input {
+  background: var(--bg1); border: 1px solid var(--border);
+  border-radius: 4px; color: var(--fg); font-size: 13px;
+  padding: 6px 10px; width: 100%; box-sizing: border-box;
+}
+.cprompt-input:focus { outline: none; border-color: var(--blue); }
+.cprompt-btns { display: flex; justify-content: flex-end; gap: 8px; }
+
 /* ── Mobile layout (≤ 768px portrait) ───────────────────────────────────── */
 @media (max-width: 768px), (orientation: portrait) {
   /* Single-column grid — sidebar and right panel removed from flow */
@@ -1264,6 +1285,18 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
 <!-- Mobile overlay backdrop (closes drawers on tap) -->
 <div class="mobile-overlay" id="mobileOverlay" onclick="closeMobilePanels()"></div>
+
+<!-- Custom prompt modal (Electron-compatible replacement for window.prompt) -->
+<div class="cprompt-backdrop" id="cpromptBackdrop">
+  <div class="cprompt-box">
+    <div class="cprompt-msg" id="cpromptMsg"></div>
+    <input class="cprompt-input" id="cpromptInput" type="text" />
+    <div class="cprompt-btns">
+      <button class="icon-btn" id="cpromptCancel">Cancel</button>
+      <button class="icon-btn" id="cpromptOk" style="color:var(--blue)">OK</button>
+    </div>
+  </div>
+</div>
 
 <div id="toast"></div>
 
@@ -2210,6 +2243,40 @@ async function saveAgentsMd() {
   } catch (e) { toast('✗ Network error: ' + e.message); }
 }
 
+// ── Custom prompt (Electron-compatible, replaces window.prompt) ────────────
+function customPrompt(message, placeholder = '') {
+  return new Promise(resolve => {
+    const backdrop = document.getElementById('cpromptBackdrop');
+    const msgEl    = document.getElementById('cpromptMsg');
+    const input    = document.getElementById('cpromptInput');
+    const okBtn    = document.getElementById('cpromptOk');
+    const cancelBtn = document.getElementById('cpromptCancel');
+
+    msgEl.textContent    = message;
+    input.value          = '';
+    input.placeholder    = placeholder;
+    backdrop.classList.add('visible');
+    input.focus();
+
+    function finish(val) {
+      backdrop.classList.remove('visible');
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      input.removeEventListener('keydown', onKey);
+      resolve(val);
+    }
+    function onOk()     { finish(input.value || null); }
+    function onCancel() { finish(null); }
+    function onKey(e) {
+      if (e.key === 'Enter')  { e.preventDefault(); finish(input.value || null); }
+      if (e.key === 'Escape') { e.preventDefault(); finish(null); }
+    }
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    input.addEventListener('keydown', onKey);
+  });
+}
+
 // ── Skills ────────────────────────────────────────────────────────────────
 let gSkills        = [];          // [{name, filename, size}]
 let gActiveSkills  = new Set();   // names checked for activation
@@ -2364,7 +2431,7 @@ async function deleteSkill() {
 }
 
 async function skillsNewPrompt() {
-  const name = prompt('New skill name (e.g. "devops", "writing"):');
+  const name = await customPrompt('New skill name (e.g. "devops", "writing"):', 'my-skill');
   if (!name || !name.trim()) return;
   const safeName = name.trim().replace(/[^a-zA-Z0-9_\-]/g, '_');
   const defaultContent = uiT('skill.default_content', { name: safeName });
