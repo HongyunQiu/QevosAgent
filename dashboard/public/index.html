@@ -1164,6 +1164,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
         <div class="bar-gap"></div>
         <button class="icon-btn" onclick="loadRunFiles()">↺ Refresh</button>
         <button class="icon-btn active" id="filesRenderBtn" onclick="toggleFilesRender()" title="Preview (Markdown / JSON / JSONL / HTML / CSV / Code)">◈ Preview</button>
+        <button class="icon-btn" id="filesDownloadBtn" onclick="downloadCurrentFile()" disabled title="Download current file">↓ Download</button>
       </div>
       <div class="files-body">
         <div class="files-tree" id="filesTree">
@@ -2835,6 +2836,12 @@ function toggleFilesRender() {
   document.getElementById('filesRenderBtn').classList.toggle('active', gFilesPreview);
   applyPreview(gFilesContent, gFilesPath, gFilesPreview);
 }
+function downloadCurrentFile() {
+  if (!gFilesRunId || !gFilesPath) return;
+  const url = `/api/download-file/${encodeURIComponent(gFilesRunId)}/${gFilesPath}`;
+  const a = Object.assign(document.createElement('a'), { href: url, download: '' });
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
 
 async function selectRunFile(runId, filePath, el) {
   document.querySelectorAll('.ftree-file').forEach(e => e.classList.remove('selected'));
@@ -2842,6 +2849,7 @@ async function selectRunFile(runId, filePath, el) {
   gSelectedFile = filePath;
   gFilesPath    = filePath;
   gFilesRunId   = runId;
+  document.getElementById('filesDownloadBtn').disabled = false;
   const pathEl  = document.getElementById('filesContentPath');
   pathEl.textContent = filePath;
   pathEl.style.display = '';

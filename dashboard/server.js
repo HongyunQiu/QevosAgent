@@ -1249,6 +1249,33 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/download-file/:runId/*  — force-download with Content-Disposition ─
+  const downloadFileMatch = req.url.match(/^\/api\/download-file\/([^/]+)\/(.+)/);
+  if (req.method === 'GET' && downloadFileMatch) {
+    const runDir  = path.resolve(path.join(RUNS_DIR, downloadFileMatch[1]));
+    const relFile = decodeURIComponent(downloadFileMatch[2]);
+    const fullPath = path.resolve(path.join(runDir, relFile));
+    const rel = path.relative(runDir, fullPath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      res.writeHead(403); res.end('forbidden'); return;
+    }
+    try {
+      const ext = path.extname(fullPath).toLowerCase();
+      const mime = MIME[ext] || 'application/octet-stream';
+      const filename = encodeURIComponent(path.basename(fullPath));
+      const data = fs.readFileSync(fullPath);
+      res.writeHead(200, {
+        'Content-Type': mime,
+        'Content-Disposition': `attachment; filename*=UTF-8''${filename}`,
+        'Cache-Control': 'no-cache',
+      });
+      res.end(data);
+    } catch (e) {
+      res.writeHead(e.code === 'ENOENT' ? 404 : 500); res.end(String(e));
+    }
+    return;
+  }
+
   // ── POST /api/open-view — tell Electron to open a view tab ──────────────
   if (req.method === 'POST' && req.url === '/api/open-view') {
     try {
