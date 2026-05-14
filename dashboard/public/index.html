@@ -618,6 +618,11 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .center-tab:hover { color:var(--text); }
 .center-tab.active { color:var(--blue); border-bottom-color:var(--blue); }
 .ctab-sep { width:1px; height:16px; background:var(--border); flex-shrink:0; margin:0 4px; }
+.ctab-close {
+  font-size:10px; color:var(--muted); margin-left:4px;
+  padding:1px 4px; border-radius:3px; cursor:pointer; line-height:1;
+}
+.ctab-close:hover { background:rgba(248,81,73,0.2); color:var(--red); }
 .center-pane { display:none; flex:1; overflow:hidden; flex-direction:column; }
 .center-pane.active { display:flex; }
 
@@ -1106,8 +1111,9 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
       <button class="center-tab" id="ctab-agentsmd" onclick="setCenterTab('agentsmd')">AGENTS.md</button>
       <button class="center-tab" id="ctab-skills" onclick="setCenterTab('skills')">Skills</button>
       <button class="center-tab" id="ctab-advisormd" onclick="setCenterTab('advisormd')">ADVISOR.md</button>
-      <button class="center-tab" id="ctab-files" onclick="setCenterTab('files')">Run Files</button>
       <button class="center-tab" id="ctab-memory" onclick="setCenterTab('memory')">Memory</button>
+      <button class="center-tab" id="ctab-files" onclick="setCenterTab('files')">Run Files</button>
+      <!-- dynamic dir tabs injected here -->
       <div class="bar-gap"></div>
       <button class="icon-btn on" id="autoScrollBtn" onclick="toggleAutoScroll()">↓ Auto</button>
     </div>
@@ -1198,7 +1204,6 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
     <!-- Run Files pane -->
     <div class="center-pane" id="cpane-files">
-      <div class="files-tabs" id="filesTabBar"></div>
       <div class="files-toolbar">
         <span class="agents-title" id="filesRunLabel">No run selected</span>
         <div class="bar-gap"></div>
@@ -1373,11 +1378,6 @@ function handleMsg(msg) {
                    || gViewRunId === msg.activeRunId; // already on the new run
 
     if (wasOnLive) {
-      if (msg.activeRunId !== prevActiveRunId) {
-        gFileTabs = [{ id: 'run', type: 'run', label: 'Run Files', pinned: true }];
-        gActiveFileTabId = 'run';
-        renderFilesTabs();
-      }
       gViewRunId = msg.activeRunId;
       renderAll(msg);
     } else {
@@ -1401,7 +1401,8 @@ function renderAll(data, runId) {
   renderScratchpad(data.scratchpad || '');
   renderJobs(data.events || []);
   updateCmdBarMode(data);
-  if (gCenterTab === 'files') refreshFilesTab();
+  if (gCenterTab === 'files')        loadRunFiles();
+  else if (gCenterTab.startsWith('dir-')) reloadDirTab(gCenterTab);
   if (data.fileTabs) updateFilesTabsFromState(data.fileTabs);
 }
 
@@ -2205,16 +2206,19 @@ let gSelectedFile  = null;
 
 function setCenterTab(name) {
   gCenterTab = name;
-  ['events', 'agentsmd', 'skills', 'advisormd', 'files', 'memory'].forEach(n => {
-    document.getElementById('ctab-' + n).className  = 'center-tab' + (n === name ? ' active' : '');
-    document.getElementById('cpane-' + n).className = 'center-pane' + (n === name ? ' active' : '');
+  document.querySelectorAll('.center-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.id === 'ctab-' + name);
+  });
+  document.querySelectorAll('.center-pane').forEach(pane => {
+    pane.classList.toggle('active', pane.id === 'cpane-' + name);
   });
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
-  if (name === 'agentsmd')  loadAgentsMd();
-  if (name === 'skills')    loadSkills();
-  if (name === 'advisormd') loadAdvisorMd();
-  if (name === 'files')     refreshFilesTab();
-  if (name === 'memory')    loadMemory();
+  if (name === 'agentsmd')       loadAgentsMd();
+  if (name === 'skills')         loadSkills();
+  if (name === 'advisormd')      loadAdvisorMd();
+  if (name === 'files')          loadRunFiles();
+  if (name === 'memory')         loadMemory();
+  if (name.startsWith('dir-'))   reloadDirTab(name);
 }
 
 // ── AGENTS.md ─────────────────────────────────────────────────────────────
@@ -2892,22 +2896,10 @@ function toggleFilesRender() {
   applyPreview(gFilesContent, gFilesPath, gFilesPreview);
 }
 function downloadCurrentFile() {
-  const activeTab = gFileTabs.find(t => t.id === gActiveFileTabId);
-  if (activeTab && activeTab.type === 'dir') {
-    // Blob download from in-memory content
-    if (!gFilesContent || !gFilesPath) return;
-    const blob = new Blob([gFilesContent], { type: 'text/plain' });
-    const a = Object.assign(document.createElement('a'), {
-      href: URL.createObjectURL(blob), download: gFilesPath.split(/[/\\]/).pop()
-    });
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a); URL.revokeObjectURL(a.href);
-  } else {
-    if (!gFilesRunId || !gFilesPath) return;
-    const url = `/api/download-file/${encodeURIComponent(gFilesRunId)}/${gFilesPath}`;
-    const a = Object.assign(document.createElement('a'), { href: url, download: '' });
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  }
+  if (!gFilesRunId || !gFilesPath) return;
+  const url = `/api/download-file/${encodeURIComponent(gFilesRunId)}/${gFilesPath}`;
+  const a = Object.assign(document.createElement('a'), { href: url, download: '' });
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
 
 async function selectRunFile(runId, filePath, el) {
@@ -2951,127 +2943,67 @@ function fmtSize(bytes) {
   return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
-// ── Files tab management ──────────────────────────────────────────────────
-let gFileTabs        = [{ id: 'run', type: 'run', label: 'Run Files', pinned: true }];
-let gActiveFileTabId = 'run';
-
-function renderFilesTabs() {
-  const bar = document.getElementById('filesTabBar');
-  if (!bar) return;
-  let html = '';
-  for (const tab of gFileTabs) {
-    const active = tab.id === gActiveFileTabId ? ' active' : '';
-    const closeBtn = tab.pinned ? '' :
-      `<span class="ftab-close" onclick="closeDirTab('${esc(tab.id)}','${esc(tab.path)}',event)" title="Close">✕</span>`;
-    html += `<button class="ftab-btn${active}" onclick="setFilesTab('${esc(tab.id)}')">${esc(tab.label)}${closeBtn}</button>`;
-  }
-  html += `<button class="ftab-add" onclick="promptAddDirTab()" title="Open directory">＋</button>`;
-  bar.innerHTML = html;
+// ── Generic preview renderer (shared by Run Files and Dir tabs) ───────────
+const RUN_CTX = {
+  view:'filesView', md:'filesMdView', json:'filesJsonView',
+  imgDiv:'filesImageView', imgEl:'filesImageEl', html:'filesHtmlView',
+  csv:'filesCsvView', code:'filesCodeView', codeEl:'filesCodeEl', editor:'filesEditor'
+};
+function dirCtx(id) {
+  return {
+    view:id+'-view', md:id+'-md', json:id+'-json',
+    imgDiv:id+'-imgDiv', imgEl:id+'-imgEl', html:id+'-html',
+    csv:id+'-csv', code:id+'-code', codeEl:id+'-codeEl', editor:id+'-editor'
+  };
 }
-
-function setFilesTab(id) {
-  const tab = gFileTabs.find(t => t.id === id);
-  if (!tab) return;
-  gActiveFileTabId = id;
-  gFilesPath = ''; gFilesContent = ''; gFilesRawUrl = '';
-  gSelectedFile = null;
-  if (gFilesEditMode) cancelFilesEdit();
-  renderFilesTabs();
-  _updateFilesToolbar();
-  document.getElementById('filesContentPath').style.display = 'none';
-  document.getElementById('filesView').innerHTML = '<span class="files-placeholder">Select a file to view its contents</span>';
-  ['filesMdView','filesJsonView','filesImageView','filesHtmlView','filesCsvView','filesCodeView','filesEditor']
-    .forEach(id => document.getElementById(id).style.display = 'none');
-  document.getElementById('filesView').style.display = '';
-  document.getElementById('filesDownloadBtn').disabled = true;
-  if (tab.type === 'run') {
-    loadRunFiles();
-  } else {
-    loadDirFiles(tab.path);
-  }
-}
-
-function refreshFilesTab() {
-  const tab = gFileTabs.find(t => t.id === gActiveFileTabId);
-  if (!tab) { renderFilesTabs(); return; }
-  if (tab.type === 'run') loadRunFiles();
-  else loadDirFiles(tab.path);
-}
-
-async function loadDirFiles(dirPath) {
-  const label = document.getElementById('filesRunLabel');
-  const tree  = document.getElementById('filesTree');
-  label.textContent = dirPath;
-  tree.innerHTML = '<div class="files-empty">Loading…</div>';
-  try {
-    const data = await fetch('/api/fs/list?path=' + encodeURIComponent(dirPath)).then(r => r.json());
-    if (data.error) { tree.innerHTML = `<div class="files-empty">Error: ${esc(data.error)}</div>`; return; }
-    renderDirTree(data.files || [], dirPath);
-  } catch (e) {
-    tree.innerHTML = `<div class="files-empty">Error: ${esc(e.message)}</div>`;
-  }
-}
-
-function renderDirTree(files, dirPath) {
-  const tree = document.getElementById('filesTree');
-  if (!files.length) { tree.innerHTML = '<div class="files-empty">Empty directory</div>'; return; }
-  let html = '';
-  for (const f of files) {
-    const fullPath = dirPath.replace(/[/\\]$/, '') + '/' + f.name;
-    if (f.type === 'dir') {
-      html += `<div class="ftree-dir" style="cursor:pointer" onclick="loadDirFiles('${esc(fullPath.replace(/'/g, "\\'"))}')">📁 ${esc(f.name)}</div>`;
-    } else {
-      const sel = fullPath === gSelectedFile ? ' selected' : '';
-      html += `<div class="ftree-file${sel}"
-          onclick="selectDirFile('${esc(dirPath.replace(/'/g,"\\\'"))}','${esc(fullPath.replace(/'/g,"\\\'"))}',this)">
-          <span class="ftree-name">${esc(f.name)}</span>
-          <span class="ftree-size">${fmtSize(f.size)}</span>
-        </div>`;
-    }
-  }
-  tree.innerHTML = html;
-}
-
-async function selectDirFile(dirPath, fullPath, el) {
-  document.querySelectorAll('.ftree-file').forEach(e => e.classList.remove('selected'));
-  el.classList.add('selected');
-  gSelectedFile  = fullPath;
-  gFilesPath     = fullPath;
-  gFilesRunId    = '';
-  gFilesRawUrl   = '/api/fs/raw?path=' + encodeURIComponent(fullPath);
-  if (gFilesEditMode) cancelFilesEdit();
-  document.getElementById('filesDownloadBtn').disabled = false;
-  const pathEl = document.getElementById('filesContentPath');
-  pathEl.textContent = fullPath; pathEl.style.display = '';
-
-  const ext     = fullPath.split('.').pop().toLowerCase();
+function applyPreviewCtx(ctx, content, filePath, preview, rawUrl) {
+  const g   = k => document.getElementById(ctx[k]);
+  const ext = (filePath || '').split('.').pop().toLowerCase();
+  const all = ['view','md','json','imgDiv','html','csv','code','editor'].map(k => g(k)).filter(Boolean);
+  const showOnly = el => { all.forEach(e => e.style.display = 'none'); if (el) el.style.display = ''; };
   const imgExts = ['png','jpg','jpeg','gif','webp','bmp','ico'];
-  if (imgExts.includes(ext)) {
-    gFilesContent = '';
-    applyPreview('', fullPath, gFilesPreview);
-    _updateFilesToolbar(false);
-    return;
+  if (imgExts.includes(ext)) { if (g('imgEl') && rawUrl) g('imgEl').src = rawUrl; showOnly(g('imgDiv')); return; }
+  if (!preview || !content) { showOnly(g('view')); return; }
+  if (ext === 'svg') { g('imgDiv').innerHTML = content; showOnly(g('imgDiv')); return; }
+  if (ext === 'html' || ext === 'htm') { g('html').srcdoc = content; showOnly(g('html')); return; }
+  if (ext === 'csv' || ext === 'tsv') { g('csv').innerHTML = csvToTable(content, ext === 'tsv' ? '\t' : ','); showOnly(g('csv')); return; }
+  if (ext === 'md' || ext === 'markdown') {
+    if (typeof marked !== 'undefined') { g('md').innerHTML = marked.parse(content); showOnly(g('md')); }
+    else showOnly(g('view')); return;
   }
-
-  document.getElementById('filesView').innerHTML = '<span class="files-placeholder">Loading…</span>';
-  try {
-    const data = await fetch('/api/fs/read?path=' + encodeURIComponent(fullPath)).then(r => r.json());
-    gFilesContent = data.error ? '' : (data.content || '');
-    document.getElementById('filesView').textContent = data.error ? 'Error: ' + data.error : gFilesContent;
-    applyPreview(gFilesContent, fullPath, gFilesPreview);
-    _updateFilesToolbar(!data.error);
-  } catch (e) {
-    document.getElementById('filesView').innerHTML = `<span class="files-placeholder">Error: ${esc(e.message)}</span>`;
-    _updateFilesToolbar(false);
+  if (ext === 'json') {
+    try { g('json').innerHTML = syntaxHL(JSON.stringify(JSON.parse(content), null, 2)); }
+    catch { g('json').innerHTML = syntaxHL(content); }
+    showOnly(g('json')); return;
   }
+  if (ext === 'jsonl') {
+    g('json').innerHTML = content.split('\n').filter(l => l.trim()).map((line, i) => {
+      let body; try { body = syntaxHL(JSON.stringify(JSON.parse(line), null, 2)); } catch { body = esc(line); }
+      return `<div class="jsonl-line"><span class="jsonl-idx">${i+1}</span><span class="jsonl-body">${body}</span></div>`;
+    }).join('') || '<span class="files-placeholder">(empty)</span>';
+    showOnly(g('json')); return;
+  }
+  const codeExts = ['py','js','ts','jsx','tsx','go','rs','java','c','cpp','h','hpp','cs','rb','php',
+    'sh','bash','zsh','yaml','yml','toml','ini','cfg','xml','css','scss','less','sql','r',
+    'kotlin','swift','dart','lua','vim','dockerfile'];
+  if (codeExts.includes(ext) && typeof hljs !== 'undefined' && g('codeEl')) {
+    g('codeEl').removeAttribute('data-highlighted');
+    g('codeEl').textContent = content;
+    hljs.highlightElement(g('codeEl'));
+    showOnly(g('code')); return;
+  }
+  showOnly(g('view'));
+}
+// Keep existing applyPreview as thin wrapper for Run Files pane
+function applyPreview(content, filePath, preview) {
+  applyPreviewCtx(RUN_CTX, content, filePath, preview, gFilesRawUrl);
 }
 
+// ── Run Files edit mode ───────────────────────────────────────────────────
 function _updateFilesToolbar(canEdit) {
-  const editBtn = document.getElementById('filesEditBtn');
-  if (editBtn) editBtn.style.display = (canEdit === false) ? 'none' : '';
+  const b = document.getElementById('filesEditBtn');
+  if (b) b.style.display = (canEdit === false) ? 'none' : '';
 }
-
-// ── Files edit mode ───────────────────────────────────────────────────────
 function toggleFilesEdit() {
   if (gFilesEditMode) { cancelFilesEdit(); return; }
   if (!gFilesContent && !gFilesPath) return;
@@ -3080,137 +3012,286 @@ function toggleFilesEdit() {
   document.getElementById('filesSaveBtn').style.display   = '';
   document.getElementById('filesCancelBtn').style.display = '';
   document.getElementById('filesRenderBtn').style.display = 'none';
-
-  const editorDiv = document.getElementById('filesEditor');
+  const ed = document.getElementById('filesEditor');
   ['filesView','filesMdView','filesJsonView','filesImageView','filesHtmlView','filesCsvView','filesCodeView']
     .forEach(id => document.getElementById(id).style.display = 'none');
-  editorDiv.style.display = '';
-
-  // Create a textarea then wrap with CodeMirror
+  ed.style.display = '';
   const ta = document.createElement('textarea');
-  ta.value = gFilesContent;
-  editorDiv.innerHTML = '';
-  editorDiv.appendChild(ta);
-
+  ta.value = gFilesContent; ed.innerHTML = ''; ed.appendChild(ta);
   if (typeof CodeMirror !== 'undefined') {
     gCmEditor = CodeMirror.fromTextArea(ta, { lineNumbers: true, lineWrapping: false, tabSize: 2 });
     gCmEditor.setSize('100%', '100%');
   }
 }
-
-function cancelFilesEdit() {
-  _exitEditMode();
-  applyPreview(gFilesContent, gFilesPath, gFilesPreview);
-}
-
+function cancelFilesEdit() { _exitEditMode(); applyPreview(gFilesContent, gFilesPath, gFilesPreview); }
 async function saveCurrentFile() {
-  const content = gCmEditor ? gCmEditor.getValue() : document.querySelector('#filesEditor textarea')?.value ?? gFilesContent;
-  const activeTab = gFileTabs.find(t => t.id === gActiveFileTabId);
+  const content = gCmEditor ? gCmEditor.getValue()
+    : (document.querySelector('#filesEditor textarea')?.value ?? gFilesContent);
   try {
-    let ok;
-    if (activeTab && activeTab.type === 'dir') {
-      const res = await fetch('/api/fs/write', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: gFilesPath, content })
-      });
-      ok = (await res.json()).ok;
-    } else {
-      const res = await fetch(`/api/run-file/${encodeURIComponent(gFilesRunId)}/${gFilesPath}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content })
-      });
-      ok = res.ok;
-    }
-    if (ok) {
-      gFilesContent = content;
-      toast('✓ Saved');
-      _exitEditMode();
-      applyPreview(gFilesContent, gFilesPath, gFilesPreview);
-    } else { toast('✗ Save failed'); }
+    const res = await fetch(`/api/run-file/${encodeURIComponent(gFilesRunId)}/${gFilesPath}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+    if (res.ok) { gFilesContent = content; toast('✓ Saved'); _exitEditMode(); applyPreview(gFilesContent, gFilesPath, gFilesPreview); }
+    else toast('✗ Save failed');
   } catch (e) { toast('✗ ' + e.message); }
 }
-
 function _exitEditMode() {
   gFilesEditMode = false;
   if (gCmEditor) { gCmEditor.toTextArea(); gCmEditor = null; }
-  document.getElementById('filesEditor').style.display   = 'none';
-  document.getElementById('filesEditBtn').style.display  = '';
-  document.getElementById('filesSaveBtn').style.display  = 'none';
-  document.getElementById('filesCancelBtn').style.display= 'none';
-  document.getElementById('filesRenderBtn').style.display= '';
+  document.getElementById('filesEditor').style.display    = 'none';
+  document.getElementById('filesEditBtn').style.display   = '';
+  document.getElementById('filesSaveBtn').style.display   = 'none';
+  document.getElementById('filesCancelBtn').style.display = 'none';
+  document.getElementById('filesRenderBtn').style.display = '';
 }
 
-// ── Add directory tab ─────────────────────────────────────────────────────
+// ── Directory tabs (center-level) ─────────────────────────────────────────
+let gDirTabs     = [];  // [{id, path, label}]
+let gDirTabState = {};  // {id: {content, filePath, rawUrl, preview, editMode, cmEditor, selectedFile, currentDir}}
+
+function _dirPaneHTML(id, label, dirPath) {
+  return `
+  <div class="files-toolbar">
+    <span class="agents-title" title="${esc(dirPath)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px">${esc(label)}</span>
+    <div class="bar-gap"></div>
+    <button class="icon-btn" onclick="reloadDirTab('${id}')">↺ Refresh</button>
+    <button class="icon-btn active" id="${id}-renderBtn" onclick="toggleDirPreview('${id}')">◈ Preview</button>
+    <button class="icon-btn" id="${id}-editBtn" style="display:none" onclick="toggleDirEdit('${id}')">✎ Edit</button>
+    <button class="icon-btn" id="${id}-saveBtn" style="display:none" onclick="saveDirFile('${id}')">✓ Save</button>
+    <button class="icon-btn" id="${id}-cancelBtn" style="display:none" onclick="cancelDirEdit('${id}')">✕</button>
+    <button class="icon-btn" id="${id}-dlBtn" disabled onclick="downloadDirFile('${id}')">↓ Download</button>
+  </div>
+  <div class="files-body">
+    <div class="files-tree" id="${id}-tree"><div class="files-empty">Loading…</div></div>
+    <div class="files-content">
+      <div class="files-content-path" id="${id}-pathBar" style="display:none"></div>
+      <pre class="files-view" id="${id}-view"><span class="files-placeholder">Select a file to view its contents</span></pre>
+      <div class="md-render"   id="${id}-md"   style="display:none"></div>
+      <div class="json-render" id="${id}-json" style="display:none"></div>
+      <div class="img-preview" id="${id}-imgDiv" style="display:none"><img id="${id}-imgEl" alt=""></div>
+      <iframe class="html-preview" id="${id}-html" style="display:none" sandbox="allow-scripts allow-same-origin"></iframe>
+      <div class="csv-render"  id="${id}-csv"  style="display:none"></div>
+      <pre class="code-render" id="${id}-code" style="display:none"><code id="${id}-codeEl"></code></pre>
+      <div class="files-editor" id="${id}-editor" style="display:none"></div>
+    </div>
+  </div>`;
+}
+
+async function addDirTab(dirPath, label) {
+  const existing = gDirTabs.find(t => t.path === dirPath);
+  if (existing) { setCenterTab(existing.id); return; }
+  const id  = 'dir-' + Date.now();
+  const lbl = label || dirPath.split(/[/\\]/).filter(Boolean).pop() || dirPath;
+  gDirTabs.push({ id, path: dirPath, label: lbl });
+  gDirTabState[id] = { content:'', filePath:'', rawUrl:'', preview:true, editMode:false, cmEditor:null, selectedFile:'', currentDir:dirPath };
+
+  // Insert center-tab button before autoScrollBtn's flex gap
+  const strip = document.querySelector('.center-tab-strip');
+  const btn = document.createElement('button');
+  btn.className = 'center-tab'; btn.id = 'ctab-' + id;
+  btn.innerHTML = esc(lbl) + ' <span class="ctab-close" title="Close tab">✕</span>';
+  btn.querySelector('.ctab-close').addEventListener('click', e => { e.stopPropagation(); closeDirTab(id); });
+  btn.addEventListener('click', () => setCenterTab(id));
+  // Insert before the bar-gap / autoScrollBtn
+  const gap = strip.querySelector('.bar-gap');
+  strip.insertBefore(btn, gap);
+
+  // Insert center-pane into events-panel (parent of all panes)
+  const pane = document.createElement('div');
+  pane.className = 'center-pane'; pane.id = 'cpane-' + id;
+  pane.innerHTML = _dirPaneHTML(id, lbl, dirPath);
+  document.querySelector('.events-panel').appendChild(pane);
+
+  setCenterTab(id);
+  if (gViewRunId) {
+    fetch('/api/file-tab', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'open', path:dirPath, label:lbl, runId:gViewRunId }) }).catch(()=>{});
+  }
+}
+
+async function closeDirTab(id) {
+  const idx = gDirTabs.findIndex(t => t.id === id);
+  if (idx === -1) return;
+  const path = gDirTabs[idx].path;
+  gDirTabs.splice(idx, 1);
+  delete gDirTabState[id];
+  document.getElementById('ctab-' + id)?.remove();
+  document.getElementById('cpane-' + id)?.remove();
+  if (gCenterTab === id) setCenterTab('files');
+  if (gViewRunId && path) {
+    fetch('/api/file-tab', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'close', path, runId:gViewRunId }) }).catch(()=>{});
+  }
+}
+
+async function reloadDirTab(id) {
+  const s = gDirTabState[id];
+  if (!s) return;
+  loadDirTabFiles(id, s.currentDir);
+}
+
+async function loadDirTabFiles(id, dirPath) {
+  const s = gDirTabState[id];
+  if (s) s.currentDir = dirPath;
+  const tree = document.getElementById(id + '-tree');
+  if (!tree) return;
+  tree.innerHTML = '<div class="files-empty">Loading…</div>';
+  try {
+    const data = await fetch('/api/fs/list?path=' + encodeURIComponent(dirPath)).then(r => r.json());
+    if (data.error) { tree.innerHTML = `<div class="files-empty">Error: ${esc(data.error)}</div>`; return; }
+    renderDirTabTree(id, data.files || []);
+  } catch (e) { tree.innerHTML = `<div class="files-empty">Error: ${esc(e.message)}</div>`; }
+}
+
+function renderDirTabTree(id, files) {
+  const s    = gDirTabState[id];
+  const tree = document.getElementById(id + '-tree');
+  if (!files.length) { tree.innerHTML = '<div class="files-empty">Empty directory</div>'; return; }
+  let html = '';
+  for (const f of files) {
+    if (f.type === 'dir') {
+      html += `<div class="ftree-dir" style="cursor:pointer" data-tabid="${id}" data-fullpath="${esc(f.fullPath)}"
+        onclick="loadDirTabFiles(this.dataset.tabid, this.dataset.fullpath)">📁 ${esc(f.name)}</div>`;
+    } else {
+      const sel = s && f.fullPath === s.selectedFile ? ' selected' : '';
+      html += `<div class="ftree-file${sel}" data-tabid="${id}" data-fullpath="${esc(f.fullPath)}"
+        onclick="selectDirTabFile(this.dataset.tabid, this)">
+        <span class="ftree-name">${esc(f.name)}</span>
+        <span class="ftree-size">${fmtSize(f.size)}</span>
+      </div>`;
+    }
+  }
+  tree.innerHTML = html;
+}
+
+async function selectDirTabFile(id, el) {
+  const fullPath = el.dataset.fullpath;
+  const s = gDirTabState[id];
+  if (!s) return;
+  el.closest('.files-tree').querySelectorAll('.ftree-file').forEach(e => e.classList.remove('selected'));
+  el.classList.add('selected');
+  s.selectedFile = fullPath; s.filePath = fullPath;
+  s.rawUrl = '/api/fs/raw?path=' + encodeURIComponent(fullPath);
+  if (s.editMode) cancelDirEdit(id);
+  document.getElementById(id + '-dlBtn').disabled = false;
+  const pb = document.getElementById(id + '-pathBar');
+  pb.textContent = fullPath; pb.style.display = '';
+
+  const ext = fullPath.split('.').pop().toLowerCase();
+  const imgExts = ['png','jpg','jpeg','gif','webp','bmp','ico'];
+  if (imgExts.includes(ext)) {
+    s.content = '';
+    applyPreviewCtx(dirCtx(id), '', fullPath, s.preview, s.rawUrl);
+    document.getElementById(id + '-editBtn').style.display = 'none';
+    return;
+  }
+  document.getElementById(id + '-view').innerHTML = '<span class="files-placeholder">Loading…</span>';
+  try {
+    const data = await fetch('/api/fs/read?path=' + encodeURIComponent(fullPath)).then(r => r.json());
+    s.content = data.error ? '' : (data.content || '');
+    document.getElementById(id + '-view').textContent = data.error ? 'Error: ' + data.error : s.content;
+    applyPreviewCtx(dirCtx(id), s.content, fullPath, s.preview, s.rawUrl);
+    document.getElementById(id + '-editBtn').style.display = data.error ? 'none' : '';
+  } catch (e) {
+    document.getElementById(id + '-view').innerHTML = `<span class="files-placeholder">Error: ${esc(e.message)}</span>`;
+    document.getElementById(id + '-editBtn').style.display = 'none';
+  }
+}
+
+function toggleDirPreview(id) {
+  const s = gDirTabState[id]; if (!s) return;
+  s.preview = !s.preview;
+  document.getElementById(id + '-renderBtn').classList.toggle('active', s.preview);
+  applyPreviewCtx(dirCtx(id), s.content, s.filePath, s.preview, s.rawUrl);
+}
+
+function toggleDirEdit(id) {
+  const s = gDirTabState[id]; if (!s) return;
+  if (s.editMode) { cancelDirEdit(id); return; }
+  s.editMode = true;
+  document.getElementById(id+'-editBtn').style.display   = 'none';
+  document.getElementById(id+'-saveBtn').style.display   = '';
+  document.getElementById(id+'-cancelBtn').style.display = '';
+  document.getElementById(id+'-renderBtn').style.display = 'none';
+  const ed = document.getElementById(id + '-editor');
+  ['view','md','json','imgDiv','html','csv','code'].forEach(k => {
+    const el = document.getElementById(id+'-'+k); if (el) el.style.display = 'none';
+  });
+  ed.style.display = '';
+  const ta = document.createElement('textarea');
+  ta.value = s.content; ed.innerHTML = ''; ed.appendChild(ta);
+  if (typeof CodeMirror !== 'undefined') {
+    s.cmEditor = CodeMirror.fromTextArea(ta, { lineNumbers: true, lineWrapping: false, tabSize: 2 });
+    s.cmEditor.setSize('100%', '100%');
+  }
+}
+
+function cancelDirEdit(id) {
+  _exitDirEditMode(id);
+  const s = gDirTabState[id]; if (!s) return;
+  applyPreviewCtx(dirCtx(id), s.content, s.filePath, s.preview, s.rawUrl);
+}
+
+async function saveDirFile(id) {
+  const s = gDirTabState[id]; if (!s) return;
+  const content = s.cmEditor ? s.cmEditor.getValue()
+    : (document.querySelector('#' + id + '-editor textarea')?.value ?? s.content);
+  try {
+    const res = await fetch('/api/fs/write', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: s.filePath, content })
+    });
+    if ((await res.json()).ok) {
+      s.content = content; toast('✓ Saved');
+      _exitDirEditMode(id);
+      applyPreviewCtx(dirCtx(id), s.content, s.filePath, s.preview, s.rawUrl);
+    } else toast('✗ Save failed');
+  } catch (e) { toast('✗ ' + e.message); }
+}
+
+function _exitDirEditMode(id) {
+  const s = gDirTabState[id]; if (!s) return;
+  s.editMode = false;
+  if (s.cmEditor) { s.cmEditor.toTextArea(); s.cmEditor = null; }
+  document.getElementById(id+'-editor').style.display  = 'none';
+  document.getElementById(id+'-editBtn').style.display  = '';
+  document.getElementById(id+'-saveBtn').style.display  = 'none';
+  document.getElementById(id+'-cancelBtn').style.display= 'none';
+  document.getElementById(id+'-renderBtn').style.display= '';
+}
+
+function downloadDirFile(id) {
+  const s = gDirTabState[id];
+  if (!s || !s.content || !s.filePath) return;
+  const blob = new Blob([s.content], { type: 'text/plain' });
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob), download: s.filePath.split(/[/\\]/).pop()
+  });
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(a.href);
+}
+
 async function promptAddDirTab() {
   const dirPath = window.prompt('Enter directory path:');
   if (!dirPath || !dirPath.trim()) return;
   addDirTab(dirPath.trim(), '');
 }
 
-async function addDirTab(dirPath, label) {
-  // Check if already open
-  const existing = gFileTabs.find(t => t.type === 'dir' && t.path === dirPath);
-  if (existing) { setFilesTab(existing.id); return; }
-
-  const id    = 'dir-' + Date.now();
-  const lbl   = label || dirPath.split(/[/\\]/).filter(Boolean).pop() || dirPath;
-  const newTab = { id, type: 'dir', label: lbl, path: dirPath };
-  gFileTabs.push(newTab);
-  renderFilesTabs();
-  setFilesTab(id);
-
-  // Persist if a run is active
-  if (gViewRunId) {
-    try {
-      await fetch('/api/file-tab', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'open', path: dirPath, label: lbl, runId: gViewRunId })
-      });
-    } catch {}
-  }
-}
-
-async function closeDirTab(tabId, tabPath, event) {
-  event && event.stopPropagation();
-  const idx = gFileTabs.findIndex(t => t.id === tabId);
-  if (idx === -1) return;
-  gFileTabs.splice(idx, 1);
-  if (gActiveFileTabId === tabId) {
-    gActiveFileTabId = gFileTabs[Math.max(0, idx - 1)]?.id || 'run';
-    setFilesTab(gActiveFileTabId);
-  } else {
-    renderFilesTabs();
-  }
-  if (gViewRunId && tabPath) {
-    try {
-      await fetch('/api/file-tab', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'close', path: tabPath, runId: gViewRunId })
-      });
-    } catch {}
-  }
-}
-
 function updateFilesTabsFromState(fileTabs) {
   if (!fileTabs || !fileTabs.tabs) return;
-  const localIds = new Set(gFileTabs.map(t => t.id));
-  let changed = false;
+  const knownPaths = new Set(gDirTabs.map(t => t.path));
   for (const tab of fileTabs.tabs) {
-    if (tab.type === 'dir' && !localIds.has(tab.id)) {
-      gFileTabs.push(tab);
-      changed = true;
+    if (tab.type === 'dir' && !knownPaths.has(tab.path)) {
+      addDirTab(tab.path, tab.label);
     }
   }
-  // Switch to newly activated tab from agent
-  if (fileTabs.active && fileTabs.active !== gActiveFileTabId && fileTabs.active !== 'run') {
-    const target = gFileTabs.find(t => t.id === fileTabs.active);
-    if (target) { setFilesTab(fileTabs.active); return; }
+  // Agent switched active tab
+  if (fileTabs.active && fileTabs.active.startsWith('dir-')) {
+    const target = gDirTabs.find(t => t.id === fileTabs.active);
+    if (target && gCenterTab !== fileTabs.active) setCenterTab(fileTabs.active);
   }
-  if (changed) renderFilesTabs();
 }
-
-// Init tab bar on load
-renderFilesTabs();
 
 // ── Mobile panel toggles ──────────────────────────────────────────────────
 function closeMobilePanels() {

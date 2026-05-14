@@ -1337,9 +1337,10 @@ const server = http.createServer(async (req, res) => {
       if (!dirPath) return json(400, { error: 'path required' });
       const entries = fs.readdirSync(dirPath, { withFileTypes: true });
       const files = entries.map(e => {
+        const fullPath = path.join(dirPath, e.name);
         let size = 0;
-        if (e.isFile()) { try { size = fs.statSync(path.join(dirPath, e.name)).size; } catch {} }
-        return { name: e.name, type: e.isDirectory() ? 'dir' : 'file', size };
+        if (e.isFile()) { try { size = fs.statSync(fullPath).size; } catch {} }
+        return { name: e.name, type: e.isDirectory() ? 'dir' : 'file', size, fullPath };
       }).sort((a, b) => {
         if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
         return a.name.localeCompare(b.name);
