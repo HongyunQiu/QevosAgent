@@ -1956,6 +1956,71 @@ def tool_get_env_info(state: AgentState) -> ToolResult:
     return ToolResult(success=True, output="\n".join(lines))
 
 
+def tool_file_tab(
+    state: AgentState,
+    action: str,
+    path: str = "",
+    label: str = "",
+) -> ToolResult:
+    """管理 Dashboard Files 面板的目录 Tab。
+
+    action:
+      "open"  — 打开或激活指定路径的目录 Tab（path 必填，label 可选）。
+                若该路径已存在 Tab，只切换激活，不重复添加。
+      "close" — 关闭指定路径的 Tab（path 必填）。
+      "list"  — 列出当前所有 Tab 及其路径。
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    run_dir = _get_run_dir(state)
+    if not run_dir:
+        return ToolResult(success=False, output="", error="无法获取 run_dir")
+
+    port   = os.environ.get("DASHBOARD_PORT", "8765")
+    run_id = Path(run_dir).name
+
+    if action not in ("open", "close", "list"):
+        return ToolResult(success=False, output="", error=f"未知 action: {action}。可选: open / close / list")
+
+    if action in ("open", "close") and not path:
+        return ToolResult(success=False, output="", error=f"action={action} 需要提供 path")
+
+    payload = json.dumps(
+        {"action": action, "path": path, "label": label, "runId": run_id},
+        ensure_ascii=False,
+    ).encode()
+
+    try:
+        req = _ur.Request(
+            f"http://localhost:{port}/api/file-tab",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=5) as resp:
+            result = json.loads(resp.read())
+    except _ue.HTTPError as e:
+        err = e.read().decode(errors="replace")
+        try:
+            err = json.loads(err).get("error", err)
+        except Exception:
+            pass
+        return ToolResult(success=False, output="", error=err)
+    except Exception as e:
+        return ToolResult(success=False, output="", error=str(e))
+
+    if action == "list":
+        tabs = result.get("tabs", [])
+        lines = [f"  [{t['id']}] {t['label']}  path={t.get('path','(run)')}" for t in tabs]
+        return ToolResult(success=True, output="\n".join(lines) or "(无 Tab)")
+
+    return ToolResult(success=True, output={
+        "action": action, "path": path,
+        "tabs": [{"id": t["id"], "label": t["label"], "path": t.get("path", "")} for t in result.get("tabs", {}).get("tabs", [])],
+    })
+
+
 def tool_web_show(
     state: AgentState,
     content: str,
@@ -2681,6 +2746,25 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description="列出所有后台任务及其状态（running/done/failed/cancelled）",
             args_schema={},
             fn=tool_jobs_list,
+        ),
+        # ── Dashboard Files Tab ───────────────────────────────────────────────
+        ToolSpec(
+            name="file_tab",
+            description=(
+                "管理 Dashboard Files 面板的目录 Tab，实现对本地任意目录的浏览。\n"
+                "action 可选值：\n"
+                "  open  — 在 Files 面板打开指定路径的目录 Tab（path 必填，label 可选）。"
+                "若该路径已存在 Tab 则只切换激活，不重复添加。\n"
+                "  close — 关闭指定路径的 Tab（path 必填）。\n"
+                "  list  — 列出当前所有 Tab 及其路径，用于判断是否需要新开。\n"
+                "【使用规范】打开前先调用 list 确认目标路径尚未开启，避免重复添加。"
+            ),
+            args_schema={
+                "action": "操作类型：open / close / list",
+                "path":   "（open/close 必填）目录的绝对路径，如 E:/workspace/project",
+                "label":  "（open 可选）Tab 显示名称，默认取路径最后一段",
+            },
+            fn=tool_file_tab,
         ),
         # ── WEB 展示工具 ──────────────────────────────────────────────────────
         ToolSpec(

@@ -382,6 +382,7 @@ let state = {
   agentPid:     null,
   agentAlive:   false,  // true iff the agent process is confirmed running right now
   webDisplays:  {},     // { display_id: { content_type, title, content, updated_at } }
+  fileTabs:     null,   // { tabs: [...], active: string } loaded from file_tabs.json
 };
 
 let _linesProcessed        = 0;
@@ -612,6 +613,7 @@ function poll() {
     state.events      = [];
     state.meta        = {};
     state.webDisplays = {};
+    state.fileTabs    = null;
     _linesProcessed        = 0;
     _iterCounter           = 0;
     _mtimes                = {};
@@ -657,6 +659,13 @@ function poll() {
           dirty = true;
         }
       }
+    }
+
+    // ── file_tabs.json ───────────────────────────────────────────────────────
+    const tabsFp = path.join(dir, 'file_tabs.json');
+    if (changed(tabsFp)) {
+      const t = readJSON(tabsFp);
+      if (t) { state.fileTabs = t; dirty = true; }
     }
 
     // ── web_chat.jsonl ───────────────────────────────────────────────────────
@@ -1273,6 +1282,106 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       res.writeHead(e.code === 'ENOENT' ? 404 : 500); res.end(String(e));
     }
+    return;
+  }
+
+  // ── POST /api/file-tab — manage Files panel sub-tabs ────────────────────
+  if (req.method === 'POST' && req.url === '/api/file-tab') {
+    try {
+      const body  = JSON.parse(await readBody(req));
+      const { action, path: tabPath, label, runId } = body;
+      const run   = runId || state.activeRunId;
+      if (!run) return json(400, { error: 'no active run' });
+      const tabsFp = path.join(RUNS_DIR, run, 'file_tabs.json');
+      const DEFAULT_TABS = { tabs: [{ id: 'run', type: 'run', label: 'Run Files', pinned: true }], active: 'run' };
+      let tabs = readJSON(tabsFp) || DEFAULT_TABS;
+
+      if (action === 'list') {
+        return json(200, tabs);
+      } else if (action === 'open') {
+        if (!tabPath) return json(400, { error: 'path required for open' });
+        const existing = tabs.tabs.find(t => t.path === tabPath);
+        if (existing) {
+          tabs.active = existing.id;
+        } else {
+          const id = 'dir-' + Date.now();
+          tabs.tabs.push({ id, type: 'dir', label: label || path.basename(tabPath) || tabPath, path: tabPath });
+          tabs.active = id;
+        }
+      } else if (action === 'close') {
+        if (!tabPath) return json(400, { error: 'path required for close' });
+        const idx = tabs.tabs.findIndex(t => t.path === tabPath && !t.pinned);
+        if (idx !== -1) {
+          const closedId = tabs.tabs[idx].id;
+          tabs.tabs.splice(idx, 1);
+          if (tabs.active === closedId) {
+            tabs.active = tabs.tabs[tabs.tabs.length - 1]?.id || 'run';
+          }
+        }
+      } else {
+        return json(400, { error: `unknown action: ${action}` });
+      }
+
+      fs.writeFileSync(tabsFp, JSON.stringify(tabs, null, 2), 'utf8');
+      state.fileTabs = tabs;
+      broadcast();
+      return json(200, { ok: true, tabs });
+    } catch (e) { return json(400, { error: String(e) }); }
+  }
+
+  // ── GET /api/fs/list?path=... — list any directory ───────────────────────
+  if (req.method === 'GET' && req.url.startsWith('/api/fs/list')) {
+    try {
+      const u       = new URL(req.url, 'http://x');
+      const dirPath = u.searchParams.get('path');
+      if (!dirPath) return json(400, { error: 'path required' });
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const files = entries.map(e => {
+        let size = 0;
+        if (e.isFile()) { try { size = fs.statSync(path.join(dirPath, e.name)).size; } catch {} }
+        return { name: e.name, type: e.isDirectory() ? 'dir' : 'file', size };
+      }).sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      return json(200, { path: dirPath, files });
+    } catch (e) { return json(400, { error: String(e.message) }); }
+  }
+
+  // ── GET /api/fs/read?path=... — read any text file ───────────────────────
+  if (req.method === 'GET' && req.url.startsWith('/api/fs/read')) {
+    try {
+      const u        = new URL(req.url, 'http://x');
+      const filePath = u.searchParams.get('path');
+      if (!filePath) return json(400, { error: 'path required' });
+      const content  = fs.readFileSync(filePath, 'utf8');
+      return json(200, { content });
+    } catch (e) { return json(400, { error: String(e.message) }); }
+  }
+
+  // ── PUT /api/fs/write — write any text file ──────────────────────────────
+  if (req.method === 'PUT' && req.url === '/api/fs/write') {
+    try {
+      const body     = JSON.parse(await readBody(req));
+      const filePath = body.path;
+      if (!filePath) return json(400, { error: 'path required' });
+      fs.writeFileSync(filePath, body.content ?? '', 'utf8');
+      return json(200, { ok: true });
+    } catch (e) { return json(400, { error: String(e.message) }); }
+  }
+
+  // ── GET /api/fs/raw?path=... — serve binary file with MIME type ──────────
+  if (req.method === 'GET' && req.url.startsWith('/api/fs/raw')) {
+    try {
+      const u        = new URL(req.url, 'http://x');
+      const filePath = u.searchParams.get('path');
+      if (!filePath) { res.writeHead(400); res.end('path required'); return; }
+      const ext  = path.extname(filePath).toLowerCase();
+      const mime = MIME[ext] || 'application/octet-stream';
+      const data = fs.readFileSync(filePath);
+      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+      res.end(data);
+    } catch (e) { res.writeHead(404); res.end(String(e)); }
     return;
   }
 
