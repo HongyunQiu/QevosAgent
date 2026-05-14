@@ -2758,106 +2758,17 @@ let gFilesRawUrl   = ''; // resolved per-file for image/raw serving
 let gFilesEditMode = false;
 let gCmEditor      = null;
 
-function applyPreview(content, filePath, preview) {
-  const pre      = document.getElementById('filesView');
-  const mdDiv    = document.getElementById('filesMdView');
-  const jsonDiv  = document.getElementById('filesJsonView');
-  const imgDiv   = document.getElementById('filesImageView');
-  const htmlFr   = document.getElementById('filesHtmlView');
-  const csvDiv   = document.getElementById('filesCsvView');
-  const codeDiv  = document.getElementById('filesCodeView');
-  const editorDiv= document.getElementById('filesEditor');
-  const ext      = (filePath || '').split('.').pop().toLowerCase();
-  const all      = [pre, mdDiv, jsonDiv, imgDiv, htmlFr, csvDiv, codeDiv, editorDiv];
-  const showOnly = el => { all.forEach(e => e.style.display = 'none'); el.style.display = ''; };
-
-  // Images: always render regardless of preview toggle (binary, no text to show)
-  const imgExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'];
-  if (imgExts.includes(ext)) {
-    document.getElementById('filesImageEl').src = gFilesRawUrl ||
-      `/api/run-file-raw/${encodeURIComponent(gFilesRunId)}/${gFilesPath}`;
-    showOnly(imgDiv);
-    return;
-  }
-
-  if (!preview || !content) {
-    showOnly(pre);
-    return;
-  }
-
-  // SVG — embed inline (it's XML text)
-  if (ext === 'svg') {
-    imgDiv.innerHTML = content;
-    showOnly(imgDiv);
-    return;
-  }
-
-  // HTML — sandboxed iframe
-  if (ext === 'html' || ext === 'htm') {
-    const dir = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/') + 1) : '';
-    const baseHref = `/api/run-file-raw/${encodeURIComponent(gFilesRunId)}/${dir}`;
-    const baseTag = `<base href="${baseHref}">`;
-    const injected = /(<head[^>]*>)/i.test(content)
-      ? content.replace(/(<head[^>]*>)/i, `$1${baseTag}`)
-      : baseTag + content;
-    htmlFr.srcdoc = injected;
-    showOnly(htmlFr);
-    return;
-  }
-
-  // CSV / TSV — render as table
-  if (ext === 'csv' || ext === 'tsv') {
-    csvDiv.innerHTML = csvToTable(content, ext === 'tsv' ? '\t' : ',');
-    showOnly(csvDiv);
-    return;
-  }
-
-  // Markdown
-  if (ext === 'md' || ext === 'markdown') {
-    if (typeof marked !== 'undefined') {
-      mdDiv.innerHTML = marked.parse(content);
-      showOnly(mdDiv);
-    } else { showOnly(pre); }
-    return;
-  }
-
-  // JSON
-  if (ext === 'json') {
-    try { jsonDiv.innerHTML = syntaxHL(JSON.stringify(JSON.parse(content), null, 2)); }
-    catch { jsonDiv.innerHTML = syntaxHL(content); }
-    showOnly(jsonDiv);
-    return;
-  }
-
-  // JSONL
-  if (ext === 'jsonl') {
-    const lines = content.split('\n').filter(l => l.trim());
-    jsonDiv.innerHTML = lines.map((line, i) => {
-      let body;
-      try { body = syntaxHL(JSON.stringify(JSON.parse(line), null, 2)); }
-      catch { body = esc(line); }
-      return `<div class="jsonl-line"><span class="jsonl-idx">${i + 1}</span><span class="jsonl-body">${body}</span></div>`;
-    }).join('') || '<span class="files-placeholder">(empty)</span>';
-    showOnly(jsonDiv);
-    return;
-  }
-
-  // Code files — highlight.js
-  const codeExts = ['py','js','ts','jsx','tsx','go','rs','java','c','cpp','h','hpp',
-    'cs','rb','php','sh','bash','zsh','yaml','yml','toml','ini','cfg','xml',
-    'css','scss','less','sql','r','kotlin','swift','dart','lua','vim','dockerfile'];
-  if (codeExts.includes(ext) && typeof hljs !== 'undefined') {
-    const codeEl = document.getElementById('filesCodeEl');
-    codeEl.removeAttribute('data-highlighted');
-    codeEl.textContent = content;
-    hljs.highlightElement(codeEl);
-    showOnly(codeDiv);
-    return;
-  }
-
-  // fallback — raw text
-  showOnly(pre);
-}
+// ── Shared file-type sets ─────────────────────────────────────────────────
+const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp','ico','tiff']);
+const TEXT_EXTS = new Set([
+  'txt','log','out','err','diff','patch',
+  'md','markdown','html','htm','xml','svg','rst',
+  'json','jsonl','yaml','yml','toml','ini','cfg','conf','env',
+  'py','js','ts','jsx','tsx','go','rs','java','c','cpp','h','hpp','cs','rb','php',
+  'sh','bash','zsh','fish','ps1','bat','cmd','r','kotlin','swift','dart','lua',
+  'vim','dockerfile','makefile','sql','graphql','proto','tf','tfvars',
+  'css','scss','less','csv','tsv','ndjson',
+]);
 
 function csvToTable(csv, sep = ',') {
   const lines = csv.split('\n').filter(l => l.trim());
@@ -2916,13 +2827,18 @@ async function selectRunFile(runId, filePath, el) {
   pathEl.textContent = filePath;
   pathEl.style.display = '';
 
-  // Binary image types: skip utf8 fetch, render directly via raw endpoint
-  const ext      = filePath.split('.').pop().toLowerCase();
-  const imgExts  = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico'];
-  if (imgExts.includes(ext)) {
+  const ext = filePath.split('.').pop().toLowerCase();
+  if (IMG_EXTS.has(ext)) {
     gFilesContent = '';
     document.getElementById('filesView').innerHTML = '<span class="files-placeholder">[binary image]</span>';
     applyPreview('', gFilesPath, gFilesPreview);
+    return;
+  }
+  if (!TEXT_EXTS.has(ext)) {
+    gFilesContent = '';
+    document.getElementById('filesView').innerHTML = '<span class="files-placeholder">Binary file – preview not supported</span>';
+    applyPreview('', gFilesPath, false);
+    _updateFilesToolbar(false);
     return;
   }
 
@@ -2964,8 +2880,7 @@ function applyPreviewCtx(ctx, content, filePath, preview, rawUrl) {
   const ext = (filePath || '').split('.').pop().toLowerCase();
   const all = ['view','md','json','imgDiv','html','csv','code','editor'].map(k => g(k)).filter(Boolean);
   const showOnly = el => { all.forEach(e => e.style.display = 'none'); if (el) el.style.display = ''; };
-  const imgExts = ['png','jpg','jpeg','gif','webp','bmp','ico'];
-  if (imgExts.includes(ext)) { if (g('imgEl') && rawUrl) g('imgEl').src = rawUrl; showOnly(g('imgDiv')); return; }
+  if (IMG_EXTS.has(ext)) { if (g('imgEl') && rawUrl) g('imgEl').src = rawUrl; showOnly(g('imgDiv')); return; }
   if (!preview || !content) { showOnly(g('view')); return; }
   if (ext === 'svg') { g('imgDiv').innerHTML = content; showOnly(g('imgDiv')); return; }
   if (ext === 'html' || ext === 'htm') { g('html').srcdoc = content; showOnly(g('html')); return; }
@@ -3189,10 +3104,15 @@ async function selectDirTabFile(id, el) {
   pb.textContent = fullPath; pb.style.display = '';
 
   const ext = fullPath.split('.').pop().toLowerCase();
-  const imgExts = ['png','jpg','jpeg','gif','webp','bmp','ico'];
-  if (imgExts.includes(ext)) {
+  if (IMG_EXTS.has(ext)) {
     s.content = '';
     applyPreviewCtx(dirCtx(id), '', fullPath, s.preview, s.rawUrl);
+    document.getElementById(id + '-editBtn').style.display = 'none';
+    return;
+  }
+  if (!TEXT_EXTS.has(ext)) {
+    s.content = '';
+    document.getElementById(id + '-view').innerHTML = '<span class="files-placeholder">Binary file – preview not supported</span>';
     document.getElementById(id + '-editBtn').style.display = 'none';
     return;
   }
