@@ -3209,18 +3209,53 @@ async function promptAddDirTab() {
 }
 
 function updateFilesTabsFromState(fileTabs) {
+  // If currently on a dir tab, switch away before removing its DOM
+  if (gCenterTab.startsWith('dir-')) setCenterTab('files');
+
+  // Remove all existing dir tabs (DOM + state; no API call — just cleanup)
+  for (const t of [...gDirTabs]) {
+    document.getElementById('ctab-' + t.id)?.remove();
+    document.getElementById('cpane-' + t.id)?.remove();
+    delete gDirTabState[t.id];
+  }
+  gDirTabs = [];
+
   if (!fileTabs || !fileTabs.tabs) return;
-  const knownPaths = new Set(gDirTabs.map(t => t.path));
-  for (const tab of fileTabs.tabs) {
-    if (tab.type === 'dir' && !knownPaths.has(tab.path)) {
-      addDirTab(tab.path, tab.label);
-    }
-  }
-  // Agent switched active tab
-  if (fileTabs.active && fileTabs.active.startsWith('dir-')) {
-    const target = gDirTabs.find(t => t.id === fileTabs.active);
-    if (target && gCenterTab !== fileTabs.active) setCenterTab(fileTabs.active);
-  }
+
+  // Resolve which path was active (IDs are ephemeral; match by path on restore)
+  const savedActive = fileTabs.tabs.find(t => t.id === fileTabs.active);
+  const activePath  = savedActive?.type === 'dir' ? savedActive.path : null;
+
+  const strip = document.querySelector('.center-tab-strip');
+  const gap   = strip.querySelector('.bar-gap');
+  const panel = document.querySelector('.events-panel');
+  let activeId = null;
+
+  fileTabs.tabs.forEach((tab, i) => {
+    if (tab.type !== 'dir') return;
+    const id  = 'dir-' + Date.now() + '-' + i;
+    const lbl = tab.label || tab.path.split(/[/\\]/).filter(Boolean).pop() || tab.path;
+    gDirTabs.push({ id, path: tab.path, label: lbl });
+    gDirTabState[id] = { content:'', filePath:'', rawUrl:'', preview:true, editMode:false, cmEditor:null, selectedFile:'', currentDir:tab.path };
+
+    const btn = document.createElement('button');
+    btn.className = 'center-tab'; btn.id = 'ctab-' + id;
+    btn.innerHTML = esc(lbl) + ' <span class="ctab-close" title="Close tab">✕</span>';
+    btn.querySelector('.ctab-close').addEventListener('click', e => { e.stopPropagation(); closeDirTab(id); });
+    btn.addEventListener('click', () => setCenterTab(id));
+    strip.insertBefore(btn, gap);
+
+    const pane = document.createElement('div');
+    pane.className = 'center-pane'; pane.id = 'cpane-' + id;
+    pane.innerHTML = _dirPaneHTML(id, lbl, tab.path);
+    panel.appendChild(pane);
+
+    if (activePath && tab.path === activePath) activeId = id;
+  });
+
+  // Restore active tab: match dir tab by path, or switch to Run Files if saved active was 'run'
+  if (activeId) setCenterTab(activeId);
+  else if (fileTabs.active === 'run') setCenterTab('files');
 }
 
 // ── Mobile panel toggles ──────────────────────────────────────────────────
