@@ -3147,8 +3147,15 @@ async function loadDirTabFiles(id, dirPath) {
 function renderDirTabTree(id, files) {
   const s    = gDirTabState[id];
   const tree = document.getElementById(id + '-tree');
-  if (!files.length) { tree.innerHTML = '<div class="files-empty">Empty directory</div>'; return; }
   let html = '';
+  // Parent directory entry
+  const cur = s ? s.currentDir : '';
+  const parentPath = cur.replace(/[/\\]+$/, '').replace(/[/\\][^/\\]+$/, '') || cur;
+  if (parentPath && parentPath !== cur) {
+    html += `<div class="ftree-dir" style="cursor:pointer;opacity:.7" data-tabid="${id}" data-fullpath="${esc(parentPath)}"
+      onclick="loadDirTabFiles(this.dataset.tabid, this.dataset.fullpath)" title="${esc(parentPath)}">📁 ..</div>`;
+  }
+  if (!files.length) { tree.innerHTML = html + '<div class="files-empty">Empty directory</div>'; return; }
   for (const f of files) {
     if (f.type === 'dir') {
       html += `<div class="ftree-dir" style="cursor:pointer" data-tabid="${id}" data-fullpath="${esc(f.fullPath)}"
