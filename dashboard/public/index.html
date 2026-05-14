@@ -2830,6 +2830,7 @@ async function selectRunFile(runId, filePath, el) {
   const ext = filePath.split('.').pop().toLowerCase();
   if (IMG_EXTS.has(ext)) {
     gFilesContent = '';
+    gFilesRawUrl  = `/api/run-file-raw/${encodeURIComponent(runId)}/${filePath}`;
     document.getElementById('filesView').innerHTML = '<span class="files-placeholder">[binary image]</span>';
     applyPreview('', gFilesPath, gFilesPreview);
     return;
