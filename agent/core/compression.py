@@ -332,8 +332,8 @@ def _maybe_compress_for_context(state: AgentState, llm: LLMBackend, system: str,
         )
         # After trimming, recompute once (best-effort)
         try:
-            system2 = build_system_prompt(state.tools, state.long_term, scratchpad=state.meta.get("scratchpad", ""), concept_memory=state.meta.get("concept_memory", ""), runtime_patches=state.meta.get("runtime_patches"))
-            messages2 = build_context_messages(state)
+            system2 = build_system_prompt(state.tools, state.long_term, concept_memory=state.meta.get("concept_memory", ""))
+            messages2 = build_context_messages(state, scratchpad=state.meta.get("scratchpad", ""), runtime_patches=state.meta.get("runtime_patches"))
             est2 = int(llm.estimate_tokens(messages2, system2))
             state.meta["prompt_tokens_est"] = est2
             return {"system": system2, "messages": messages2}

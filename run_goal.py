@@ -321,7 +321,7 @@ def main():
             print(f"[run_goal] skills loaded: {loaded_skills}")
         initial_meta["_active_skills"] = loaded_skills
 
-    full_goal = prefix + goal
+    full_goal = goal + "\n\n" + prefix
 
     agent = Agent(
         backend="openai",

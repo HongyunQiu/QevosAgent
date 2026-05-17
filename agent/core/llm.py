@@ -485,14 +485,13 @@ class AnthropicBackend(LLMBackend):
 def build_system_prompt(
     tools: dict[str, ToolSpec],
     long_term: list[str],
-    scratchpad: str = "",
     concept_memory: str = "",
-    runtime_patches: Optional[list[str]] = None,
     scratchpad_note_mode: Optional[str] = None,
 ) -> str:
     """
-    动态构建 system prompt。
-    工具集变化（进化后）时，prompt 会自动更新——这是工具进化能生效的关键。
+    动态构建 system prompt（仅含静态/准静态内容）。
+    scratchpad 和 runtime_patches 已移至每轮 context 末尾注入，以保持 system prompt
+    前缀稳定，最大化 KV Cache 命中率。工具集变化（进化后）时 prompt 仍会自动更新。
     """
     tool_docs = []
     for name, spec in tools.items():
@@ -514,21 +513,6 @@ def build_system_prompt(
     if long_term:
         memory_section = f"\n\n{t('sys.memory_header')}\n" + "\n".join(
             f"- {m}" for m in long_term
-        )
-
-    patches_section = ""
-    if runtime_patches:
-        patches_section = (
-            f"\n\n{t('sys.patches_header')}\n"
-            + "\n".join(f"- {p}" for p in runtime_patches)
-        )
-
-    scratchpad_section = ""
-    if scratchpad and scratchpad.strip():
-        scratchpad_section = (
-            f"\n\n{t('sys.sp_header')}\n"
-            f"{t('sys.sp_rules')}\n\n"
-            + scratchpad.strip()
         )
 
     import os as _os
@@ -553,8 +537,6 @@ def build_system_prompt(
 {tools_section}
 {concept_section}
 {memory_section}
-{patches_section}
-{scratchpad_section}
 
 {t('sys.completion_header')}
 
@@ -566,6 +548,26 @@ def build_system_prompt(
 {t('sys.sp_rules_header')}
 {t('sys.sp_rules_body')}
 """
+
+
+def _build_context_suffix(
+    scratchpad: str = "",
+    runtime_patches: Optional[list[str]] = None,
+) -> str:
+    """构建每轮注入到最后一条 user 消息末尾的动态内容（scratchpad + runtime_patches）。"""
+    parts: list[str] = []
+    if runtime_patches:
+        parts.append(
+            t("sys.patches_header") + "\n"
+            + "\n".join(f"- {p}" for p in runtime_patches)
+        )
+    if scratchpad and scratchpad.strip():
+        parts.append(
+            t("sys.sp_header") + "\n"
+            + t("sys.sp_rules") + "\n\n"
+            + scratchpad.strip()
+        )
+    return "\n\n".join(parts)
 
 
 # ── 响应解析器 ────────────────────────────────────────────────────────────────
@@ -837,9 +839,30 @@ def parse_response(raw: str) -> Action:
 
 # ── 上下文构建器 ──────────────────────────────────────────────────────────────
 
-def build_context_messages(state: AgentState) -> list[dict]:
+def build_context_messages(
+    state: AgentState,
+    scratchpad: str = "",
+    runtime_patches: Optional[list[str]] = None,
+) -> list[dict]:
     """
     把 AgentState.short_term 转换成 LLM 的 messages 列表。
-    短期记忆直接作为对话历史传入。
+    scratchpad 和 runtime_patches 动态拼接到最后一条 user 消息末尾，
+    避免写入 system prompt 导致 KV Cache 每轮失效。
     """
-    return state.short_term.copy()
+    msgs = [dict(m) for m in state.short_term]
+    suffix = _build_context_suffix(scratchpad, runtime_patches)
+    if not suffix:
+        return msgs
+    # 找最后一条 user 消息追加；若不存在则新增一条
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user":
+            content = msgs[i].get("content", "")
+            if isinstance(content, list):
+                msgs[i] = dict(msgs[i])
+                msgs[i]["content"] = list(content) + [{"type": "text", "text": "\n\n---\n\n" + suffix}]
+            else:
+                msgs[i] = dict(msgs[i])
+                msgs[i]["content"] = content + "\n\n---\n\n" + suffix
+            return msgs
+    msgs.append({"role": "user", "content": suffix})
+    return msgs
