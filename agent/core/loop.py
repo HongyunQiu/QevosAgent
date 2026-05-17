@@ -713,9 +713,23 @@ def run(
                             f"[系统][验收失败] 请在 done 之前调用 append_episodic 记录本次执行摘要。\n"
                             f"  path='{episodic_path}'\n"
                             f"  summary: 一段话概括（100–300 字），包含关键操作、重要发现、对未来有检索价值的信息\n"
-                            f"  tags: 逗号分隔关键词（如 'ssh,磁盘,linux'）\n\n"
-                            f"同时请判断本次任务是否带来了新的领域认知或经验规律——"
-                            f"如果是，请一并调用 save_concept(path='{concept_path}', content=...) 更新宏观工作记忆（按工作方向精简叙述，提及关键词即可，不写具体流程）。"
+                            f"  tags: 逗号分隔关键词（如 'ssh,磁盘,linux'）"
+                        )
+                        _append_short_term(state, {"role": "user", "content": feedback})
+                        _checkpoint_state(state)
+                        state.iteration += 1
+                        continue
+
+                # ── 验收门 3：concept 宏观记忆评估（必经，与成败无关）────────────
+                if not state.meta.get("_concept_evaluated"):
+                    state.meta["_concept_evaluated"] = True
+                    concept_path = state.meta.get("_concept_path", "./memory_macro.md")
+                    if not _nostop:
+                        feedback = (
+                            f"[系统][记忆评估] 任务已完成。请判断本次任务是否带来了新的领域认知或经验规律。\n"
+                            f"  - 如果有：调用 save_concept(path='{concept_path}', content=...) 更新宏观工作记忆\n"
+                            f"    （按工作方向分章节，精简叙述，提及关键词即可，不写具体操作步骤）\n"
+                            f"  - 如果没有新内容：直接再次调用 done() 完成任务"
                         )
                         _append_short_term(state, {"role": "user", "content": feedback})
                         _checkpoint_state(state)
@@ -1029,15 +1043,29 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
     repeat_warning = ""
     if state is not None and action.type == ActionType.TOOL_CALL:
         try:
+            # 签名同时包含 args 和 result 内容：
+            # 若结果在变化（如轮询下载进度），签名每次不同，不触发循环检测；
+            # 只有 args 和 result 都完全相同时才视为真正卡死。
+            _result_text = result.to_str() if result.success else (result.error or "")
             call_sig = hashlib.md5(
                 _json.dumps(
-                    {"tool": action.tool, "args": action.args},
+                    {"tool": action.tool, "args": action.args, "result": _result_text[:500]},
                     sort_keys=True,
                     ensure_ascii=False,
                 ).encode()
             ).hexdigest()
 
             history = state.meta.setdefault("_call_sig_history", [])
+
+            # ── 语义豁免：模型 thought 表达了轮询/等待意图，跳过本次计数 ──────
+            _POLLING_KEYWORDS = (
+                "等待", "轮询", "polling", "waiting", "wait",
+                "检查进度", "检查状态", "进度", "下载中", "下载完",
+                "尚未", "还没", "稍后", "稍等", "重试", "retry",
+                "in progress", "not yet", "pending", "checking",
+            )
+            _thought_lower = (action.thought or "").lower()
+            _is_polling = any(kw in _thought_lower for kw in _POLLING_KEYWORDS)
 
             # ── A：连续重复检测 ──────────────────────────────────────────────
             consecutive = 0
@@ -1058,11 +1086,26 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             args_preview = _json.dumps(action.args, ensure_ascii=False)[:300]
 
             loop_triggered = False
-            if consecutive >= 2:
+            if _is_polling:
+                # 轮询豁免：不触发循环检测，但累计计数，超阈值时追加自我评估提示
+                poll_counts = state.meta.setdefault("_poll_counts", {})
+                poll_counts[action.tool] = poll_counts.get(action.tool, 0) + 1
+                poll_warn_after = int(os.environ.get("LOOP_POLL_WARN_AFTER", "5"))
+                if poll_counts[action.tool] >= poll_warn_after:
+                    repeat_warning = (
+                        f"\n\n⚠️ 轮询提示：你对 `{action.tool}` 的连续调用已累计达到"
+                        f" {poll_counts[action.tool]} 次。"
+                        f"\n请评估以下两点：\n"
+                        f"  1. 此调用是否存在永远无法终止的风险（如目标永远不可达、条件永远不满足）？\n"
+                        f"  2. 继续等待是否仍有意义，还是应当调整策略？\n"
+                        f"如果你判断有必要继续轮询，请继续；"
+                        f"如果认为需要换一种方式推进任务，请立刻调整策略。"
+                    )
+            elif consecutive >= 3:
                 loop_triggered = True
                 repeat_warning = (
                     f"\n\n⛔ 循环检测（连续）：你已连续 {consecutive + 1} 次以完全相同的参数调用 `{action.tool}`，"
-                    f"继续重试无意义。请立刻换用其他工具或直接 done 给出已知结论。"
+                    f"继续重试无意义。请立刻换用其他工具或调整策略继续推进任务。"
                     f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
                 )
             elif freq_in_window >= win_thresh:
@@ -1071,7 +1114,7 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                     f"\n\n⛔ 循环检测（振荡）：在最近 {len(window)} 次工具调用中，"
                     f"你以完全相同的参数调用 `{action.tool}` 已达 {freq_in_window} 次，"
                     f"偶尔换词后又反复回到同一查询，说明你陷入了振荡循环。"
-                    f"该查询已无法提供新信息，请立刻换用不同工具或策略，或直接 done 给出已知结论。"
+                    f"该查询已无法提供新信息，请立刻换用不同工具或调整策略继续推进任务。"
                     f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
                 )
 
@@ -1098,10 +1141,13 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                         f"\n系统将在本次调用完成后自动暂停并向用户请求指导。"
                     )
             else:
-                # 非循环调用：重置该工具的警告计数，清除待求助标志
+                # 非循环调用：重置该工具的警告计数和轮询计数，清除待求助标志
                 warn_counts = state.meta.get("_loop_warn_counts", {})
                 if action.tool in warn_counts:
                     warn_counts[action.tool] = 0
+                poll_counts = state.meta.get("_poll_counts", {})
+                if action.tool in poll_counts:
+                    poll_counts[action.tool] = 0
                 state.meta.pop("_need_user_help", None)
 
         except Exception:
