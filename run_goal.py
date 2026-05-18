@@ -134,6 +134,7 @@ def format_probe_summary(probe: dict) -> str:
 
 
 def main():
+    _team_api_instance = None  # 提前初始化，确保 finally 块安全访问
     ensure_env_defaults()
     from agent.i18n import t  # import after env defaults so QEVOS_LANG from .env is visible
     probe = probe_openai_configuration()
@@ -644,9 +645,9 @@ def main():
         if state is not None and state.persistence is not None:
             state.persistence.finish(state, outcome="failed", error=f"{type(e).__name__}: {e}")
     finally:
-        interrupt_handler.stop()
         if _team_api_instance is not None:
             _team_api_instance.stop()
+        interrupt_handler.stop()
         # Remove PID file so the dashboard immediately sees process is gone
         if _pid_file is not None:
             try:

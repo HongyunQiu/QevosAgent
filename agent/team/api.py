@@ -352,7 +352,12 @@ class TeamApiServer:
     # ── 生命周期 ──────────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        server = HTTPServer(("", self.port), _Handler)
+        try:
+            server = HTTPServer(("", self.port), _Handler)
+        except OSError as e:
+            print(f"[team] 警告：端口 {self.port} 无法监听（{e}）。"
+                  f"如需组网，请通过 TEAM_PORT 环境变量指定其他端口。")
+            return
         server.api = self
         self._server = server
         self._thread = threading.Thread(
