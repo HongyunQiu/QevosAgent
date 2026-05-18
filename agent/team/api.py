@@ -352,12 +352,20 @@ class TeamApiServer:
     # ── 生命周期 ──────────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        try:
-            server = HTTPServer(("", self.port), _Handler)
-        except OSError as e:
-            print(f"[team] 警告：端口 {self.port} 无法监听（{e}）。"
-                  f"如需组网，请通过 TEAM_PORT 环境变量指定其他端口。")
-            return
+        # 优先尝试指定端口；若被占用则让 OS 自动分配空闲端口
+        for try_port in (self.port, 0):
+            try:
+                server = HTTPServer(("", try_port), _Handler)
+                break
+            except OSError:
+                if try_port == 0:
+                    print("[team] 警告：无法绑定任何端口，组网功能不可用。")
+                    return
+        actual_port = server.server_address[1]
+        if actual_port != self.port:
+            print(f"[team] 端口 {self.port} 已被占用，自动切换到空闲端口 {actual_port}。"
+                  f"如需固定端口，请通过 TEAM_PORT 环境变量指定。")
+            self.port = actual_port
         server.api = self
         self._server = server
         self._thread = threading.Thread(
