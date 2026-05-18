@@ -225,7 +225,7 @@ class RunPersistence:
         if state is not None:
             meta = dict(getattr(state, "meta", {}) or {})
             # 移除不可 JSON 序列化的内部对象（如 AsyncJobManager、LLM 实例）
-            _NON_SERIALIZABLE_KEYS = ("_async_manager", "_llm")
+            _NON_SERIALIZABLE_KEYS = ("_async_manager", "_llm", "_team_api")
             for _k in _NON_SERIALIZABLE_KEYS:
                 meta.pop(_k, None)
             meta["_persistence"] = {
