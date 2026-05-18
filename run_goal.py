@@ -642,31 +642,38 @@ def main():
 
     except Exception as e:
         run_error = e
-        if state is not None and state.persistence is not None:
-            state.persistence.finish(state, outcome="failed", error=f"{type(e).__name__}: {e}")
     finally:
         if _team_api_instance is not None:
             _team_api_instance.stop()
         interrupt_handler.stop()
+
+        # Write the final status BEFORE removing the PID file so the dashboard
+        # never sees "process dead + status=running" in the same poll cycle.
+        if state is not None:
+            if state.persistence is None:
+                state.persistence = persistence
+                state.persistence.start(state)
+
+            if run_error is not None:
+                _finish_outcome = "failed"
+                _finish_error   = f"{type(run_error).__name__}: {run_error}"
+            elif state.meta.get("paused"):
+                _finish_outcome = "paused"
+                _finish_error   = None
+            elif state.meta.get("timeout"):
+                _finish_outcome = "failed"
+                _finish_error   = "timeout"
+            else:
+                _finish_outcome = "done"
+                _finish_error   = None
+            state.persistence.finish(state, outcome=_finish_outcome, error=_finish_error)
+
         # Remove PID file so the dashboard immediately sees process is gone
         if _pid_file is not None:
             try:
                 _pid_file.unlink(missing_ok=True)
             except OSError:
                 pass
-
-    if state is not None:
-        if state.persistence is None:
-            state.persistence = persistence
-            state.persistence.start(state)
-
-        if state.meta.get("paused"):
-            outcome = "paused"
-        elif state.meta.get("timeout"):
-            outcome = "failed"
-        else:
-            outcome = "done"
-        state.persistence.finish(state, outcome=outcome, error=None if outcome != "failed" else "timeout")
 
     # Auto-save tools on exit（Python 层直接调用，不依赖 LLM）
     if state is not None and os.environ.get("AUTO_SAVE_SNAPSHOT_ON_EXIT", "0") == "1":

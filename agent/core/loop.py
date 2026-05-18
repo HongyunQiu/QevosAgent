@@ -962,7 +962,7 @@ def run(
             if hooks.on_error:
                 hooks.on_error(f"达到最大迭代次数 {max_iterations}，强制退出。")
             state.meta["timeout"] = True
-            _checkpoint_state(state)
+            _checkpoint_state(state, status="failed")
 
     return state
 
