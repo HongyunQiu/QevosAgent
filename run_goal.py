@@ -171,35 +171,9 @@ def main():
         "--skills", default="",
         help="Comma-separated skill names (e.g. coding,data_analysis), or 'all' to load all skills",
     )
-    # ── 多 Agent 组网参数 ───────────────────────────────────────────────────────
-    _parser.add_argument(
-        "--team-role", choices=["supervisor", "worker"], default="",
-        help="组网角色：supervisor（主管）或 worker（队员）",
-    )
-    _parser.add_argument(
-        "--team-port", type=int, default=0,
-        help="本 Agent 的团队 API 监听端口（默认：主管 9100，队员 9101）",
-    )
-    _parser.add_argument(
-        "--supervisor-url", default="",
-        help="[队员专用] 主管 Agent 的 HTTP 地址（如 http://192.168.1.1:9100）",
-    )
-    _parser.add_argument(
-        "--worker-id", default="",
-        help="[队员专用] 本队员的标识 ID（默认：worker-<port>）",
-    )
-    _parser.add_argument(
-        "--team-workers", default="",
-        help="[主管专用] 队员地址列表，格式：id=url,id=url（如 worker-A=http://host:9101）",
-    )
     _pargs = _parser.parse_args()
     goal   = " ".join(_pargs.goal).strip()
     nostop = _pargs.nostop
-    _team_role       = (_pargs.team_role or "").strip()
-    _team_port       = _pargs.team_port
-    _supervisor_url  = (_pargs.supervisor_url or "").strip().rstrip("/")
-    _worker_id       = (_pargs.worker_id or "").strip()
-    _team_workers_raw = (_pargs.team_workers or "").strip()
     # --skills 优先于 AGENT_SKILLS 环境变量
     _skills_arg = _pargs.skills.strip() or os.environ.get("AGENT_SKILLS", "").strip()
     if _skills_arg:
@@ -349,52 +323,6 @@ def main():
 
     full_goal = goal + "\n\n" + prefix
 
-    # ── 解析组网配置，注入 initial_meta ──────────────────────────────────────
-    _team_api_instance = None
-    if _team_role:
-        # 解析队员地址表（主管侧）
-        _team_workers: dict = {}
-        if _team_workers_raw:
-            for _pair in _team_workers_raw.split(","):
-                _pair = _pair.strip()
-                if "=" in _pair:
-                    _wid, _wurl = _pair.split("=", 1)
-                    _team_workers[_wid.strip()] = _wurl.strip().rstrip("/")
-
-        # 端口默认值
-        if not _team_port:
-            _team_port = 9100 if _team_role == "supervisor" else 9101
-
-        # worker_id 默认值
-        if not _worker_id:
-            _worker_id = f"worker-{_team_port}"
-
-        initial_meta["_team_mode"] = {
-            "role": _team_role,
-            "api_port": _team_port,
-            "supervisor_url": _supervisor_url,
-            "worker_id": _worker_id,
-        }
-        if _team_workers:
-            initial_meta["_team_workers"] = _team_workers
-
-        # 在 goal prefix 中告知 LLM 当前角色
-        if _team_role == "worker":
-            _team_hint = (
-                f"\n\n[队员模式] 你是团队成员，ID: {_worker_id}。"
-                "遇到需要人类确认的问题时，ask_user 会自动路由到主管，无需特殊处理。"
-                "完成子任务时调用 report_done，阶段性进展时调用 report_progress。"
-            )
-        else:
-            _workers_desc = "、".join(_team_workers.keys()) if _team_workers else "（待分配）"
-            _team_hint = (
-                f"\n\n[主管模式] 你是团队主管，负责协调以下队员：{_workers_desc}。"
-                "可用工具：delegate_task（分配任务）、get_worker_snapshot/get_worker_status"
-                "（查看进度）、get_pending_questions+answer_worker（处理队员提问）、"
-                "ask_worker（主动询问队员）。"
-            )
-        full_goal = full_goal + _team_hint
-
     agent = Agent(
         backend="openai",
         api_key=os.environ.get("OPENAI_API_KEY"),
@@ -407,29 +335,23 @@ def main():
         initial_meta=initial_meta,
     )
 
-    # ── 加载团队工具（如果处于组网模式）────────────────────────────────────────
-    if _team_role:
-        from agent.team.tools import get_supervisor_tools, get_worker_tools
-        if _team_role == "supervisor":
-            agent.tools.update(get_supervisor_tools())
-            print(f"[team] 主管工具已加载（{len(get_supervisor_tools())} 个）")
-        else:
-            agent.tools.update(get_worker_tools())
-            print(f"[team] 队员工具已加载（{len(get_worker_tools())} 个）")
+    # ── 加载团队协作工具（始终加载，行为由运行时拓扑节点码决定）────────────────
+    from agent.team.tools import get_team_tools
+    agent.tools.update(get_team_tools())
 
     # ── 用户干预处理器：后台线程读取 stdin，"/" 开头为命令，其余为 ask_user 回答 ──
     from agent.runtime.user_interrupt import UserInterruptHandler
     interrupt_handler = UserInterruptHandler()
     agent.hooks.interrupt_handler = interrupt_handler  # 挂载到 hooks，loop.py 会检查
 
-    # ── 启动 Team API 服务（组网模式下，在 interrupt_handler 启动后立即启动）────
-    if _team_role:
-        from agent.team.api import TeamApiServer
-        _team_api_instance = TeamApiServer(
-            port=_team_port,
-            run_dir=run_dir,
-            interrupt_handler=interrupt_handler,
-        )
+    # ── Team API：始终启动，端口由 TEAM_PORT 环境变量控制（默认 9100）────────────
+    from agent.team.api import TeamApiServer
+    _team_port = int(os.environ.get("TEAM_PORT", "9100"))
+    _team_api_instance = TeamApiServer(
+        port=_team_port,
+        run_dir=run_dir,
+        interrupt_handler=interrupt_handler,
+    )
 
     GREEN = "\033[92m"
     BLUE  = "\033[94m"
@@ -451,11 +373,9 @@ def main():
     current_goal = full_goal
     interrupt_handler.start()
 
-    # ── Team API：在 interrupt_handler 启动后启动，并把引用注入 initial_meta ─
-    if _team_api_instance is not None:
-        _team_api_instance.start()
-        # 把运行时实例写入 agent 的 initial_meta，使工具函数能访问
-        agent.initial_meta["_team_api"] = _team_api_instance
+    # ── Team API：在 interrupt_handler 启动后立即启动，注入 initial_meta ────────
+    _team_api_instance.start()
+    agent.initial_meta["_team_api"] = _team_api_instance
 
     try:
         state = None  # created on first agent.run(); re-used in subsequent rounds
@@ -463,9 +383,8 @@ def main():
         while True:
             state = agent.run(current_goal, state=state)
 
-            # ── Team API 实例同步到 state.meta（第一次 run 后 state 才存在）────
-            if _team_api_instance is not None and state is not None:
-                state.meta["_team_api"] = _team_api_instance
+            # Team API 实例同步到 state.meta（state 在第一次 run 后才存在）
+            state.meta["_team_api"] = _team_api_instance
 
             # ── /exit or timeout → stop unconditionally ──────────────────────
             if state.meta.get("user_stopped") or state.meta.get("timeout"):
@@ -524,54 +443,53 @@ def main():
                         state.persistence.checkpoint(state)
                     continue
 
-                # ── [队员模式] ask_user 透明路由到主管 ───────────────────────
-                _worker_routed = False
-                _team_cfg = state.meta.get("_team_mode") or {}
-                if _team_cfg.get("role") == "worker":
+                # ── [组网模式] ask_user 路由到上游节点 ──────────────────────
+                _upstream_routed = False
+                _tapi = state.meta.get("_team_api")
+                _topo = _tapi.topology_node if _tapi else None
+                _up_url = (_topo or {}).get("upstream_url", "")
+                if _tapi and _up_url:
+                    import uuid as _uuid
+                    import urllib.request as _ureq
                     _q_content = state.meta.get("awaiting_input", "")
-                    _sup_url   = _team_cfg.get("supervisor_url", "")
-                    _wid       = _team_cfg.get("worker_id", "unknown")
-                    _tapi      = state.meta.get("_team_api")
-                    if _tapi and _sup_url:
-                        import uuid as _uuid
-                        import urllib.request as _ureq, urllib.error as _uerr
-                        _qid = str(_uuid.uuid4())
-                        # POST 问题到主管
-                        _post_ok = False
+                    _node_id   = (_topo or {}).get("id", "unknown")
+                    _qid = str(_uuid.uuid4())
+                    _post_ok = False
+                    try:
+                        _body = json.dumps({
+                            "question_id": _qid,
+                            "from_node_id": _node_id,
+                            "from_node_url": f"http://localhost:{_team_port}",
+                            "content": _q_content,
+                        }, ensure_ascii=False).encode("utf-8")
+                        _req = _ureq.Request(
+                            f"{_up_url}/agent/question",
+                            data=_body,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        _ureq.urlopen(_req, timeout=5).read()
+                        _post_ok = True
+                        print(f"\n[team] 已向上游节点提问 (qid={_qid[:8]}…)")
+                    except Exception as _pe:
+                        print(f"\n[team] 无法联系上游节点 ({_pe})，转为等待用户输入")
+                    if _post_ok:
                         try:
-                            _body = json.dumps({
-                                "question_id": _qid,
-                                "worker_id": _wid,
-                                "content": _q_content,
-                            }, ensure_ascii=False).encode("utf-8")
-                            _req = _ureq.Request(
-                                f"{_sup_url}/agent/question",
-                                data=_body,
-                                headers={"Content-Type": "application/json"},
-                                method="POST",
-                            )
-                            _ureq.urlopen(_req, timeout=5).read()
-                            _post_ok = True
-                            print(f"\n[team] 已向主管提问 (qid={_qid[:8]}…)")
-                        except Exception as _pe:
-                            print(f"\n[team] 无法联系主管 ({_pe})，转为等待用户输入")
-                        if _post_ok:
-                            try:
-                                _answer = _tapi.wait_for_answer(_qid, supervisor_url=_sup_url)
-                                state.short_term.append({
-                                    "role": "user",
-                                    "content": t("marker.user_info", content=f"[主管回复] {_answer}"),
-                                })
-                                if state.persistence is not None:
-                                    state.persistence.append_short_term(state.short_term[-1])
-                                    state.persistence.checkpoint(state)
-                                state.meta.pop("paused", None)
-                                state.meta.pop("awaiting_input", None)
-                                _worker_routed = True
-                            except RuntimeError as _offline_err:
-                                print(f"\n[team] {_offline_err}，升级为直接等待用户输入")
+                            _answer = _tapi.wait_for_answer(_qid, upstream_url=_up_url)
+                            state.short_term.append({
+                                "role": "user",
+                                "content": t("marker.user_info", content=f"[上游节点回复] {_answer}"),
+                            })
+                            if state.persistence is not None:
+                                state.persistence.append_short_term(state.short_term[-1])
+                                state.persistence.checkpoint(state)
+                            state.meta.pop("paused", None)
+                            state.meta.pop("awaiting_input", None)
+                            _upstream_routed = True
+                        except RuntimeError as _offline_err:
+                            print(f"\n[team] {_offline_err}，升级为直接等待用户输入")
 
-                if _worker_routed:
+                if _upstream_routed:
                     continue
 
                 # 普通 ask_user / weak_pass 暂停：Agent 提问，等待用户文字回答

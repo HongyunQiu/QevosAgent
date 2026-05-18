@@ -1,19 +1,21 @@
 """
 Agent 团队通信 HTTP 服务
 ========================
-每个 QevosAgent 实例启动时可开启此服务，暴露以下端点供组网通信：
+每个 Agent 启动时自动开启此服务并持续监听。
+行为由拓扑节点码驱动——节点码为 null 时处于独立模式，设置后进入组网模式。
 
-  GET  /agent/status      轻量状态快照（读 status.json）
+端点：
+  GET  /agent/status      状态快照（读 status.json）
   GET  /agent/snapshot    完整快照：meta + scratchpad + 最近 5 条 short_term
-  GET  /agent/questions   主管侧：获取来自队员的待回答问题列表
+  GET  /agent/questions   获取来自下游节点的待回答问题列表
 
-  POST /agent/inject      注入一条消息到 Agent 上下文（任意方向）
-  POST /agent/task        队员侧：接收主管分配的子任务（包装为 inject）
-  POST /agent/question    主管侧：接收队员提交的问题（含 question_id）
-  POST /agent/answer      队员侧：接收主管对某问题的回答（按 question_id 配对）
+  POST /agent/set_node    设置本节点的拓扑节点码（触发组网模式切换）
+  POST /agent/inject      向本 Agent 注入一条消息
+  POST /agent/task        接收上游分配的子任务（包装为 inject）
+  POST /agent/question    接收下游节点提交的问题（含 question_id + 来源 URL）
+  POST /agent/answer      接收上游对某问题的回答（按 question_id 配对）
 
-所有 POST body 均为 JSON，所有响应也为 JSON。
-使用纯 stdlib（http.server + threading + urllib），不引入额外依赖。
+纯 stdlib 实现，零额外依赖。
 """
 
 from __future__ import annotations
@@ -29,9 +31,47 @@ if TYPE_CHECKING:
     from agent.runtime.user_interrupt import UserInterruptHandler
 
 
-class _Handler(BaseHTTPRequestHandler):
-    """HTTP 请求处理器；通过 self.server.api 引用 TeamApiServer 实例。"""
+# ── 节点码解析 ────────────────────────────────────────────────────────────────
 
+def parse_node_code(code: str) -> Optional[dict]:
+    """
+    解析拓扑节点码，返回结构化字典；null/空字符串返回 None（独立模式）。
+
+    支持格式：
+      "nodeRoot"                          → 顶层节点，无上游
+      "nodeA ^ http://host:9100"          → 有上游（仅 URL）
+      "nodeA ^ nodeRoot @ http://host:9100" → 有上游（含 ID）
+    """
+    code = (code or "").strip()
+    if not code or code.lower() == "null":
+        return None
+
+    if "^" not in code:
+        # 顶层节点，无上游
+        return {"id": code.strip(), "upstream_id": "", "upstream_url": ""}
+
+    self_part, upstream_part = code.split("^", 1)
+    node_id = self_part.strip()
+    upstream_part = upstream_part.strip()
+
+    if "@" in upstream_part:
+        up_id, up_url = upstream_part.split("@", 1)
+        upstream_id = up_id.strip()
+        upstream_url = up_url.strip()
+    else:
+        upstream_id = ""
+        upstream_url = upstream_part
+
+    return {
+        "id": node_id,
+        "upstream_id": upstream_id,
+        "upstream_url": upstream_url.rstrip("/"),
+    }
+
+
+# ── HTTP 请求处理器 ───────────────────────────────────────────────────────────
+
+class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # 静默，避免干扰 agent 控制台输出
 
@@ -55,7 +95,6 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         api: TeamApiServer = self.server.api
         path = self.path.split("?")[0].rstrip("/")
-
         if path == "/agent/status":
             self._send_json(200, api.get_status())
         elif path == "/agent/snapshot":
@@ -73,8 +112,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "invalid JSON body"})
             return
 
-        if path == "/agent/inject":
-            # 通用消息注入（主管 → 队员，或任意方向的指令）
+        if path == "/agent/set_node":
+            node_code = body.get("node_code", "")
+            api.set_topology_node(node_code)
+            self._send_json(200, {"ok": True, "topology_node": api.topology_node})
+
+        elif path == "/agent/inject":
             message = body.get("message", "").strip()
             if not message:
                 self._send_json(400, {"error": "message required"})
@@ -83,31 +126,29 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
 
         elif path == "/agent/task":
-            # 主管向队员分配子任务
             task = body.get("task", "").strip()
-            context = body.get("context", "").strip()
             if not task:
                 self._send_json(400, {"error": "task required"})
                 return
-            msg = f"[新任务来自主管] {task}"
+            context = body.get("context", "").strip()
+            msg = f"[新任务] {task}"
             if context:
                 msg += f"\n[背景] {context}"
             api.inject_message(msg)
             self._send_json(200, {"ok": True})
 
         elif path == "/agent/question":
-            # 队员向主管提问（主管侧接收）
             qid = body.get("question_id", "").strip()
-            worker_id = body.get("worker_id", "unknown")
             content = body.get("content", "").strip()
+            from_id = body.get("from_node_id", "unknown")
+            from_url = body.get("from_node_url", "")
             if not (qid and content):
                 self._send_json(400, {"error": "question_id and content required"})
                 return
-            api.add_question(qid, worker_id, content)
+            api.add_question(qid, from_id, from_url, content)
             self._send_json(200, {"ok": True})
 
         elif path == "/agent/answer":
-            # 主管向队员回答问题（队员侧接收，按 question_id 配对）
             qid = body.get("question_id", "").strip()
             answer = body.get("answer", "").strip()
             if not (qid and answer):
@@ -120,14 +161,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
 
+# ── TeamApiServer ─────────────────────────────────────────────────────────────
+
 class TeamApiServer:
     """
-    Agent 团队通信 HTTP 服务端。
-
-    在后台守护线程运行，与 Agent 主循环通过以下方式共享状态：
-    - inject_message()  → 直接写入 interrupt_handler._cmd_queue（无文件竞争）
-    - add_question()    → 写入本地 _questions 列表 + 通知主管循环
-    - wait_for_answer() → 阻塞轮询 _answer_queue，带主管存活检测
+    每个 Agent 实例的团队通信 HTTP 服务端。
+    在后台守护线程运行，与主循环通过以下方式共享状态：
+    - topology_node       拓扑节点信息（None = 独立模式）
+    - inject_message()    直接写入 interrupt_handler._cmd_queue
+    - wait_for_answer()   阻塞等待上游回答，带存活检测
     """
 
     def __init__(
@@ -140,27 +182,50 @@ class TeamApiServer:
         self.run_dir = Path(run_dir)
         self.interrupt_handler = interrupt_handler
 
-        # 队员侧：等待主管回答的答案队列（question_id → answer）
-        self._answer_queue: queue.Queue[dict] = queue.Queue()
+        # 拓扑节点（None = 独立模式，dict = 组网模式）
+        self.topology_node: Optional[dict] = None
 
-        # 主管侧：来自队员的待回答问题列表
+        # 来自下游的待回答问题
         self._questions: list[dict] = []
         self._questions_lock = threading.Lock()
+
+        # 来自上游的答案（按 question_id 配对）
+        self._answer_queue: queue.Queue[dict] = queue.Queue()
 
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
+    # ── 拓扑节点管理 ──────────────────────────────────────────────────────────
+
+    def set_topology_node(self, node_code: str) -> None:
+        """解析并设置拓扑节点码，注入变更通知到 Agent 上下文。"""
+        self.topology_node = parse_node_code(node_code)
+        if self.topology_node:
+            node_id = self.topology_node["id"]
+            up_url  = self.topology_node.get("upstream_url", "")
+            if up_url:
+                notice = (
+                    f"[拓扑] 节点码已设置：我是 {node_id}，上游节点：{up_url}。"
+                    "后续 ask_user 将自动路由到上游节点。"
+                )
+            else:
+                notice = f"[拓扑] 节点码已设置：我是 {node_id}（顶层节点，无上游）。"
+        else:
+            notice = "[拓扑] 节点码已清除，恢复独立模式。"
+        self.inject_message(notice)
+
     # ── GET 端点实现 ──────────────────────────────────────────────────────────
 
     def get_status(self) -> dict:
-        """读 status.json（轻量，不加载完整 meta）。"""
         try:
-            return json.loads((self.run_dir / "status.json").read_text(encoding="utf-8"))
+            data = json.loads((self.run_dir / "status.json").read_text(encoding="utf-8"))
         except Exception:
-            return {"status": "unknown"}
+            data = {"status": "unknown"}
+        # 附加拓扑信息
+        data["topology_node"] = self.topology_node
+        return data
 
     def get_snapshot(self) -> dict:
-        """返回 meta（过滤大字段）+ scratchpad + 最近 5 条 short_term。"""
         meta: dict = {}
         try:
             mp = self.run_dir / "meta.json"
@@ -192,7 +257,12 @@ class TeamApiServer:
         except Exception:
             pass
 
-        return {"meta": meta, "scratchpad": scratchpad, "recent_short_term": recent}
+        return {
+            "topology_node": self.topology_node,
+            "meta": meta,
+            "scratchpad": scratchpad,
+            "recent_short_term": recent,
+        }
 
     def get_questions(self) -> list[dict]:
         with self._questions_lock:
@@ -201,44 +271,51 @@ class TeamApiServer:
     # ── POST 端点实现 ─────────────────────────────────────────────────────────
 
     def inject_message(self, message: str) -> None:
-        """直接将 /inject 命令压入 interrupt_handler 的命令队列，避免文件 I/O 竞争。"""
+        """直接压入 interrupt_handler._cmd_queue，避免文件 I/O 竞争。"""
         self.interrupt_handler._cmd_queue.put(f"/inject {message}")
 
-    def add_question(self, question_id: str, worker_id: str, content: str) -> None:
-        """主管侧：记录来自队员的问题，并注入提示让主管感知。"""
+    def add_question(
+        self,
+        question_id: str,
+        from_node_id: str,
+        from_node_url: str,
+        content: str,
+    ) -> None:
         from datetime import datetime, timezone
         entry = {
             "question_id": question_id,
-            "worker_id": worker_id,
+            "from_node_id": from_node_id,
+            "from_node_url": from_node_url,
             "content": content,
             "ts": datetime.now(timezone.utc).isoformat(),
         }
         with self._questions_lock:
             self._questions.append(entry)
-        # 通知主管 LLM 有新问题（注入到主管的 short_term）
         self.inject_message(
-            f"[队员 {worker_id} 提问，question_id={question_id}] {content}"
-            f"\n请用 get_pending_questions 查看完整列表，用 answer_worker 回答。"
+            f"[下游节点 {from_node_id} 提问，question_id={question_id}] {content}"
+            "\n请用 get_pending_questions 查看，用 answer_downstream 回答。"
         )
 
     def remove_question(self, question_id: str) -> None:
         with self._questions_lock:
-            self._questions = [q for q in self._questions if q["question_id"] != question_id]
+            self._questions = [
+                q for q in self._questions if q["question_id"] != question_id
+            ]
 
-    # ── 队员侧：等待主管回答（永久等待 + 存活检测）────────────────────────────
+    # ── 等待上游回答（永久等待 + 存活检测）───────────────────────────────────
 
     def wait_for_answer(
         self,
         question_id: str,
-        supervisor_url: str = "",
+        upstream_url: str = "",
         check_interval: float = 0.5,
         ping_interval: float = 10.0,
         max_ping_failures: int = 6,
     ) -> str:
         """
         永久等待，直到收到与 question_id 匹配的回答。
-        期间每 ping_interval 秒 ping 一次主管的 /agent/status。
-        若连续 max_ping_failures 次失败，抛出 RuntimeError 供调用方决策。
+        每 ping_interval 秒 ping 一次上游 /agent/status。
+        连续 max_ping_failures 次失败则抛 RuntimeError，由调用方决策（降级为 ask_user）。
         """
         import time
         import urllib.request
@@ -247,31 +324,28 @@ class TeamApiServer:
         consecutive_fails = 0
 
         while True:
-            # 检查答案队列
             try:
                 item = self._answer_queue.get(timeout=check_interval)
                 if item["question_id"] == question_id:
                     return item["answer"]
-                # 不是给本问题的答案，放回队列（其他问题的配对）
-                self._answer_queue.put(item)
+                self._answer_queue.put(item)  # 不是本问题的答案，放回
             except queue.Empty:
                 pass
 
-            # 定期 ping 主管存活检测
-            if supervisor_url:
+            if upstream_url:
                 now = time.monotonic()
                 if now - last_ping >= ping_interval:
                     last_ping = now
                     try:
                         urllib.request.urlopen(
-                            f"{supervisor_url.rstrip('/')}/agent/status", timeout=3
+                            f"{upstream_url}/agent/status", timeout=3
                         ).read()
                         consecutive_fails = 0
                     except Exception:
                         consecutive_fails += 1
                         if consecutive_fails >= max_ping_failures:
                             raise RuntimeError(
-                                f"主管 {supervisor_url} 疑似离线"
+                                f"上游节点 {upstream_url} 疑似离线"
                                 f"（连续 {max_ping_failures} 次 ping 失败）"
                             )
 
@@ -285,7 +359,7 @@ class TeamApiServer:
             target=server.serve_forever, daemon=True, name="team-api"
         )
         self._thread.start()
-        print(f"[team] Agent API 已启动，端口 {self.port}")
+        print(f"[team] Agent API 已启动，端口 {self.port}（独立模式，等待节点码）")
 
     def stop(self) -> None:
         if self._server:

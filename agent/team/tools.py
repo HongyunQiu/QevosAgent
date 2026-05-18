@@ -1,13 +1,24 @@
 """
-团队协作工具集
-==============
-主管角色工具：查询队员状态、分配任务、获取/回答队员问题。
-队员角色工具：向主管汇报进度和完成情况。
+团队协作工具集（统一，无角色标签）
+====================================
+所有工具对任意节点均可用，行为由当前拓扑节点码决定，而非预设角色。
 
-设计原则：
-- ask_user 在队员模式下由 run_goal.py 透明路由到主管，无需队员 LLM 感知。
-- 本模块只提供"主动发起"的通信工具；被动响应（等待主管回答）由 api.py 处理。
-- 所有 HTTP 调用使用纯 stdlib urllib，无额外依赖。
+拓扑管理：
+  set_node(node_code)               设置本节点的拓扑位置
+  assign_node(target_url, node_code) 向任意节点分配拓扑节点码
+
+通信（按 URL，任意方向）：
+  get_agent_status(agent_url)        查询任意节点状态
+  get_agent_snapshot(agent_url)      查询任意节点完整快照
+  send_to_agent(agent_url, message)  向任意节点注入消息
+  delegate_task(agent_url, task, context) 向任意节点分配子任务
+
+上游感知（依赖本节点的拓扑节点码）：
+  report_to_upstream(message)        向上游节点汇报（自动读取上游 URL）
+
+下游感知（依赖下游节点通过 /agent/question 提交的问题）：
+  get_pending_questions()             获取来自下游的待回答问题
+  answer_downstream(agent_url, question_id, answer) 回答某下游问题
 """
 
 from __future__ import annotations
@@ -30,7 +41,7 @@ def _http_get(url: str, timeout: int = 10) -> dict:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.URLError as e:
-        raise RuntimeError(f"HTTP GET {url} 失败: {e}") from e
+        raise RuntimeError(f"GET {url} 失败: {e}") from e
 
 
 def _http_post(url: str, data: dict, timeout: int = 10) -> dict:
@@ -44,81 +55,77 @@ def _http_post(url: str, data: dict, timeout: int = 10) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.URLError as e:
-        raise RuntimeError(f"HTTP POST {url} 失败: {e}") from e
+        raise RuntimeError(f"POST {url} 失败: {e}") from e
 
 
-# ── 主管侧工具函数 ────────────────────────────────────────────────────────────
+def _get_team_api(state: "AgentState"):
+    api = state.meta.get("_team_api")
+    if api is None:
+        raise RuntimeError("Team API 未启动")
+    return api
 
-def tool_get_worker_status(state: "AgentState", worker_url: str) -> ToolResult:
+
+# ── 拓扑管理工具 ──────────────────────────────────────────────────────────────
+
+def tool_set_node(state: "AgentState", node_code: str) -> ToolResult:
+    """设置本节点的拓扑节点码，进入组网模式；传入 'null' 退出组网模式。"""
     try:
-        data = _http_get(f"{worker_url.rstrip('/')}/agent/status")
-        return ToolResult(success=True, output=data)
+        api = _get_team_api(state)
+        api.set_topology_node(node_code)
+        return ToolResult(success=True, output={
+            "ok": True,
+            "topology_node": api.topology_node,
+        })
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
 
-def tool_get_worker_snapshot(state: "AgentState", worker_url: str) -> ToolResult:
-    try:
-        data = _http_get(f"{worker_url.rstrip('/')}/agent/snapshot")
-        return ToolResult(success=True, output=data)
-    except Exception as e:
-        return ToolResult(success=False, output=None, error=str(e))
-
-
-def tool_get_pending_questions(state: "AgentState") -> ToolResult:
-    """获取所有队员提交的待回答问题（从本地 team API 缓存读取，无网络调用）。"""
-    team_api = state.meta.get("_team_api")
-    if team_api is None:
-        return ToolResult(success=False, output=None, error="Team API 未启动（非组网模式）")
-    questions = team_api.get_questions()
-    return ToolResult(
-        success=True,
-        output={"questions": questions, "count": len(questions)},
-    )
-
-
-def tool_answer_worker(
+def tool_assign_node(
     state: "AgentState",
-    worker_id: str,
-    question_id: str,
-    answer: str,
+    target_url: str,
+    node_code: str,
 ) -> ToolResult:
-    """向指定队员回答一个问题，通过 question_id 配对确保准确投递。"""
-    workers: dict = state.meta.get("_team_workers", {})
-    worker_url = workers.get(worker_id)
-    if not worker_url:
-        return ToolResult(
-            success=False, output=None,
-            error=f"未知队员 ID: {worker_id}。已知队员: {list(workers.keys())}",
-        )
+    """向任意节点分配拓扑节点码（通常由顶层节点调用）。"""
     try:
-        _http_post(
-            f"{worker_url.rstrip('/')}/agent/answer",
-            {"question_id": question_id, "answer": answer},
+        result = _http_post(
+            f"{target_url.rstrip('/')}/agent/set_node",
+            {"node_code": node_code},
         )
-        # 本地移除已回答的问题
-        team_api = state.meta.get("_team_api")
-        if team_api is not None:
-            team_api.remove_question(question_id)
-        return ToolResult(
-            success=True,
-            output={"ok": True, "worker_id": worker_id, "question_id": question_id},
-        )
+        return ToolResult(success=True, output=result)
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
 
-def tool_ask_worker(
+# ── 通信工具（任意方向，按 URL）──────────────────────────────────────────────
+
+def tool_get_agent_status(state: "AgentState", agent_url: str) -> ToolResult:
+    """查询指定节点的当前状态（轻量，无推理消耗）。"""
+    try:
+        return ToolResult(success=True, output=_http_get(
+            f"{agent_url.rstrip('/')}/agent/status"
+        ))
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+def tool_get_agent_snapshot(state: "AgentState", agent_url: str) -> ToolResult:
+    """获取指定节点的完整快照：状态 + scratchpad + 最近 5 条行动记录。"""
+    try:
+        return ToolResult(success=True, output=_http_get(
+            f"{agent_url.rstrip('/')}/agent/snapshot"
+        ))
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+def tool_send_to_agent(
     state: "AgentState",
-    worker_url: str,
+    agent_url: str,
     message: str,
 ) -> ToolResult:
-    """向指定队员注入一条消息（主管主动询问进度、补充指令等）。"""
+    """向指定节点注入一条消息（对方 LLM 将在下次迭代中感知）。"""
     try:
-        _http_post(
-            f"{worker_url.rstrip('/')}/agent/inject",
-            {"message": message},
-        )
+        _http_post(f"{agent_url.rstrip('/')}/agent/inject", {"message": message})
         return ToolResult(success=True, output={"ok": True})
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
@@ -126,158 +133,191 @@ def tool_ask_worker(
 
 def tool_delegate_task(
     state: "AgentState",
-    worker_url: str,
+    agent_url: str,
     task: str,
     context: str = "",
 ) -> ToolResult:
-    """向指定队员分配一个子任务，附带可选背景说明。"""
+    """向指定节点分配一个子任务，附带可选背景说明。"""
     try:
         _http_post(
-            f"{worker_url.rstrip('/')}/agent/task",
+            f"{agent_url.rstrip('/')}/agent/task",
             {"task": task, "context": context},
         )
+        return ToolResult(success=True, output={
+            "ok": True,
+            "agent_url": agent_url,
+            "task_preview": task[:100],
+        })
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+# ── 上游感知工具（自动读取拓扑节点码中的上游 URL）────────────────────────────
+
+def tool_report_to_upstream(state: "AgentState", message: str) -> ToolResult:
+    """向上游节点发送汇报消息（自动从拓扑节点码获取上游地址）。"""
+    try:
+        api = _get_team_api(state)
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+    node = api.topology_node
+    if not node or not node.get("upstream_url"):
         return ToolResult(
-            success=True,
-            output={"ok": True, "worker_url": worker_url, "task_preview": task[:100]},
+            success=False, output=None,
+            error="当前无上游节点（独立模式或顶层节点），无法汇报",
         )
-    except Exception as e:
-        return ToolResult(success=False, output=None, error=str(e))
-
-
-# ── 队员侧工具函数 ────────────────────────────────────────────────────────────
-
-def _get_team_config(state: "AgentState") -> tuple[str, str]:
-    """返回 (supervisor_url, worker_id)，若未配置则 supervisor_url 为空字符串。"""
-    cfg: dict = state.meta.get("_team_mode") or {}
-    return cfg.get("supervisor_url", ""), cfg.get("worker_id", "unknown")
-
-
-def tool_report_progress(state: "AgentState", summary: str) -> ToolResult:
-    """向主管汇报当前工作进度。"""
-    supervisor_url, worker_id = _get_team_config(state)
-    if not supervisor_url:
-        return ToolResult(success=False, output=None, error="未配置主管 URL（非队员模式）")
     try:
         _http_post(
-            f"{supervisor_url.rstrip('/')}/agent/inject",
-            {"message": f"[队员 {worker_id} 进度汇报] {summary}"},
+            f"{node['upstream_url']}/agent/inject",
+            {"message": f"[节点 {node['id']} 汇报] {message}"},
         )
         return ToolResult(success=True, output={"ok": True})
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
 
-def tool_report_done(state: "AgentState", result: str) -> ToolResult:
-    """向主管汇报子任务已完成，并提供结果摘要。"""
-    supervisor_url, worker_id = _get_team_config(state)
-    if not supervisor_url:
-        return ToolResult(success=False, output=None, error="未配置主管 URL（非队员模式）")
+# ── 下游感知工具（处理来自下游节点的问题）────────────────────────────────────
+
+def tool_get_pending_questions(state: "AgentState") -> ToolResult:
+    """获取来自下游节点的待回答问题列表（含 question_id 和来源节点 URL）。"""
     try:
-        _http_post(
-            f"{supervisor_url.rstrip('/')}/agent/inject",
-            {"message": f"[队员 {worker_id} 任务完成] {result}"},
-        )
-        return ToolResult(success=True, output={"ok": True})
+        api = _get_team_api(state)
+        questions = api.get_questions()
+        return ToolResult(success=True, output={
+            "questions": questions,
+            "count": len(questions),
+        })
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
 
-# ── 工具规格工厂 ──────────────────────────────────────────────────────────────
+def tool_answer_downstream(
+    state: "AgentState",
+    agent_url: str,
+    question_id: str,
+    answer: str,
+) -> ToolResult:
+    """
+    回答来自某下游节点的问题（按 question_id 配对）。
+    agent_url 从 get_pending_questions 返回的 from_node_url 字段获取。
+    """
+    try:
+        _http_post(
+            f"{agent_url.rstrip('/')}/agent/answer",
+            {"question_id": question_id, "answer": answer},
+        )
+        try:
+            api = _get_team_api(state)
+            api.remove_question(question_id)
+        except Exception:
+            pass
+        return ToolResult(success=True, output={
+            "ok": True, "question_id": question_id,
+        })
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
 
-def get_supervisor_tools() -> dict[str, ToolSpec]:
-    """返回主管角色的团队工具字典。"""
+
+# ── 统一工具集工厂 ────────────────────────────────────────────────────────────
+
+def get_team_tools() -> dict[str, ToolSpec]:
+    """返回完整团队协作工具集（所有节点均可使用，行为由拓扑节点码决定）。"""
     specs = [
         ToolSpec(
-            name="get_worker_status",
+            name="set_node",
             description=(
-                "查询指定队员 Agent 的当前状态（迭代数、运行状态、是否暂停等）。"
-                "轻量读取，不消耗队员的推理资源。"
-            ),
-            args_schema={"worker_url": "队员 Agent 的 HTTP 地址（如 http://192.168.1.2:9101）"},
-            fn=tool_get_worker_status,
-        ),
-        ToolSpec(
-            name="get_worker_snapshot",
-            description=(
-                "获取队员 Agent 的详细快照：meta 状态 + scratchpad 工作笔记 + 最近 5 条行动记录。"
-                "适合深入了解队员当前工作内容，无需队员消耗推理。"
-            ),
-            args_schema={"worker_url": "队员 Agent 的 HTTP 地址"},
-            fn=tool_get_worker_snapshot,
-        ),
-        ToolSpec(
-            name="get_pending_questions",
-            description=(
-                "获取所有队员提交的待回答问题列表。"
-                "每条包含：question_id、worker_id、问题内容、提交时间。"
-                "使用 answer_worker 工具进行配对回答。"
-            ),
-            args_schema={},
-            fn=tool_get_pending_questions,
-        ),
-        ToolSpec(
-            name="answer_worker",
-            description=(
-                "回答某个队员提出的问题。"
-                "必须提供 question_id（从 get_pending_questions 获取），确保配对准确。"
-                "回答后队员将自动恢复执行。"
+                "设置本节点的拓扑节点码，进入组网模式。"
+                "格式：'nodeA ^ http://upstream:9100'（有上游）或 'nodeRoot'（顶层）。"
+                "传入 'null' 退出组网模式，恢复独立运行。"
+                "设置后，ask_user 将自动路由到上游节点；同时通知本地 LLM 上下文。"
             ),
             args_schema={
-                "worker_id": "队员 ID（如 worker-A）",
-                "question_id": "问题 ID（从 get_pending_questions 获取）",
-                "answer": "回答内容",
+                "node_code": "拓扑节点码字符串，或 'null' 退出组网",
             },
-            fn=tool_answer_worker,
+            fn=tool_set_node,
         ),
         ToolSpec(
-            name="ask_worker",
+            name="assign_node",
             description=(
-                "向指定队员注入一条消息（主动询问进度、发送补充指令等）。"
-                "队员的 LLM 将在下次迭代时处理此消息。"
+                "向任意节点分配拓扑节点码（通常由顶层节点在架构阶段调用）。"
+                "对方收到后立即进入组网模式，并感知自身的上游关系。"
             ),
             args_schema={
-                "worker_url": "队员 Agent 的 HTTP 地址",
-                "message": "要发送给队员的消息",
+                "target_url": "目标节点的 HTTP 地址（如 http://192.168.1.2:9100）",
+                "node_code": "要分配给目标节点的拓扑节点码",
             },
-            fn=tool_ask_worker,
+            fn=tool_assign_node,
+        ),
+        ToolSpec(
+            name="get_agent_status",
+            description="查询指定节点的当前运行状态（轻量，不消耗对方推理资源）。",
+            args_schema={"agent_url": "目标节点的 HTTP 地址"},
+            fn=tool_get_agent_status,
+        ),
+        ToolSpec(
+            name="get_agent_snapshot",
+            description=(
+                "获取指定节点的完整快照：拓扑信息 + meta 状态 + scratchpad + 最近 5 条行动记录。"
+                "适合深入了解对方的当前工作内容，无需对方消耗推理。"
+            ),
+            args_schema={"agent_url": "目标节点的 HTTP 地址"},
+            fn=tool_get_agent_snapshot,
+        ),
+        ToolSpec(
+            name="send_to_agent",
+            description=(
+                "向指定节点注入一条消息（对方 LLM 在下次迭代时感知并处理）。"
+                "适合主动询问进度、发送补充指令等场景。"
+            ),
+            args_schema={
+                "agent_url": "目标节点的 HTTP 地址",
+                "message": "要发送的消息内容",
+            },
+            fn=tool_send_to_agent,
         ),
         ToolSpec(
             name="delegate_task",
-            description=(
-                "向指定队员分配一个子任务，附带可选背景信息。"
-                "适合任务分解后将子任务派发给相应队员执行。"
-            ),
+            description="向指定节点分配一个子任务，附带可选背景说明。",
             args_schema={
-                "worker_url": "队员 Agent 的 HTTP 地址",
+                "agent_url": "目标节点的 HTTP 地址",
                 "task": "子任务描述",
                 "context": "背景信息（可选）",
             },
             fn=tool_delegate_task,
         ),
-    ]
-    return {s.name: s for s in specs}
-
-
-def get_worker_tools() -> dict[str, ToolSpec]:
-    """返回队员角色的团队工具字典。"""
-    specs = [
         ToolSpec(
-            name="report_progress",
+            name="report_to_upstream",
             description=(
-                "向主管汇报当前工作进度。"
-                "建议在完成重要阶段或遇到关键发现时调用。"
+                "向上游节点发送汇报消息（自动从本节点的拓扑节点码获取上游地址）。"
+                "适合阶段性进展汇报或任务完成通知。"
             ),
-            args_schema={"summary": "进度摘要（已完成的内容和下一步计划）"},
-            fn=tool_report_progress,
+            args_schema={"message": "汇报内容"},
+            fn=tool_report_to_upstream,
         ),
         ToolSpec(
-            name="report_done",
+            name="get_pending_questions",
             description=(
-                "向主管汇报子任务已完成，提供结果摘要。"
-                "调用后主管将知晓本队员的子任务已结束。"
+                "获取来自下游节点的待回答问题列表。"
+                "每条包含：question_id、from_node_id、from_node_url、问题内容、时间。"
+                "使用 answer_downstream 进行配对回答。"
             ),
-            args_schema={"result": "任务完成结果摘要"},
-            fn=tool_report_done,
+            args_schema={},
+            fn=tool_get_pending_questions,
+        ),
+        ToolSpec(
+            name="answer_downstream",
+            description=(
+                "回答来自某下游节点的问题（按 question_id 精确配对）。"
+                "agent_url 从 get_pending_questions 的 from_node_url 字段获取。"
+                "回答后对方将自动恢复执行。"
+            ),
+            args_schema={
+                "agent_url": "提问节点的 HTTP 地址（from_node_url）",
+                "question_id": "问题 ID（从 get_pending_questions 获取）",
+                "answer": "回答内容",
+            },
+            fn=tool_answer_downstream,
         ),
     ]
     return {s.name: s for s in specs}
