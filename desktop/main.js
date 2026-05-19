@@ -251,8 +251,21 @@ async function startDashboard() {
   dashboardStarted = true;
 
   PORT = await findFreePort(PORT);
-  const userData = app.getPath('userData');
+  const userData   = app.getPath('userData');
+  const userSkills = path.join(userData, 'SKILLS');
   fs.mkdirSync(userData, { recursive: true });
+
+  // Seed built-in skills into userData on first launch so they remain editable
+  // and the directory is writable (app bundle is read-only on macOS).
+  if (!fs.existsSync(userSkills)) {
+    const bundleSkills = path.join(APP_ROOT, 'SKILLS');
+    if (fs.existsSync(bundleSkills)) {
+      fs.mkdirSync(userSkills, { recursive: true });
+      for (const f of fs.readdirSync(bundleSkills)) {
+        fs.copyFileSync(path.join(bundleSkills, f), path.join(userSkills, f));
+      }
+    }
+  }
 
   process.env.DASHBOARD_PORT   = String(PORT);
   process.env.PYTHONUTF8       = '1';
@@ -264,6 +277,7 @@ async function startDashboard() {
   process.env.RUNS_DIR         = path.join(userData, 'runs');
   process.env.AGENT_CONCEPT    = path.join(userData, 'memory_macro.md');
   process.env.AGENT_EPISODIC   = path.join(userData, 'memory_episodic.jsonl');
+  process.env.SKILLS_DIR       = userSkills;
 
   const serverPath = path.join(APP_ROOT, 'dashboard', 'server.js');
   try {
