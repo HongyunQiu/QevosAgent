@@ -257,6 +257,7 @@ async function startDashboard() {
   process.env.ELECTRON         = '1';
   process.env.AGENT_DIR        = APP_ROOT;
   process.env.PYTHONPATH       = APP_ROOT;
+  process.env.APP_VERSION      = app.getVersion();
 
   const serverPath = path.join(APP_ROOT, 'dashboard', 'server.js');
   try {
@@ -545,6 +546,7 @@ function registerIPC() {
       if (v && v.trim()) merged[k] = v.trim();
     }
     const content = Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
+    fs.mkdirSync(DOT_ENV_DIR, { recursive: true });
     fs.writeFileSync(envPath, content, 'utf8');
     for (const [k, v] of Object.entries(merged)) process.env[k] = v;
     return { ok: true };

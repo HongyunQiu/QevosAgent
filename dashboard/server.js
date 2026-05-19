@@ -357,11 +357,13 @@ const SKILLS_DIR = path.resolve(process.env.SKILLS_DIR || path.join(AGENT_DIR, '
 const PUBLIC     = path.join(__dirname, 'public');
 const POLL_MS    = parseInt(process.env.POLL_MS || '500', 10);
 
-let APP_VERSION = 'dev';
-try {
-  const pkgPath = path.join(__dirname, '..', 'desktop', 'package.json');
-  APP_VERSION = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version || 'dev';
-} catch {}
+let APP_VERSION = process.env.APP_VERSION || 'dev';
+if (APP_VERSION === 'dev') {
+  try {
+    const pkgPath = path.join(__dirname, '..', 'desktop', 'package.json');
+    APP_VERSION = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).version || 'dev';
+  } catch {}
+}
 // Python command — default to 'python' so the calling conda env is used
 const PYTHON_CMD = process.env.PYTHON_CMD || 'python';
 
@@ -763,6 +765,14 @@ function broadcast() {
 /** Push a web_chat message (agent → user) to all WebSocket clients. */
 function broadcastWebChat(msg) {
   const data = JSON.stringify({ type: 'web_chat', ...msg });
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  }
+}
+
+/** Notify browser clients to open a view tab (remote-browser support). */
+function broadcastOpenView(displayId, path, title) {
+  const data = JSON.stringify({ type: 'open-view', displayId, path, title });
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
   }
@@ -1426,6 +1436,11 @@ const server = http.createServer(async (req, res) => {
         title:     body.title || body.display_id,
         displayId: body.display_id,
       });
+      // Also notify browser clients so remote browsers (e.g. computer A) can open the view.
+      // Use pathname only so the client reconstructs the URL with its own origin/host.
+      let viewPath = body.url;
+      try { viewPath = new URL(body.url).pathname; } catch {}
+      broadcastOpenView(body.display_id, viewPath, body.title || body.display_id);
       json(200, { ok: true });
     } catch (e) { json(400, { error: String(e) }); }
     return;
