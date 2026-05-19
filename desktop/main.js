@@ -49,7 +49,9 @@ app.setAppUserModelId('com.qevosagent.desktop');
 
 const VENDOR_APP  = path.join(__dirname, 'vendor', 'app');
 const APP_ROOT    = app.isPackaged ? VENDOR_APP : path.resolve(__dirname, '..');
-const DOT_ENV_DIR = path.resolve(__dirname, '..');
+// When packaged, write user data (e.g. .env) to the OS user-data dir so the
+// app bundle stays read-only (required on macOS /Applications).
+const DOT_ENV_DIR = app.isPackaged ? app.getPath('userData') : path.resolve(__dirname, '..');
 
 // ── Load .env ──────────────────────────────────────────────────────────────
 
