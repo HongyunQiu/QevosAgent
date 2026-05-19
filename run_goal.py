@@ -600,8 +600,43 @@ def main():
                 f"\n{BLUE}{t('rg.nostop_prompt')}{RESET}",
                 end="", flush=True,
             )
-            next_input = interrupt_handler.get_user_input("")
-            if next_input is None or not next_input.strip():
+            # 同时轮询两个队列：
+            #   _cmd_queue  — 看板 /inject 和 view.html 聊天消息走这里
+            #   _input_queue — stdin / /newtask / 看板 nostop-idle 专用路径走这里
+            # 只用 get_user_input() 会错过 _cmd_queue，导致 web 端输入无法唤醒 Agent。
+            import time as _ni_rt
+            import queue as _ni_q
+            next_input = None
+            _ni_stop = False
+            while True:
+                _ni_cmd = interrupt_handler.poll_command()
+                if _ni_cmd is not None and _ni_cmd != "/__pause__":
+                    if _ni_cmd.startswith("/inject "):
+                        _inject_content = _ni_cmd[len("/inject "):].strip()
+                        if _inject_content:
+                            next_input = _inject_content
+                            break
+                        # 空 inject，继续等待
+                    elif _ni_cmd.lower() in ("/exit", "/quit"):
+                        _ni_stop = True
+                        break
+                    else:
+                        _r = interrupt_handler.process_command(_ni_cmd, state)
+                        if _r == "stop":
+                            _ni_stop = True
+                            break
+                    continue
+                try:
+                    _ni_text = interrupt_handler._input_queue.get_nowait()
+                    if _ni_text is None:
+                        _ni_stop = True
+                        break
+                    next_input = _ni_text
+                    break
+                except _ni_q.Empty:
+                    pass
+                _ni_rt.sleep(0.1)
+            if _ni_stop or not next_input or not next_input.strip():
                 break
             if next_input.strip().lower() in ("/exit", "exit"):
                 break
