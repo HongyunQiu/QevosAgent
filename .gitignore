@@ -52,3 +52,7 @@ config/
 
 SKILLS/*
 CLAUDE.md
+
+# Local release scripts (private build tooling)
+release.ps1
+release.sh
