@@ -200,9 +200,11 @@ class TeamApiServer:
     def set_topology_node(self, node_code: str) -> None:
         """解析并设置拓扑节点码，注入变更通知到 Agent 上下文。"""
         self.topology_node = parse_node_code(node_code)
+        team_node_file = self.run_dir / "team_node.json"
         if self.topology_node:
             node_id = self.topology_node["id"]
             up_url  = self.topology_node.get("upstream_url", "")
+            team_node_file.write_text(json.dumps({"id": node_id}), encoding="utf-8")
             if up_url:
                 notice = (
                     f"[拓扑] 节点码已设置：我是 {node_id}，上游节点：{up_url}。"
@@ -211,6 +213,7 @@ class TeamApiServer:
             else:
                 notice = f"[拓扑] 节点码已设置：我是 {node_id}（顶层节点，无上游）。"
         else:
+            team_node_file.unlink(missing_ok=True)
             notice = "[拓扑] 节点码已清除，恢复独立模式。"
         self.inject_message(notice)
 

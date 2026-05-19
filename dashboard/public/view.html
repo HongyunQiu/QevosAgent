@@ -441,6 +441,7 @@ let activeTabId = initTab || null;
 let chatExpanded = false;
 let chatUnread   = 0;
 let agentAlive   = false;
+let _wasAlive    = false;  // detect alive→offline transition
 let pendingImage = null; // { dataUrl, filename, mimeType }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
@@ -754,6 +755,7 @@ function clearPendingImage() {
 }
 
 async function sendMessage() {
+  if (!agentAlive) return;
   const input = document.getElementById('chat-input');
   const msg = input.value.trim();
   if (!msg && !pendingImage) return;
@@ -804,10 +806,24 @@ document.getElementById('chat-input').addEventListener('keydown', e => {
 });
 
 // ── Run info ──────────────────────────────────────────────────────────────────
+function _setChatOffline() {
+  const chatInput = document.getElementById('chat-input');
+  const chatSend  = document.getElementById('chat-send');
+  chatInput.disabled    = true;
+  chatInput.placeholder = uiT('view.agent_offline');
+  chatSend.disabled     = true;
+  appendChatMessage('agent', uiT('view.agent_offline_msg'));
+}
+
 function updateRunInfo(id, alive) {
   document.getElementById('run-label').textContent = id || runId || '—';
   const dot = document.getElementById('alive-dot');
   dot.className = `dot${alive ? ' alive' : ''}`;
+
+  if (_wasAlive && !alive) {
+    _setChatOffline();
+  }
+  _wasAlive = alive;
 }
 
 if (runId) updateRunInfo(runId, false);

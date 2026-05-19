@@ -703,6 +703,36 @@ def main():
                 _finish_error   = None
             state.persistence.finish(state, outcome=_finish_outcome, error=_finish_error)
 
+        # If web_notify was used this session, write a final web_chat message so
+        # view.html immediately knows the agent has exited (before PID-based detection).
+        if state is not None and _finish_outcome in ("done", "failed"):
+            try:
+                import time as _wct
+                _wc_fp = state.persistence.run_dir / "web_chat.jsonl"
+                if _wc_fp.exists():
+                    _lang = os.environ.get("QEVOS_LANG", "zh")
+                    if _finish_outcome == "done":
+                        _wc_msg = (
+                            "✓ 任务已完成，会话结束。"
+                            if _lang.startswith("zh") else
+                            "✓ Task complete — session ended."
+                        )
+                    else:
+                        _wc_msg = (
+                            "✗ Agent 已退出（出现错误）。"
+                            if _lang.startswith("zh") else
+                            "✗ Agent exited (error occurred)."
+                        )
+                    _wc_record = json.dumps(
+                        {"role": "agent", "message": _wc_msg, "display_id": "*",
+                         "ts": _wct.time()},
+                        ensure_ascii=False,
+                    )
+                    with open(_wc_fp, "a", encoding="utf-8") as _wcf:
+                        _wcf.write(_wc_record + "\n")
+            except Exception:
+                pass
+
         # Remove PID file so the dashboard immediately sees process is gone
         if _pid_file is not None:
             try:

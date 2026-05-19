@@ -20,6 +20,7 @@
 const http         = require('http');
 const fs           = require('fs');
 const path         = require('path');
+const os           = require('os');
 const { spawn }    = require('child_process');
 const WebSocket    = require('ws');
 const EventEmitter = require('events');
@@ -330,6 +331,25 @@ async function cdpBrowserAction(displayId, action, payload) {
   }
 }
 
+// ── Network info (computed once at startup) ────────────────────────────────
+
+function getLanIps() {
+  const ips = [];
+  for (const ifaces of Object.values(os.networkInterfaces())) {
+    for (const iface of ifaces) {
+      if (iface.family !== 'IPv4' || iface.internal) continue;
+      const p = iface.address.split('.').map(Number);
+      const isPrivate = p[0] === 10
+        || (p[0] === 172 && p[1] >= 16 && p[1] <= 31)
+        || (p[0] === 192 && p[1] === 168);
+      if (isPrivate) ips.push(iface.address);
+    }
+  }
+  return ips;
+}
+
+const NETWORK_INFO = { hostname: os.hostname(), ips: getLanIps() };
+
 const PORT       = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
 const RUNS_DIR   = path.resolve(process.env.RUNS_DIR || path.join(__dirname, '..', 'runs'));
 const AGENT_DIR  = path.resolve(process.env.AGENT_DIR || path.join(__dirname, '..'));
@@ -383,6 +403,8 @@ let state = {
   agentAlive:   false,  // true iff the agent process is confirmed running right now
   webDisplays:  {},     // { display_id: { content_type, title, content, updated_at } }
   fileTabs:     null,   // { tabs: [...], active: string } loaded from file_tabs.json
+  networkInfo:  NETWORK_INFO,
+  teamNodeId:   null,
 };
 
 let _linesProcessed        = 0;
@@ -614,6 +636,7 @@ function poll() {
     state.meta        = {};
     state.webDisplays = {};
     state.fileTabs    = null;
+    state.teamNodeId  = null;
     _linesProcessed        = 0;
     _iterCounter           = 0;
     _mtimes                = {};
@@ -666,6 +689,14 @@ function poll() {
     if (changed(tabsFp)) {
       const t = readJSON(tabsFp);
       if (t) { state.fileTabs = t; dirty = true; }
+    }
+
+    // ── team_node.json ───────────────────────────────────────────────────────
+    const teamNodeFp = path.join(dir, 'team_node.json');
+    if (changed(teamNodeFp)) {
+      const tn = readJSON(teamNodeFp);
+      const newId = (tn && tn.id) || null;
+      if (newId !== state.teamNodeId) { state.teamNodeId = newId; dirty = true; }
     }
 
     // ── web_chat.jsonl ───────────────────────────────────────────────────────

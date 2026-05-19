@@ -188,7 +188,22 @@ input, textarea { font-family: inherit; font-size: inherit; }
 }
 .ws-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
 .ws-dot.ok { background: var(--green); }
-.ws-port { font-family: var(--mono); font-size: 10.5px; opacity: 0.65; letter-spacing: 0.02em; }
+.ws-port {
+  font-family: var(--mono); font-size: 10.5px; opacity: 0.65; letter-spacing: 0.02em;
+  max-width: 60px; overflow: hidden; white-space: nowrap;
+  transition: max-width 0.2s ease, opacity 0.15s ease;
+}
+
+.ws-pill { cursor: default; }
+.ws-info-slot {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.02em;
+  overflow: hidden; max-width: 0; opacity: 0;
+  white-space: nowrap;
+  transition: max-width 0.25s ease;
+}
+.ws-pill.hovering .ws-port       { opacity: 0; max-width: 0; }
+.ws-pill.hovering .ws-info-slot  { max-width: 180px; }
+@keyframes ws-fade { 0%{opacity:0;transform:translateY(3px)} 100%{opacity:0.85;transform:translateY(0)} }
 
 /* ── Theme toggle button ─────────────────────────────────────────────── */
 .theme-btn {
@@ -1062,9 +1077,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
       <span id="themeIcon">☀</span>
     </button>
     <div class="topbar-sep"></div>
-    <div class="ws-pill">
+    <div class="ws-pill" id="wsPill">
       <div class="ws-dot" id="wsDot"></div>
       <span class="ws-port" id="wsPort"></span>
+      <span class="ws-info-slot" id="wsInfoSlot"></span>
       <span id="wsLabel">Connecting…</span>
     </div>
     <button class="mobile-panel-btn" id="mobilePanelBtn" onclick="toggleMobileRightPanel()" title="Panel">⊞</button>
@@ -1373,6 +1389,7 @@ function handleMsg(msg) {
     // automatically follow the new activeRunId when it changes.
     const prevActiveRunId = gState && gState.activeRunId;
     gState = msg;
+    if (window._wsPillUpdateInfo) window._wsPillUpdateInfo(msg.networkInfo, msg.teamNodeId);
     // Clear the local launching flag once the server confirms launch is done
     if (!msg.launching) gIsLaunching = false;
 
@@ -3319,6 +3336,56 @@ function toggleTheme() {
 
 document.getElementById('wsPort').textContent = ':' + (location.port || '80');
 document.getElementById('nostopBtn').title = uiT('nostop.title');
+
+// ── ws-pill hover info cycle ──────────────────────────────────────────────
+(function () {
+  let _cycleItems  = [];   // populated from WS state
+  let _cycleTimer  = null;
+  let _cycleIdx    = 0;
+  const pill       = document.getElementById('wsPill');
+  const slot       = document.getElementById('wsInfoSlot');
+
+  function buildItems(networkInfo, teamNodeId) {
+    const items = [];
+    const ni = networkInfo || {};
+    (ni.ips || []).forEach(ip => items.push('IP · ' + ip));
+    if (ni.hostname) items.push('HOST · ' + ni.hostname);
+    if (teamNodeId)  items.push('ID · ' + teamNodeId);
+    _cycleItems = items;
+  }
+
+  function showSlot(text) {
+    slot.textContent = text;
+    slot.style.animation = 'none';
+    void slot.offsetHeight;   // reflow to restart animation
+    slot.style.animation = 'ws-fade 0.2s ease forwards';
+  }
+
+  function startCycle() {
+    if (!_cycleItems.length) return;
+    _cycleIdx = 0;
+    showSlot(_cycleItems[0]);
+    pill.classList.add('hovering');
+    _cycleTimer = setInterval(() => {
+      _cycleIdx = (_cycleIdx + 1) % _cycleItems.length;
+      showSlot(_cycleItems[_cycleIdx]);
+    }, 2000);
+  }
+
+  function stopCycle() {
+    clearInterval(_cycleTimer);
+    _cycleTimer = null;
+    pill.classList.remove('hovering');
+    slot.textContent = '';
+  }
+
+  pill.addEventListener('mouseenter', () => { if (_cycleItems.length) startCycle(); });
+  pill.addEventListener('mouseleave', stopCycle);
+
+  // Expose so handleMsg can update items
+  window._wsPillUpdateInfo = buildItems;
+})();
+
 connectWs();
 
 fetch('/api/version').then(r => r.json()).then(d => {

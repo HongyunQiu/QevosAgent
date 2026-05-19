@@ -32,6 +32,8 @@
       'view.empty_table':      '空表格',
       'view.web_user_prefix':  '[Web用户]',
       'view.send_failed':      '⚠ 发送失败: {msg}',
+      'view.agent_offline':    'Agent 已下线，会话已结束',
+      'view.agent_offline_msg':'⚫ Agent 已退出，本次会话结束。',
     },
     en: {
       // index.html
@@ -62,6 +64,8 @@
       'view.empty_table':      'Empty table',
       'view.web_user_prefix':  '[Web user]',
       'view.send_failed':      '⚠ Send failed: {msg}',
+      'view.agent_offline':    'Agent offline — session ended',
+      'view.agent_offline_msg':'⚫ Agent disconnected — session ended.',
     },
   };
 
