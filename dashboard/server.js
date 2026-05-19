@@ -351,9 +351,11 @@ function getLanIps() {
 const NETWORK_INFO = { hostname: os.hostname(), ips: getLanIps() };
 
 const PORT       = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
-const RUNS_DIR   = path.resolve(process.env.RUNS_DIR || path.join(__dirname, '..', 'runs'));
-const AGENT_DIR  = path.resolve(process.env.AGENT_DIR || path.join(__dirname, '..'));
-const SKILLS_DIR = path.resolve(process.env.SKILLS_DIR || path.join(AGENT_DIR, 'SKILLS'));
+const RUNS_DIR        = path.resolve(process.env.RUNS_DIR        || path.join(__dirname, '..', 'runs'));
+const AGENT_DIR       = path.resolve(process.env.AGENT_DIR       || path.join(__dirname, '..'));
+const SKILLS_DIR      = path.resolve(process.env.SKILLS_DIR      || path.join(AGENT_DIR, 'SKILLS'));
+const MEMORY_CONCEPT  = path.resolve(process.env.AGENT_CONCEPT   || path.join(AGENT_DIR, 'memory_macro.md'));
+const MEMORY_EPISODIC = path.resolve(process.env.AGENT_EPISODIC  || path.join(AGENT_DIR, 'memory_episodic.jsonl'));
 const PUBLIC     = path.join(__dirname, 'public');
 const POLL_MS    = parseInt(process.env.POLL_MS || '500', 10);
 
@@ -1073,7 +1075,7 @@ const server = http.createServer(async (req, res) => {
 
   // ── GET /api/memory-concept  ─────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/memory-concept') {
-    const fp = path.join(AGENT_DIR, 'memory_macro.md');
+    const fp = MEMORY_CONCEPT;
     if (!fs.existsSync(fp)) { json(200, { content: null, exists: false }); return; }
     const content = readText(fp) || '';
     json(200, { content });
@@ -1085,7 +1087,8 @@ const server = http.createServer(async (req, res) => {
     try {
       const { content } = JSON.parse(await readBody(req));
       if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
-      fs.writeFileSync(path.join(AGENT_DIR, 'memory_macro.md'), content, 'utf8');
+      fs.mkdirSync(path.dirname(MEMORY_CONCEPT), { recursive: true });
+      fs.writeFileSync(MEMORY_CONCEPT, content, 'utf8');
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;
@@ -1093,7 +1096,7 @@ const server = http.createServer(async (req, res) => {
 
   // ── GET /api/memory-episodic  ────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/memory-episodic') {
-    const fp = path.join(AGENT_DIR, 'memory_episodic.jsonl');
+    const fp = MEMORY_EPISODIC;
     if (!fs.existsSync(fp)) { json(200, { content: null, exists: false }); return; }
     const content = readText(fp) || '';
     json(200, { content });
@@ -1105,7 +1108,8 @@ const server = http.createServer(async (req, res) => {
     try {
       const { content } = JSON.parse(await readBody(req));
       if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
-      fs.writeFileSync(path.join(AGENT_DIR, 'memory_episodic.jsonl'), content, 'utf8');
+      fs.mkdirSync(path.dirname(MEMORY_EPISODIC), { recursive: true });
+      fs.writeFileSync(MEMORY_EPISODIC, content, 'utf8');
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;

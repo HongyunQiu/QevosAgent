@@ -251,6 +251,9 @@ async function startDashboard() {
   dashboardStarted = true;
 
   PORT = await findFreePort(PORT);
+  const userData = app.getPath('userData');
+  fs.mkdirSync(userData, { recursive: true });
+
   process.env.DASHBOARD_PORT   = String(PORT);
   process.env.PYTHONUTF8       = '1';
   process.env.PYTHONIOENCODING = 'utf-8';
@@ -258,6 +261,9 @@ async function startDashboard() {
   process.env.AGENT_DIR        = APP_ROOT;
   process.env.PYTHONPATH       = APP_ROOT;
   process.env.APP_VERSION      = app.getVersion();
+  process.env.RUNS_DIR         = path.join(userData, 'runs');
+  process.env.AGENT_CONCEPT    = path.join(userData, 'memory_macro.md');
+  process.env.AGENT_EPISODIC   = path.join(userData, 'memory_episodic.jsonl');
 
   const serverPath = path.join(APP_ROOT, 'dashboard', 'server.js');
   try {
