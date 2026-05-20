@@ -159,6 +159,7 @@ class OpenAIBackend(LLMBackend):
         base_url: Optional[str] = None,
         max_tokens: Optional[int] = None,
         thinking_budget: Optional[int] = None,
+        temperature: Optional[float] = None,
     ):
         """OpenAI-compatible backend.
 
@@ -169,6 +170,12 @@ class OpenAIBackend(LLMBackend):
         thinking_budget: token budget for extended thinking (0 = disabled).
           Env: OPENAI_THINKING_BUDGET (default 0).
           Can be changed at runtime: llm.thinking_budget = N
+
+        temperature: sampling temperature. Defaults to 0.3 via env LLM_TEMPERATURE.
+          Pass None or set LLM_TEMPERATURE=none to omit the parameter entirely
+          (required by some providers such as reasoning models that reject it).
+          Auto-detected: if the provider returns 400 "Unsupported parameter: temperature",
+          the parameter is dropped and all subsequent calls omit it automatically.
         """
         import openai
         import os
@@ -189,6 +196,16 @@ class OpenAIBackend(LLMBackend):
         if thinking_budget is None:
             thinking_budget = int(os.environ.get("OPENAI_THINKING_BUDGET", "0"))
         self.thinking_budget = max(0, int(thinking_budget))
+        # Sampling temperature. None = omit from request (for providers that reject it).
+        # Env: LLM_TEMPERATURE (float or "none")
+        if temperature is None:
+            _env_temp = os.environ.get("LLM_TEMPERATURE", "0.3")
+            self.temperature: Optional[float] = (
+                None if _env_temp.lower() == "none"
+                else float(_env_temp)
+            )
+        else:
+            self.temperature = temperature
         # Context window: probe server first, fall back to env var / hardcoded default.
         self.context_window = self._probe_context_window()
 
@@ -315,8 +332,9 @@ class OpenAIBackend(LLMBackend):
         kwargs: dict = {
             "model": self.model,
             "messages": full_messages,
-            "temperature": 0.3,
         }
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
         if self._is_official_openai:
             kwargs["max_completion_tokens"] = max_tokens
         else:
@@ -331,7 +349,19 @@ class OpenAIBackend(LLMBackend):
                 extra["thinking"] = {"type": "enabled", "budget_tokens": budget}
             kwargs["extra_body"] = extra
 
-        resp = self.client.chat.completions.create(**kwargs)
+        try:
+            resp = self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            # Auto-detect providers that reject the temperature parameter and retry
+            # without it. The flag is stored on the instance so future calls skip it.
+            if self.temperature is not None and "temperature" in str(e).lower() and (
+                "unsupported parameter" in str(e).lower() or "400" in str(e)
+            ):
+                self.temperature = None
+                kwargs.pop("temperature", None)
+                resp = self.client.chat.completions.create(**kwargs)
+            else:
+                raise
         msg = resp.choices[0].message
         content = getattr(msg, "content", None)
         if content is None:
