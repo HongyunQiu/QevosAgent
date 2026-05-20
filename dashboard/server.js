@@ -540,6 +540,7 @@ function parseLine(raw, lineIdx) {
       const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
       const jsonStr = fenceMatch ? fenceMatch[1].trim() : text;
       action = JSON.parse(jsonStr);
+      if (!action || typeof action !== 'object') return null;
     } catch { return null; }
     const thought = action.thought || null;
     if (action.action === 'tool_call') {

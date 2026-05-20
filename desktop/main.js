@@ -274,9 +274,13 @@ async function startDashboard() {
   process.env.AGENT_DIR        = APP_ROOT;
   process.env.PYTHONPATH       = APP_ROOT;
   process.env.APP_VERSION      = app.getVersion();
-  process.env.RUNS_DIR         = path.join(userData, 'runs');
-  process.env.AGENT_CONCEPT    = path.join(userData, 'memory_macro.md');
-  process.env.AGENT_EPISODIC   = path.join(userData, 'memory_episodic.jsonl');
+  // On macOS/Linux the app bundle is read-only, so user data must live in userData.
+  // On Windows the install directory is writable; keep runs/ there so existing
+  // runs stay visible after upgrades.
+  const userDataDir = process.platform === 'win32' ? APP_ROOT : userData;
+  process.env.RUNS_DIR         = path.join(userDataDir, 'runs');
+  process.env.AGENT_CONCEPT    = path.join(userDataDir, 'memory_macro.md');
+  process.env.AGENT_EPISODIC   = path.join(userDataDir, 'memory_episodic.jsonl');
   process.env.SKILLS_DIR       = userSkills;
 
   const serverPath = path.join(APP_ROOT, 'dashboard', 'server.js');

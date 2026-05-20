@@ -338,6 +338,26 @@ class OpenAIBackend(LLMBackend):
             content = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
         if isinstance(content, str):
             return content
+        # Fallback: if content is still None/empty, try streaming mode.
+        # Some OpenAI-compatible APIs (e.g. certain proxy providers) do not return
+        # content in non-streaming responses but work correctly with stream=True.
+        if content is None:
+            try:
+                stream_kwargs = dict(kwargs)
+                stream_kwargs["stream"] = True
+                stream_resp = self.client.chat.completions.create(**stream_kwargs)
+                parts = []
+                for chunk in stream_resp:
+                    delta = getattr(chunk.choices[0], "delta", None)
+                    if delta is not None:
+                        c = getattr(delta, "content", None)
+                        if c is not None:
+                            parts.append(c)
+                content = "".join(parts)
+                if content:
+                    return content
+            except Exception:
+                pass  # streaming fallback failed, continue to last-resort below
         try:
             return json.dumps(content, ensure_ascii=False)
         except Exception:
@@ -704,10 +724,23 @@ def parse_response(raw: str) -> Action:
     data, exc = _extract_json(raw)
     if data is None:
         if "{" not in raw:
-            # Pure text output — model forgot the JSON protocol entirely.
-            # Treat as a implicit done: the text itself is the final answer.
             stripped_raw = raw.strip()
             if stripped_raw:
+                # JSON primitives (null / true / false / numbers) are valid JSON but not
+                # valid agent responses.  json.loads("null") returns None (same as "no data"),
+                # so we must detect them here before falling into the prose auto-wrap path.
+                _is_json_primitive = re.match(
+                    r'^(null|true|false|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$',
+                    stripped_raw, re.IGNORECASE,
+                )
+                if _is_json_primitive:
+                    return Action(
+                        type=ActionType.ERROR,
+                        thought=t("parse.prose_no_json"),
+                        error_type="null_response",
+                    )
+                # Pure text output — model forgot the JSON protocol entirely.
+                # Treat as an implicit done: the text itself is the final answer.
                 return Action(
                     type=ActionType.DONE,
                     thought="(auto-wrapped plain text as final answer)",
