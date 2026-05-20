@@ -601,10 +601,23 @@ function registerIPC() {
         timeout:  8000,
       };
       const req = mod.request(options, res => {
-        res.resume();
-        resolve(res.statusCode >= 200 && res.statusCode < 300
-          ? { ok: true,  status: res.statusCode }
-          : { ok: false, status: res.statusCode, error: `HTTP ${res.statusCode}` });
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => { body += chunk; });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            let models = [];
+            try {
+              const json = JSON.parse(body);
+              if (Array.isArray(json.data)) {
+                models = json.data.map(m => m.id || m.name).filter(Boolean);
+              }
+            } catch { /* non-JSON response, ignore */ }
+            resolve({ ok: true, status: res.statusCode, models });
+          } else {
+            resolve({ ok: false, status: res.statusCode, error: `HTTP ${res.statusCode}` });
+          }
+        });
       });
       req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: t('app.timeout') }); });
       req.on('error',   err => resolve({ ok: false, error: err.message }));
