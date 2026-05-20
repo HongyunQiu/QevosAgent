@@ -314,6 +314,52 @@ class OpenAIBackend(LLMBackend):
             result.append({**msg, "content": new_blocks})
         return result
 
+    def _create_with_retry(self, kwargs: dict, is_stream: bool = False):
+        """Call chat.completions.create and auto-strip rejected parameters.
+
+        Handles two categories of provider incompatibility:
+        - "Unsupported parameter: temperature" → clear self.temperature, pop from kwargs
+        - "Unknown parameter: X" / "Unsupported parameter: X" for any other X →
+          pop X from kwargs if present; otherwise record in self._suppressed_params so
+          the caller can avoid re-sending it (SDK-injected params cannot be popped here)
+
+        Retries once after stripping the offending parameter.  If the retry also
+        fails, the exception propagates normally.
+        """
+        try:
+            return self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            es = str(e)
+            is_param_error = (
+                "unsupported parameter" in es.lower()
+                or "unknown parameter" in es.lower()
+                or "unknown_parameter" in es.lower()
+            ) and "400" in es
+
+            if not is_param_error:
+                raise
+
+            # Extract the offending parameter name from the error message.
+            param = re.search(
+                r"[Uu]n(?:known|supported)\s+parameter[:\s]+['\"]?(\w+)['\"]?", es
+            )
+            if not param:
+                raise
+            bad = param.group(1)
+
+            if bad == "temperature" and self.temperature is not None:
+                self.temperature = None
+
+            if bad in kwargs:
+                kwargs.pop(bad)
+            else:
+                # SDK-injected — record so callers can pass explicit None next time.
+                suppressed = getattr(self, "_suppressed_params", set())
+                suppressed.add(bad)
+                self._suppressed_params = suppressed
+
+            return self.client.chat.completions.create(**kwargs)
+
     def _call_api(
         self,
         messages: list[dict],
@@ -329,12 +375,16 @@ class OpenAIBackend(LLMBackend):
         budget = self.thinking_budget if thinking_budget is None else thinking_budget
         normalized = self._normalize_messages(messages)
         full_messages = [{"role": "system", "content": system}] + normalized
+        _suppressed = getattr(self, "_suppressed_params", set())
         kwargs: dict = {
             "model": self.model,
             "messages": full_messages,
         }
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
+        # Explicitly nullify any SDK-injected params this provider has rejected before.
+        for _p in _suppressed:
+            kwargs[_p] = None
         if self._is_official_openai:
             kwargs["max_completion_tokens"] = max_tokens
         else:
@@ -349,19 +399,7 @@ class OpenAIBackend(LLMBackend):
                 extra["thinking"] = {"type": "enabled", "budget_tokens": budget}
             kwargs["extra_body"] = extra
 
-        try:
-            resp = self.client.chat.completions.create(**kwargs)
-        except Exception as e:
-            # Auto-detect providers that reject the temperature parameter and retry
-            # without it. The flag is stored on the instance so future calls skip it.
-            if self.temperature is not None and "temperature" in str(e).lower() and (
-                "unsupported parameter" in str(e).lower() or "400" in str(e)
-            ):
-                self.temperature = None
-                kwargs.pop("temperature", None)
-                resp = self.client.chat.completions.create(**kwargs)
-            else:
-                raise
+        resp = self._create_with_retry(kwargs)
         msg = resp.choices[0].message
         content = getattr(msg, "content", None)
         if content is None:
@@ -375,7 +413,10 @@ class OpenAIBackend(LLMBackend):
             try:
                 stream_kwargs = dict(kwargs)
                 stream_kwargs["stream"] = True
-                stream_resp = self.client.chat.completions.create(**stream_kwargs)
+                # Prevent openai SDK from auto-injecting stream_options.include_usage,
+                # which some providers reject as an unknown parameter.
+                stream_kwargs.setdefault("stream_options", None)
+                stream_resp = self._create_with_retry(stream_kwargs, is_stream=True)
                 parts = []
                 for chunk in stream_resp:
                     delta = getattr(chunk.choices[0], "delta", None)
