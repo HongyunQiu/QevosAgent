@@ -312,6 +312,7 @@ def _maybe_compress_for_context(state: AgentState, llm: LLMBackend, system: str,
     # then fall back to the env var, then the hardcoded default.
     ctx = getattr(llm, "context_window", None) or int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
     warn_ratio = float(os.environ.get("LLM_CONTEXT_WARN_RATIO", "0.90"))
+    notify_ratio = float(os.environ.get("LLM_CONTEXT_NOTIFY_RATIO", "0.75"))
 
     est = 0
     try:
@@ -322,6 +323,11 @@ def _maybe_compress_for_context(state: AgentState, llm: LLMBackend, system: str,
     # Save stats for debugging/printing
     state.meta["prompt_tokens_est"] = est
     state.meta["context_window"] = ctx
+
+    # Flag approaching context limit for loop.py to inject a user-visible warning.
+    if est and ctx and est >= int(ctx * notify_ratio):
+        state.meta["_ctx_approaching"] = True
+        state.meta["_ctx_approaching_pct"] = int(est / ctx * 100)
 
     # If we're near the limit, compress and keep going.
     if est and est > int(ctx * warn_ratio):

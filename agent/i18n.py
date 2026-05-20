@@ -448,6 +448,19 @@ _STRINGS: dict[str, dict[str, str]] = {
         "exec.not_found":  "工具 '{name}' 不存在。当前可用工具: {available}",
         "exec.arg_error":  "工具参数错误: {e}{hint}",
         "exec.exec_error": "工具执行异常: {etype}: {e}",
+
+        # ── loop.py — system warnings ────────────────────────────────────────
+        "warn.context_limit": (
+            "[系统提示] 当前上下文长度已使用约 {pct}%，接近模型最大值。"
+            "继续执行可能触发上下文长度限制导致对话被截断。"
+            "你可以选择：(1) 继续当前执行；(2) 询问用户是否需要总结当前工作并开启新任务继续。"
+        ),
+        "warn.context_limit_console": "⚠️  [上下文警告] 已使用约 {pct}%，接近上下文限制",
+        "warn.iter_limit": (
+            "[系统提示] 当前迭代轮次已接近最大限制，剩余约 {remaining} 次（共 {max_i} 次）。"
+            "请询问用户是否需要增加迭代次数（用户可输入 /+N 增加，例如 /+50）。"
+        ),
+        "warn.iter_limit_console": "⚠️  [迭代警告] 剩余 {remaining} 次迭代，即将达到上限",
     },
 
     "en": {
@@ -863,6 +876,19 @@ Before calling action='done', you MUST complete the following two steps:
         "exec.not_found":  "Tool '{name}' does not exist. Available tools: {available}",
         "exec.arg_error":  "Tool argument error: {e}{hint}",
         "exec.exec_error": "Tool execution error: {etype}: {e}",
+
+        # ── loop.py — system warnings ────────────────────────────────────────
+        "warn.context_limit": (
+            "[System notice] Context usage is approximately {pct}% — approaching the model's maximum. "
+            "Continuing may trigger the context-length limit and truncate the conversation. "
+            "You may: (1) continue executing; (2) ask the user whether to summarise the current work and start a new task."
+        ),
+        "warn.context_limit_console": "⚠️  [Context warning] ~{pct}% used — approaching context limit",
+        "warn.iter_limit": (
+            "[System notice] Approaching the iteration limit — approximately {remaining} of {max_i} iterations remaining. "
+            "Please ask the user whether to add more iterations (the user can type /+N, e.g. /+50)."
+        ),
+        "warn.iter_limit_console": "⚠️  [Iteration warning] {remaining} iterations remaining — limit approaching",
     },
 }
 

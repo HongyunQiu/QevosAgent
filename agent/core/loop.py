@@ -491,6 +491,23 @@ def run(
             if not _nostop_mode and state.iteration >= max_iterations:
                 break
 
+            # ── Iteration limit warning ───────────────────────────────────────
+            if not _nostop_mode and not state.meta.get("_iter_warn_injected"):
+                _remaining = max_iterations - state.iteration
+                if 0 < _remaining <= 10:
+                    _iter_warn_msg = {
+                        "role": "user",
+                        "content": t("warn.iter_limit", remaining=_remaining, max_i=max_iterations),
+                    }
+                    state.short_term.append(_iter_warn_msg)
+                    state.meta["_iter_warn_injected"] = True
+                    _persistence = _get_persistence(state)
+                    if _persistence is not None:
+                        _persistence.append_short_term(_iter_warn_msg)
+                    if hooks.on_thought:
+                        hooks.on_thought(t("warn.iter_limit_console", remaining=_remaining))
+            # ─────────────────────────────────────────────────────────────────
+
             if hooks.on_iteration_start:
                 hooks.on_iteration_start(state.iteration, state)
 
@@ -533,6 +550,27 @@ def run(
                     "context_window": ctx,
                     "max_tokens": getattr(llm, "max_tokens", None),
                 })
+
+            # ── Context approaching warning ───────────────────────────────────
+            if state.meta.pop("_ctx_approaching", False) and not state.meta.get("_ctx_warn_injected"):
+                _ctx_pct = state.meta.get("_ctx_approaching_pct", 0)
+                _ctx_warn_msg = {
+                    "role": "user",
+                    "content": t("warn.context_limit", pct=_ctx_pct),
+                }
+                state.short_term.append(_ctx_warn_msg)
+                state.meta["_ctx_warn_injected"] = True
+                _persistence = _get_persistence(state)
+                if _persistence is not None:
+                    _persistence.append_short_term(_ctx_warn_msg)
+                messages = build_context_messages(
+                    state,
+                    scratchpad=state.meta.get("scratchpad", ""),
+                    runtime_patches=state.meta.get("runtime_patches"),
+                )
+                if hooks.on_thought:
+                    hooks.on_thought(t("warn.context_limit_console", pct=_ctx_pct))
+            # ─────────────────────────────────────────────────────────────────
 
             import os
 

@@ -2050,6 +2050,8 @@ def tool_web_show(
             fp.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
         except Exception:
             mode = "replace"
+    else:
+        mode = "replace"
 
     if mode != "append":
         data = {
@@ -2069,26 +2071,23 @@ def tool_web_show(
     # 每个 display_id 只在首次创建时自动打开，append 不重复触发
     opened_key = f"_web_show_opened_{display_id}"
     if mode != "append" and not state.meta.get(opened_key):
-        if os.environ.get("ELECTRON"):
-            # Running inside Electron: notify via dashboard API so main.js
-            # can open the view as a native menu tab (no CORS / webbrowser needed).
-            import urllib.request as _ur
-            try:
-                _payload = json.dumps(
-                    {"url": url, "title": title or display_id, "display_id": display_id}
-                ).encode()
-                _req = _ur.Request(
-                    f"http://localhost:{port}/api/open-view",
-                    data=_payload,
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                _ur.urlopen(_req, timeout=2)
-            except Exception:
-                pass
-        else:
-            import webbrowser
-            webbrowser.open(url)
+        # Always notify via dashboard API: Electron uses serverEvents to open a native
+        # tab; browser clients receive a WebSocket broadcast so remote browsers (e.g.
+        # computer A accessing the server on computer B) can open the view themselves.
+        import urllib.request as _ur
+        try:
+            _payload = json.dumps(
+                {"url": url, "title": title or display_id, "display_id": display_id}
+            ).encode()
+            _req = _ur.Request(
+                f"http://localhost:{port}/api/open-view",
+                data=_payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            _ur.urlopen(_req, timeout=2)
+        except Exception:
+            pass
         state.meta[opened_key] = True
 
     return ToolResult(

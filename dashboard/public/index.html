@@ -1409,6 +1409,10 @@ function handleMsg(msg) {
   } else if (msg.type === 'console') {
     pushConsole(msg.stream, msg.text);
     if (msg.stream === 'stdout') pushStreamLine(msg.text);
+  } else if (msg.type === 'open-view') {
+    const url = window.location.origin + msg.path;
+    const w = window.open(url, '_blank');
+    if (!w) toastLink(msg.title || msg.displayId, url);
   }
 }
 
@@ -2216,6 +2220,20 @@ function toast(msg) {
   el.textContent = msg; el.style.display = 'block';
   clearTimeout(_toastTimer);
   _toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+function toastLink(label, url) {
+  const el = document.getElementById('toast');
+  el.innerHTML = '';
+  el.appendChild(document.createTextNode('Agent 展示: '));
+  const a = document.createElement('a');
+  a.href = url; a.target = '_blank';
+  a.textContent = label;
+  a.style.cssText = 'color:#7cf;text-decoration:underline;cursor:pointer;';
+  el.appendChild(a);
+  el.style.display = 'block';
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.style.display = 'none'; }, 8000);
 }
 
 // ── Center tabs ───────────────────────────────────────────────────────────
