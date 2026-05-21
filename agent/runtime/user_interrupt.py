@@ -341,6 +341,10 @@ class UserInterruptHandler:
             # 内部哨兵：通知主循环暂停，无需打印任何消息
             return "pause"
 
+        if name == "/pause":
+            print(f"\n{BLUE}{t('interrupt.pause')}{RESET}", flush=True)
+            return "pause"
+
         if name == "/stop":
             print(f"\n{BLUE}{t('interrupt.stop')}{RESET}", flush=True)
             return "continue"

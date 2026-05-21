@@ -365,6 +365,8 @@ _STRINGS: dict[str, dict[str, str]] = {
             "请输入命令后回车，或直接回车显示帮助：",
         "interrupt.ack":           "[用户干预] 已收到 {name}，将在当前工具调用结束后生效。",
         "interrupt.webcmd":        "[Web看板] 注入命令: {cmd}",
+        "interrupt.pause":         "[用户干预] /pause 已收到，Agent 将在当前操作结束后暂停。",
+        "interrupt.pause_awaiting": "Agent 已暂停。请告诉我下一步该做什么，或输入 /exit 退出。",
         "interrupt.stop":
             "[用户干预] /stop 已生效：当前工具将被终止，Agent 继续执行。"
             "（如需退出程序，请输入 /exit）",
@@ -398,6 +400,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "interrupt.help": """\
 [用户干预命令] - 输入 / 即可触发：
   /help              立即显示此帮助（不等当前工具结束）
+  /pause             当前操作结束后暂停，等待用户下一步指令
   /stop              终止当前正在执行的工具，Agent 继续下一步
   /exit              退出整个 Agent 程序
   /inject <消息>     将消息注入 Agent 上下文，下轮 LLM 可感知
@@ -487,6 +490,8 @@ _STRINGS: dict[str, dict[str, str]] = {
             "Enter a command and press Enter, or press Enter alone for help:",
         "interrupt.ack":           "[Interrupt] {name} received — will take effect after the current tool call.",
         "interrupt.webcmd":        "[Web dashboard] Injecting command: {cmd}",
+        "interrupt.pause":         "[Interrupt] /pause received — Agent will pause after the current operation.",
+        "interrupt.pause_awaiting": "Agent paused. Tell me what to do next, or type /exit to quit.",
         "interrupt.stop":
             "[Interrupt] /stop applied: current tool will be terminated, Agent continues. "
             "(Use /exit to quit the program)",
@@ -520,6 +525,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "interrupt.help": """\
 [User Commands] - type / to trigger:
   /help              Show this help immediately (without waiting for the current tool)
+  /pause             Pause after the current operation and wait for your next instruction
   /stop              Terminate the current tool; Agent continues to the next step
   /exit              Quit the Agent program
   /inject <msg>      Inject a message into Agent context; LLM sees it next turn

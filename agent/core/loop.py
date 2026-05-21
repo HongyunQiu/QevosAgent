@@ -477,6 +477,12 @@ def run(
                     if _r == 'stop':
                         _stop_loop = True
                         break
+                    if _r == 'pause':
+                        state.meta["paused"] = True
+                        state.meta["awaiting_input"] = t("interrupt.pause_awaiting")
+                        _checkpoint_state(state, status="paused")
+                        _stop_loop = True
+                        break
                 # Apply any /+N extensions accumulated by process_command
                 _extra = state.meta.pop('_add_iterations', 0)
                 if _extra:
@@ -484,7 +490,8 @@ def run(
                     if not _nostop_mode:
                         state.meta['_max_iterations'] = max_iterations
                 if _stop_loop:
-                    state.meta['user_stopped'] = True
+                    if not state.meta.get("paused"):
+                        state.meta['user_stopped'] = True
                     break
             # ─────────────────────────────────────────────────────────────────────
 
@@ -510,6 +517,31 @@ def run(
 
             if hooks.on_iteration_start:
                 hooks.on_iteration_start(state.iteration, state)
+
+            # ── 后台 job 完成通知（触发式推送）────────────────────────────────────
+            # 检查是否有 job 已完成，将结果注入 short_term，agent 无需主动轮询。
+            _notify_completed_jobs(state, hooks)
+
+            # ── wait_for_job 轻量 yield 模式 ──────────────────────────────────────
+            # agent 调用 wait_for_job 后进入此分支：跳过 LLM 调用，仅等待 job 完成，
+            # 避免 agent 在无事可做时反复生成无意义的轮询调用。
+            _yield_info = state.meta.get("_yield_waiting_job")
+            if _yield_info:
+                import time as _time
+                from .async_manager import JobStatus as _JS
+                _yjob_id  = _yield_info.get("job_id", "")
+                _interval = int(_yield_info.get("interval", 15))
+                _mgr = state.meta.get("_async_manager")
+                _yjob = _mgr and _mgr._jobs.get(_yjob_id)
+                if _yjob and _yjob.status == _JS.RUNNING:
+                    _time.sleep(_interval)
+                    state.iteration += 1
+                    continue  # 跳过 LLM，下轮再检查
+                else:
+                    # job 已结束（或找不到），退出 yield 模式
+                    state.meta.pop("_yield_waiting_job", None)
+                    # _notify_completed_jobs 已在本轮开头注入完成消息，正常继续
+            # ─────────────────────────────────────────────────────────────────────
 
             # ── 高级指导员：定期 + 主动请求触发 ─────────────────────────────────
             import os
@@ -949,6 +981,9 @@ def run(
                 # advisor 介入后给 agent 一次机会继续执行，若仍循环则暂停求助用户。
                 need_help = state.meta.pop("_need_user_help", None)
                 if need_help:
+                    # 先折叠吸引子上下文，无论后续是 advisor 还是用户求助，
+                    # 都在干净的上下文上进行，防止重复历史继续强化循环吸引子。
+                    _collapse_attractor_context(action.tool, state, hooks=hooks)
                     _advisor_sys = state.meta.get("_advisor_system", "")
                     if _advisor_sys and not state.meta.get("_advisor_tried_for_loop"):
                         _advice = run_advisor(
@@ -1006,6 +1041,107 @@ def run(
 
 
 # ── 内部辅助 ──────────────────────────────────────────────────────────────────
+
+
+def _notify_completed_jobs(state: "AgentState", hooks: Optional["AgentHooks"] = None) -> None:
+    """检查所有后台 job，将新完成的任务以系统消息注入 short_term。
+
+    在每次迭代开始时调用，实现"框架推送"而非"agent 轮询"——
+    agent 无需反复调 job_wait，任务完成时自动收到通知。
+    """
+    try:
+        from .async_manager import JobStatus
+        mgr = state.meta.get("_async_manager")
+        if not mgr:
+            return
+        notified: set = state.meta.setdefault("_jobs_notified", set())
+        for job_id, job in list(mgr._jobs.items()):
+            if job_id in notified or job.status == JobStatus.RUNNING:
+                continue
+            stdout = job.stdout_snapshot()
+            stderr = job.stderr_snapshot()
+            output = (stdout + (f"\n[STDERR]:\n{stderr}" if stderr.strip() else ""))[-2000:]
+            status_label = {
+                JobStatus.DONE: "完成",
+                JobStatus.FAILED: "失败",
+                JobStatus.CANCELLED: "已取消",
+            }.get(job.status, job.status.value)
+            content = (
+                f"[系统] 后台任务 `{job_id}` 已{status_label}"
+                f"（退出码：{job.returncode}，耗时：{job.elapsed():.0f}s）\n"
+                f"命令：{job.command[:200]}\n"
+                f"输出：\n{output}"
+            )
+            _append_short_term(state, {"role": "user", "content": content})
+            notified.add(job_id)
+            if hooks and hooks.on_error:
+                hooks.on_error(f"[job通知] {job_id} → {status_label}")
+    except Exception:
+        pass
+
+
+def _collapse_attractor_context(
+    loop_tool: str,
+    state: "AgentState",
+    hooks: Optional["AgentHooks"] = None,
+) -> None:
+    """循环检测升级时折叠 short_term，消除吸引子效应。
+
+    保留原始目标（short_term[0]）和草稿本摘要，将其余大量重复的工具调用历史
+    折叠为一条简洁的系统摘要，使后续的 advisor 注入或用户指导能在干净上下文上生效。
+    不封锁任何工具，语义约束由调用方的 awaiting_input 机制承担。
+    """
+    try:
+        scratchpad = (state.meta.get("scratchpad") or "").strip()
+
+        # 只在检测窗口范围内寻找吸引子区段，窗口之外的历史一律保留。
+        # 循环是在 LOOP_WINDOW_SIZE 次调用内被检测到的，吸引子必然在窗口内；
+        # 单条消息（assistant+user）占 2 个 short_term 条目，故上限取 window_size*2。
+        window_cap = int(os.environ.get("LOOP_WINDOW_SIZE", "12")) * 2
+        scan_from = max(1, len(state.short_term) - window_cap)
+
+        attractor_start = len(state.short_term)
+        for i in range(len(state.short_term) - 1, scan_from - 1, -1):
+            m = state.short_term[i]
+            if m.get("role") == "assistant":
+                if f'"{loop_tool}"' in m.get("content", ""):
+                    attractor_start = i  # 窗口内的 loop_tool 调用，归入吸引子
+                else:
+                    break  # 窗口内遇到其他工具调用，停止向前扩展
+
+        # 保留吸引子的第一条 assistant 调用及其紧跟的 user 结果（作为参考样本），
+        # 其余重复消息全部折叠，并在后面注入系统分析提示。
+        first_call_msgs = []
+        first_result_idx = attractor_start + 1
+        if attractor_start < len(state.short_term):
+            first_call_msgs.append(state.short_term[attractor_start])
+            if (first_result_idx < len(state.short_term)
+                    and state.short_term[first_result_idx].get("role") == "user"):
+                first_call_msgs.append(state.short_term[first_result_idx])
+
+        # 循环次数 = 吸引子内 assistant 消息数（不含保留的第一条）
+        attractor_msgs = state.short_term[attractor_start:]
+        loop_count = sum(1 for m in attractor_msgs if m.get("role") == "assistant")
+        extra_count = max(0, loop_count - 1)  # 扣掉保留的第一条
+
+        marker_content = (
+            f"[系统] 此处之后出现了 {extra_count} 次对 `{loop_tool}` 的重复调用（已折叠）。\n"
+            f"请分析上方首次调用的参数和结果，找出根本原因，避免再次重复同样的操作。"
+            + (f"\n\n## 草稿本摘要\n{scratchpad[:1500]}" if scratchpad else "")
+        )
+
+        # 正常历史 + 首次调用样本 + 系统分析提示
+        state.short_term = (
+            state.short_term[:attractor_start]
+            + first_call_msgs
+            + [{"role": "user", "content": marker_content}]
+        )
+
+        if hooks is not None and hooks.on_rebuild:
+            hooks.on_rebuild(loop_tool, len(state.short_term))
+
+    except Exception:
+        pass
 
 
 def _strip_vision_blocks(state: AgentState) -> int:
@@ -1104,6 +1240,9 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             )
             _thought_lower = (action.thought or "").lower()
             _is_polling = any(kw in _thought_lower for kw in _POLLING_KEYWORDS)
+            # job_wait / jobs_list 本身就是为了查询后台任务，天然豁免循环检测
+            if action.tool in ("job_wait", "jobs_list"):
+                _is_polling = True
 
             # ── A：连续重复检测 ──────────────────────────────────────────────
             consecutive = 0

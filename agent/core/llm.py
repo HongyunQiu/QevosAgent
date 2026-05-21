@@ -208,6 +208,55 @@ class OpenAIBackend(LLMBackend):
             self.temperature = temperature
         # Context window: probe server first, fall back to env var / hardcoded default.
         self.context_window = self._probe_context_window()
+        # Track SDK-injected parameters that the provider rejects (e.g. 'include').
+        self._suppressed_params: set[str] = set()
+        # Wrap the SDK create method to strip suppressed params from the request body
+        # before they reach the HTTP layer. This is necessary because some OpenAI SDK
+        # versions auto-inject parameters (e.g. 'include') that third-party proxies reject.
+        self._original_create = self.client.chat.completions.create
+        self._wrap_create_method()
+
+    def _wrap_create_method(self):
+        """Wrap client._client.send to strip suppressed params from the
+        HTTP request body before it reaches the wire.
+
+        This is necessary because some OpenAI SDK versions (or third-party wrappers)
+        may auto-inject parameters (e.g. 'include') into the JSON request body that
+        third-party proxies reject with 400 errors.
+
+        The wrapper intercepts at the HTTP layer (client._client.send) and removes
+        suppressed keys from the JSON body before sending.
+        """
+        import json as _json
+        from httpx import Request
+
+        original_send = self.client._client.send
+
+        def wrapped_send(request, **kwargs):
+            suppressed = getattr(self, "_suppressed_params", set())
+            if suppressed and request.content:
+                body = request.content
+                if isinstance(body, bytes):
+                    body = body.decode("utf-8")
+                try:
+                    data = _json.loads(body)
+                    for key in list(data.keys()):
+                        if key in suppressed:
+                            del data[key]
+                    new_body = _json.dumps(data).encode("utf-8")
+                    # httpx.Request has no .copy() with merge_content;
+                    # build a new request with the cleaned body.
+                    request = Request(
+                        method=request.method,
+                        url=request.url,
+                        headers=dict(request.headers),
+                        content=new_body,
+                    )
+                except Exception:
+                    pass  # Not JSON, send as-is
+            return original_send(request, **kwargs)
+
+        self.client._client.send = wrapped_send
 
     @staticmethod
     def _detect_official_openai_endpoint(base_url: Optional[str]) -> bool:

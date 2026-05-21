@@ -1629,6 +1629,32 @@ def tool_jobs_list(state: AgentState) -> ToolResult:
     return ToolResult(success=True, output=jobs)
 
 
+def tool_wait_for_job(state: AgentState, job_id: str, check_interval: int = 15) -> ToolResult:
+    """进入轻量等待模式，直到指定后台任务完成后再继续。
+
+    调用后框架将跳过 LLM 调用，每隔 check_interval 秒检查一次任务状态，
+    任务完成时自动将结果注入上下文并恢复正常执行。
+    适用于"启动任务后暂时没有其他工作可做"的场景，完全避免轮询循环。
+
+    check_interval: 检查间隔秒数（默认 15s，建议范围 10~60s）。
+    """
+    mgr = _get_async_manager(state)
+    jobs = {j["job_id"] for j in mgr.list_jobs()}
+    if job_id not in jobs:
+        return ToolResult(success=False, error=f"找不到任务 {job_id}，请先用 shell_bg 启动")
+    state.meta["_yield_waiting_job"] = {
+        "job_id": job_id,
+        "interval": max(5, int(check_interval)),
+    }
+    return ToolResult(
+        success=True,
+        output={
+            "message": f"已进入等待模式，将每 {check_interval}s 检查一次 {job_id}，完成后自动通知。",
+            "job_id": job_id,
+        },
+    )
+
+
 # ── 网络搜索 ────────────────────────────────────────────────────────────────
 
 
@@ -2745,6 +2771,20 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description="列出所有后台任务及其状态（running/done/failed/cancelled）",
             args_schema={},
             fn=tool_jobs_list,
+        ),
+        ToolSpec(
+            name="wait_for_job",
+            description=(
+                "进入轻量等待模式，直到指定后台任务完成后再继续执行。\n"
+                "调用后框架跳过 LLM 调用、每隔 check_interval 秒检查一次，\n"
+                "任务完成时自动将结果注入上下文并恢复。\n"
+                "适用于启动任务后暂时没有其他工作可做的场景，避免产生轮询循环。"
+            ),
+            args_schema={
+                "job_id":         "由 shell_bg 返回的任务 ID",
+                "check_interval": "（可选）检查间隔秒数，默认 15，建议 10~60",
+            },
+            fn=tool_wait_for_job,
         ),
         # ── Dashboard Files Tab ───────────────────────────────────────────────
         ToolSpec(
