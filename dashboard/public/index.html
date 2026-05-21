@@ -790,17 +790,14 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
   background:none; border:none; cursor:pointer; margin-left:auto;
 }
 .ftab-add:hover { color:var(--text); }
-/* ── Files CodeMirror editor ─────────────────────────────────────────── */
+/* ── CodeMirror 6 (shared by edit mode AND code preview) ─────────────── */
 .files-editor { flex:1; overflow:hidden; display:flex; flex-direction:column; }
-.files-editor .CodeMirror {
-  height:100%; font-family:var(--mono); font-size:11.5px; line-height:1.7;
-  background:var(--bg); color:var(--text); border:none;
-}
-.CodeMirror-gutters { background:var(--bg2) !important; border-right:1px solid var(--border) !important; }
-.CodeMirror-linenumber { color:var(--muted) !important; }
-.CodeMirror-cursor { border-left:1px solid var(--text) !important; }
-.CodeMirror-selected { background:rgba(88,166,255,0.15) !important; }
-.CodeMirror-scroll { box-sizing:border-box; }
+.files-editor .cm-editor,
+.code-render  .cm-editor { height:100%; font-size:11.5px; }
+.files-editor .cm-editor .cm-scroller,
+.code-render  .cm-editor .cm-scroller { font-family:var(--mono); line-height:1.7; }
+.files-editor .cm-gutters,
+.code-render  .cm-gutters { border-right:1px solid var(--border); }
 
 /* ── Scrollbars ──────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width:5px; height:5px; }
@@ -894,14 +891,8 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .csv-render td { color: var(--muted); }
 .csv-render tr:nth-child(even) td { background: var(--bg2); }
 
-/* ── Code highlight render ───────────────────────────────────────────────── */
-.code-render {
-  flex: 1; overflow: auto; margin: 0; border-radius: 0;
-  font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
-  padding: 12px 16px; min-height: 0;
-}
-.code-render .hljs { background: transparent !important; padding: 0; }
-.hljs { background: var(--bg) !important; }
+/* ── Code preview (hosts a read-only CodeMirror 6 instance) ──────────────── */
+.code-render { flex: 1; min-height: 0; overflow: hidden; margin: 0; }
 
 /* ── Memory pane ─────────────────────────────────────────────────────────── */
 .memory-section {
@@ -1045,10 +1036,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
-<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.17/codemirror.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.17/codemirror.min.js"></script>
+<script src="/cm6-bundle.js"></script>
 <script src="/ui_i18n.js"></script>
 </head>
 <body>
@@ -1247,7 +1235,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
           <div class="img-preview" id="filesImageView" style="display:none"><img id="filesImageEl" alt=""></div>
           <iframe class="html-preview" id="filesHtmlView" style="display:none" sandbox="allow-scripts allow-same-origin"></iframe>
           <div class="csv-render" id="filesCsvView" style="display:none"></div>
-          <pre class="code-render" id="filesCodeView" style="display:none"><code id="filesCodeEl"></code></pre>
+          <div class="code-render" id="filesCodeView" style="display:none"></div>
           <div class="files-editor" id="filesEditor" style="display:none"></div>
         </div>
       </div>
@@ -2904,13 +2892,13 @@ function fmtSize(bytes) {
 const RUN_CTX = {
   view:'filesView', md:'filesMdView', json:'filesJsonView',
   imgDiv:'filesImageView', imgEl:'filesImageEl', html:'filesHtmlView',
-  csv:'filesCsvView', code:'filesCodeView', codeEl:'filesCodeEl', editor:'filesEditor'
+  csv:'filesCsvView', code:'filesCodeView', editor:'filesEditor'
 };
 function dirCtx(id) {
   return {
     view:id+'-view', md:id+'-md', json:id+'-json',
     imgDiv:id+'-imgDiv', imgEl:id+'-imgEl', html:id+'-html',
-    csv:id+'-csv', code:id+'-code', codeEl:id+'-codeEl', editor:id+'-editor'
+    csv:id+'-csv', code:id+'-code', editor:id+'-editor'
   };
 }
 function applyPreviewCtx(ctx, content, filePath, preview, rawUrl) {
@@ -2928,12 +2916,13 @@ function applyPreviewCtx(ctx, content, filePath, preview, rawUrl) {
     else showOnly(g('view')); return;
   }
   if (ext === 'json') {
-    try { g('json').innerHTML = syntaxHL(JSON.stringify(JSON.parse(content), null, 2)); }
-    catch { g('json').innerHTML = syntaxHL(content); }
-    showOnly(g('json')); return;
+    let pretty; try { pretty = JSON.stringify(JSON.parse(content), null, 2); } catch { pretty = content; }
+    if (_mountReadonlyCM6(g('code'), pretty, filePath)) { showOnly(g('code')); return; }
+    g('json').innerHTML = syntaxHL(pretty); showOnly(g('json')); return;  // fallback (no CM6)
   }
   if (ext === 'jsonl') {
-    g('json').innerHTML = content.split('\n').filter(l => l.trim()).map((line, i) => {
+    if (content.trim() && _mountReadonlyCM6(g('code'), content, filePath)) { showOnly(g('code')); return; }
+    g('json').innerHTML = content.split('\n').filter(l => l.trim()).map((line, i) => {  // fallback (no CM6)
       let body; try { body = syntaxHL(JSON.stringify(JSON.parse(line), null, 2)); } catch { body = esc(line); }
       return `<div class="jsonl-line"><span class="jsonl-idx">${i+1}</span><span class="jsonl-body">${body}</span></div>`;
     }).join('') || '<span class="files-placeholder">(empty)</span>';
@@ -2942,13 +2931,17 @@ function applyPreviewCtx(ctx, content, filePath, preview, rawUrl) {
   const codeExts = ['py','js','ts','jsx','tsx','go','rs','java','c','cpp','h','hpp','cs','rb','php',
     'sh','bash','zsh','yaml','yml','toml','ini','cfg','xml','css','scss','less','sql','r',
     'kotlin','swift','dart','lua','vim','dockerfile'];
-  if (codeExts.includes(ext) && typeof hljs !== 'undefined' && g('codeEl')) {
-    g('codeEl').removeAttribute('data-highlighted');
-    g('codeEl').textContent = content;
-    hljs.highlightElement(g('codeEl'));
-    showOnly(g('code')); return;
-  }
+  if (codeExts.includes(ext) && _mountReadonlyCM6(g('code'), content, filePath)) { showOnly(g('code')); return; }
   showOnly(g('view'));
+}
+// Mount a read-only CodeMirror 6 instance into a host element (shared by code/json/jsonl
+// preview). Returns false if CM6 is unavailable so callers can fall back gracefully.
+function _mountReadonlyCM6(host, content, filePath) {
+  if (!host || typeof window.CM6 === 'undefined') return false;
+  if (host.__cm6) { host.__cm6.destroy(); host.__cm6 = null; }
+  host.innerHTML = '';
+  host.__cm6 = window.CM6.create(host, content, filePath, { readOnly: true });
+  return true;
 }
 // Keep existing applyPreview as thin wrapper for Run Files pane
 function applyPreview(content, filePath, preview) {
@@ -2972,11 +2965,14 @@ function toggleFilesEdit() {
   ['filesView','filesMdView','filesJsonView','filesImageView','filesHtmlView','filesCsvView','filesCodeView']
     .forEach(id => document.getElementById(id).style.display = 'none');
   ed.style.display = '';
-  const ta = document.createElement('textarea');
-  ta.value = gFilesContent; ed.innerHTML = ''; ed.appendChild(ta);
-  if (typeof CodeMirror !== 'undefined') {
-    gCmEditor = CodeMirror.fromTextArea(ta, { lineNumbers: true, lineWrapping: false, tabSize: 2 });
-    gCmEditor.setSize('100%', '100%');
+  ed.innerHTML = '';
+  if (typeof window.CM6 !== 'undefined') {
+    gCmEditor = window.CM6.create(ed, gFilesContent, gFilesPath);
+    gCmEditor.focus();
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = gFilesContent; ta.style.cssText = 'width:100%;height:100%;box-sizing:border-box';
+    ed.appendChild(ta);
   }
 }
 function cancelFilesEdit() { _exitEditMode(); applyPreview(gFilesContent, gFilesPath, gFilesPreview); }
@@ -2994,7 +2990,7 @@ async function saveCurrentFile() {
 }
 function _exitEditMode() {
   gFilesEditMode = false;
-  if (gCmEditor) { gCmEditor.toTextArea(); gCmEditor = null; }
+  if (gCmEditor) { gCmEditor.destroy(); gCmEditor = null; }
   document.getElementById('filesEditor').style.display    = 'none';
   document.getElementById('filesEditBtn').style.display   = '';
   document.getElementById('filesSaveBtn').style.display   = 'none';
@@ -3028,7 +3024,7 @@ function _dirPaneHTML(id, label, dirPath) {
       <div class="img-preview" id="${id}-imgDiv" style="display:none"><img id="${id}-imgEl" alt=""></div>
       <iframe class="html-preview" id="${id}-html" style="display:none" sandbox="allow-scripts allow-same-origin"></iframe>
       <div class="csv-render"  id="${id}-csv"  style="display:none"></div>
-      <pre class="code-render" id="${id}-code" style="display:none"><code id="${id}-codeEl"></code></pre>
+      <div class="code-render" id="${id}-code" style="display:none"></div>
       <div class="files-editor" id="${id}-editor" style="display:none"></div>
     </div>
   </div>`;
@@ -3071,6 +3067,11 @@ async function closeDirTab(id) {
   if (idx === -1) return;
   const path = gDirTabs[idx].path;
   gDirTabs.splice(idx, 1);
+  // Tear down any live CodeMirror instances (edit + read-only preview) before removing DOM.
+  const st = gDirTabState[id];
+  if (st?.cmEditor) { st.cmEditor.destroy(); st.cmEditor = null; }
+  const codeHost = document.getElementById(id + '-code');
+  if (codeHost?.__cm6) { codeHost.__cm6.destroy(); codeHost.__cm6 = null; }
   delete gDirTabState[id];
   document.getElementById('ctab-' + id)?.remove();
   document.getElementById('cpane-' + id)?.remove();
@@ -3187,11 +3188,14 @@ function toggleDirEdit(id) {
     const el = document.getElementById(id+'-'+k); if (el) el.style.display = 'none';
   });
   ed.style.display = '';
-  const ta = document.createElement('textarea');
-  ta.value = s.content; ed.innerHTML = ''; ed.appendChild(ta);
-  if (typeof CodeMirror !== 'undefined') {
-    s.cmEditor = CodeMirror.fromTextArea(ta, { lineNumbers: true, lineWrapping: false, tabSize: 2 });
-    s.cmEditor.setSize('100%', '100%');
+  ed.innerHTML = '';
+  if (typeof window.CM6 !== 'undefined') {
+    s.cmEditor = window.CM6.create(ed, s.content, s.filePath);
+    s.cmEditor.focus();
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = s.content; ta.style.cssText = 'width:100%;height:100%;box-sizing:border-box';
+    ed.appendChild(ta);
   }
 }
 
@@ -3221,7 +3225,7 @@ async function saveDirFile(id) {
 function _exitDirEditMode(id) {
   const s = gDirTabState[id]; if (!s) return;
   s.editMode = false;
-  if (s.cmEditor) { s.cmEditor.toTextArea(); s.cmEditor = null; }
+  if (s.cmEditor) { s.cmEditor.destroy(); s.cmEditor = null; }
   document.getElementById(id+'-editor').style.display  = 'none';
   document.getElementById(id+'-editBtn').style.display  = '';
   document.getElementById(id+'-saveBtn').style.display  = 'none';
@@ -3260,6 +3264,10 @@ function updateFilesTabsFromState(fileTabs) {
 
   // Remove all existing dir tabs (DOM + state; no API call — just cleanup)
   for (const t of [...gDirTabs]) {
+    const st = gDirTabState[t.id];
+    if (st?.cmEditor) { st.cmEditor.destroy(); st.cmEditor = null; }
+    const codeHost = document.getElementById(t.id + '-code');
+    if (codeHost?.__cm6) { codeHost.__cm6.destroy(); codeHost.__cm6 = null; }
     document.getElementById('ctab-' + t.id)?.remove();
     document.getElementById('cpane-' + t.id)?.remove();
     delete gDirTabState[t.id];
