@@ -635,6 +635,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 .center-tab:hover { color:var(--text); }
 .center-tab.active { color:var(--blue); border-bottom-color:var(--blue); }
+.center-tab-add { font-size:15px; font-weight:400; padding:0 6px; }
 .ctab-sep { width:1px; height:16px; background:var(--border); flex-shrink:0; margin:0 4px; }
 .ctab-close {
   font-size:10px; color:var(--muted); margin-left:4px;
@@ -1133,6 +1134,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
       <button class="center-tab" id="ctab-memory" onclick="setCenterTab('memory')">Memory</button>
       <button class="center-tab" id="ctab-files" onclick="setCenterTab('files')">Run Files</button>
       <!-- dynamic dir tabs injected here -->
+      <button class="center-tab center-tab-add" id="ctab-addDir" title="Open a folder" onclick="promptAddDirTab()">+</button>
       <div class="bar-gap"></div>
       <button class="icon-btn on" id="autoScrollBtn" onclick="toggleAutoScroll()">↓ Auto</button>
     </div>
@@ -3047,9 +3049,9 @@ async function addDirTab(dirPath, label) {
   btn.innerHTML = esc(lbl) + ' <span class="ctab-close" title="Close tab">✕</span>';
   btn.querySelector('.ctab-close').addEventListener('click', e => { e.stopPropagation(); closeDirTab(id); });
   btn.addEventListener('click', () => setCenterTab(id));
-  // Insert before the bar-gap / autoScrollBtn
-  const gap = strip.querySelector('.bar-gap');
-  strip.insertBefore(btn, gap);
+  // Insert before the "+" add button so it stays rightmost
+  const anchor = strip.querySelector('#ctab-addDir') || strip.querySelector('.bar-gap');
+  strip.insertBefore(btn, anchor);
 
   // Insert center-pane into events-panel (parent of all panes)
   const pane = document.createElement('div');
@@ -3239,9 +3241,17 @@ function downloadDirFile(id) {
 }
 
 async function promptAddDirTab() {
+  // Desktop (Electron): native folder picker. window.prompt is disabled there.
+  if (window.electronAPI && window.electronAPI.pickFolder) {
+    try {
+      const res = await window.electronAPI.pickFolder();
+      if (res && !res.canceled && res.path) addDirTab(res.path, '');
+    } catch (e) { toast('✗ ' + e.message); }
+    return;
+  }
+  // Browser fallback
   const dirPath = window.prompt('Enter directory path:');
-  if (!dirPath || !dirPath.trim()) return;
-  addDirTab(dirPath.trim(), '');
+  if (dirPath && dirPath.trim()) addDirTab(dirPath.trim(), '');
 }
 
 function updateFilesTabsFromState(fileTabs) {
@@ -3263,7 +3273,7 @@ function updateFilesTabsFromState(fileTabs) {
   const activePath  = savedActive?.type === 'dir' ? savedActive.path : null;
 
   const strip = document.querySelector('.center-tab-strip');
-  const gap   = strip.querySelector('.bar-gap');
+  const gap   = strip.querySelector('#ctab-addDir') || strip.querySelector('.bar-gap');
   const panel = document.querySelector('.events-panel');
   let activeId = null;
 

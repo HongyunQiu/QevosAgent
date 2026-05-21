@@ -32,7 +32,7 @@
  *   tab-settings    → load setup.html in the home view
  */
 
-const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell, nativeImage } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell, nativeImage, dialog } = require('electron');
 const { t } = require('./i18n');
 const path    = require('path');
 const http    = require('http');
@@ -587,6 +587,14 @@ function registerIPC() {
     await startDashboard();
     navigateToDashboard();
     return { ok: true };
+  });
+
+  ipcMain.handle('dialog:pickFolder', async () => {
+    const res = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+    });
+    if (res.canceled || !res.filePaths.length) return { canceled: true };
+    return { canceled: false, path: res.filePaths[0] };
   });
 
   ipcMain.handle('env:test', (_, { baseUrl, apiKey }) => {

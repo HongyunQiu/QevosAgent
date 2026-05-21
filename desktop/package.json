@@ -1,6 +1,6 @@
 {
   "name": "qevosagent-desktop",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "description": "QevosAgent Desktop App",
   "main": "main.js",
   "scripts": {

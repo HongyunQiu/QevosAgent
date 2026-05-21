@@ -16,4 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** Test connectivity to the LLM endpoint. Returns { ok, status?, error? }. */
   testConnection: data => ipcRenderer.invoke('env:test', data),
+
+  /** Open a native folder picker. Returns { canceled, path? }. */
+  pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
 });
