@@ -49,9 +49,12 @@ app.setAppUserModelId('com.qevosagent.desktop');
 
 const VENDOR_APP  = path.join(__dirname, 'vendor', 'app');
 const APP_ROOT    = app.isPackaged ? VENDOR_APP : path.resolve(__dirname, '..');
-// When packaged, write user data (e.g. .env) to the OS user-data dir so the
-// app bundle stays read-only (required on macOS /Applications).
-const DOT_ENV_DIR = app.isPackaged ? app.getPath('userData') : path.resolve(__dirname, '..');
+// When packaged, .env lives next to the agent on Windows (install dir is writable
+// and each installation is independent). On macOS/Linux the app bundle is read-only,
+// so .env must live in the OS user-data directory.
+const DOT_ENV_DIR = app.isPackaged
+  ? (process.platform === 'win32' ? VENDOR_APP : app.getPath('userData'))
+  : path.resolve(__dirname, '..');
 
 // ── Load .env ──────────────────────────────────────────────────────────────
 
@@ -252,12 +255,16 @@ async function startDashboard() {
 
   PORT = await findFreePort(PORT);
   const userData   = app.getPath('userData');
-  const userSkills = path.join(userData, 'SKILLS');
+  // On Windows the install directory is writable and each installation is
+  // independent, so SKILLS live directly in APP_ROOT (no seeding needed).
+  // On macOS/Linux the app bundle is read-only; seed built-in skills into
+  // userData on first launch so they remain editable across upgrades.
+  const userSkills = process.platform === 'win32'
+    ? path.join(APP_ROOT, 'SKILLS')
+    : path.join(userData, 'SKILLS');
   fs.mkdirSync(userData, { recursive: true });
 
-  // Seed built-in skills into userData on first launch so they remain editable
-  // and the directory is writable (app bundle is read-only on macOS).
-  if (!fs.existsSync(userSkills)) {
+  if (process.platform !== 'win32' && !fs.existsSync(userSkills)) {
     const bundleSkills = path.join(APP_ROOT, 'SKILLS');
     if (fs.existsSync(bundleSkills)) {
       fs.mkdirSync(userSkills, { recursive: true });
