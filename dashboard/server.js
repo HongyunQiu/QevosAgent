@@ -955,7 +955,9 @@ function serveStatic(req, res) {
     let content = fs.readFileSync(fp);
     if (ext === '.html') {
       const langScript = `<script>window.QEVOS_LANG="${LANG}";</script>`;
-      const html = content.toString('utf8').replace('</head>', langScript + '</head>');
+      // Inject right after <head> so QEVOS_LANG is defined before ui_i18n.js
+      // runs; otherwise UI_LANG freezes to the default before the value is set.
+      const html = content.toString('utf8').replace('<head>', '<head>' + langScript);
       res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain' });
       res.end(html, 'utf8');
     } else {
