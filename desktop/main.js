@@ -166,12 +166,16 @@ function activateView(id) {
 //   all link clicks open in the system browser (original web_show behaviour).
 // allowNavigation=true: browser automation view, in-page navigation is
 //   allowed; only new-window requests are sent to the system browser.
-function openElectronView(displayId, url, title, allowNavigation = false) {
+// activate=true (default): switch the visible tab to this view. Agent-driven
+//   web_show passes activate only when the user is on the Dashboard, so a new
+//   display pops up but a second one never yanks them off the view they're
+//   already watching.
+function openElectronView(displayId, url, title, allowNavigation = false, activate = true) {
   const id = 'view-' + displayId;
   if (gViews.has(id)) {
     // Replace mode: reload the existing view with updated content.
     gViews.get(id).view.webContents.loadURL(url);
-    activateView(id);
+    if (activate) activateView(id);
     return;
   }
 
@@ -195,7 +199,14 @@ function openElectronView(displayId, url, title, allowNavigation = false) {
   mainWindow.contentView.addChildView(view);
   view.webContents.loadURL(url);
   gViews.set(id, { view, title: title || displayId });
-  activateView(id);
+  if (activate) {
+    activateView(id);
+  } else {
+    // Render the new tab in the bar and lay it out hidden, but stay on the
+    // currently active view.
+    updateLayout();
+    pushTabsUpdate();
+  }
 }
 
 function closeView(id) {
@@ -295,7 +306,12 @@ async function startDashboard() {
     const { serverEvents } = require(serverPath);
     serverEvents.on('open-view', ({ url, title, displayId }) => {
       if (!mainWindow || mainWindow.isDestroyed()) return;
-      openElectronView(displayId, url, title || displayId);
+      // Pop the new view to the front only if the user is currently on the
+      // Dashboard (so the first web_show actually shows up). If they're already
+      // watching another agent view, just add/refresh the tab so we don't yank
+      // them away from what they're watching.
+      const activate = gActiveId === HOME_ID;
+      openElectronView(displayId, url, title || displayId, false, activate);
     });
 
     serverEvents.on('browser-action', async ({ displayId, action, payload }, callback) => {
