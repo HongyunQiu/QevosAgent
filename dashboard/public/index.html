@@ -622,6 +622,30 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 @keyframes toastIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 
+/* Persistent prompt shown when a popup (window.open) is blocked by the browser */
+#openview-prompts {
+  position:fixed; bottom:64px; right:20px; z-index:1000;
+  display:flex; flex-direction:column; gap:8px; max-width:360px;
+}
+.ovp-card {
+  display:flex; align-items:center; gap:10px;
+  background:var(--bg4); border:1px solid var(--accent, #1f6feb); border-radius:8px;
+  padding:10px 12px; font-size:12px; color:var(--text);
+  box-shadow:0 4px 24px rgba(0,0,0,0.5); animation:toastIn 0.2s ease;
+}
+.ovp-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ovp-text b { color:var(--text); }
+.ovp-open {
+  flex-shrink:0; background:linear-gradient(135deg,#1f6feb,#3b82f6); border:none;
+  color:#fff; font-size:12px; font-weight:600; padding:5px 12px; border-radius:6px; cursor:pointer;
+}
+.ovp-open:hover { background:linear-gradient(135deg,#2d7ef7,#4f93ff); }
+.ovp-close {
+  flex-shrink:0; background:none; border:none; color:var(--muted);
+  font-size:16px; line-height:1; cursor:pointer; padding:0 2px;
+}
+.ovp-close:hover { color:var(--text); }
+
 /* ── Center panel tabs ───────────────────────────────────────────────── */
 .center-tab-strip {
   display:flex; align-items:center; gap:4px;
@@ -1332,6 +1356,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 <div class="mobile-overlay" id="mobileOverlay" onclick="closeMobilePanels()"></div>
 
 <div id="toast"></div>
+<div id="openview-prompts"></div>
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────
@@ -1402,7 +1427,12 @@ function handleMsg(msg) {
   } else if (msg.type === 'open-view') {
     const url = window.location.origin + msg.path;
     const w = window.open(url, '_blank');
-    if (!w) toastLink(msg.title || msg.displayId, url);
+    // Popups from a WebSocket callback have no user activation, so the browser
+    // may block window.open. Fall back to a persistent, clickable prompt — the
+    // click is a user gesture, so opening from it is never blocked.
+    if (!w || w.closed || typeof w.closed === 'undefined') {
+      showOpenViewPrompt(msg.title || msg.displayId, url, msg.displayId);
+    }
   }
 }
 
@@ -2212,18 +2242,41 @@ function toast(msg) {
   _toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
 }
 
-function toastLink(label, url) {
-  const el = document.getElementById('toast');
-  el.innerHTML = '';
-  el.appendChild(document.createTextNode('Agent 展示: '));
-  const a = document.createElement('a');
-  a.href = url; a.target = '_blank';
-  a.textContent = label;
-  a.style.cssText = 'color:#7cf;text-decoration:underline;cursor:pointer;';
-  el.appendChild(a);
-  el.style.display = 'block';
-  clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => { el.style.display = 'none'; }, 8000);
+// Persistent prompt for when window.open was blocked. One card per displayId
+// (re-showing the same display updates the existing card instead of stacking).
+function showOpenViewPrompt(label, url, displayId) {
+  const wrap = document.getElementById('openview-prompts');
+  const cardId = 'ovp-' + (displayId || label);
+  let card = document.getElementById(cardId);
+  if (!card) {
+    card = document.createElement('div');
+    card.id = cardId;
+    card.className = 'ovp-card';
+    wrap.appendChild(card);
+  }
+  card.innerHTML = '';
+
+  const text = document.createElement('div');
+  text.className = 'ovp-text';
+  text.appendChild(document.createTextNode(uiT('openview.prompt') + ' '));
+  const b = document.createElement('b');
+  b.textContent = label;
+  text.appendChild(b);
+
+  const open = document.createElement('button');
+  open.className = 'ovp-open';
+  open.textContent = uiT('openview.open_btn');
+  open.onclick = () => { window.open(url, '_blank'); card.remove(); };
+
+  const close = document.createElement('button');
+  close.className = 'ovp-close';
+  close.title = uiT('openview.dismiss');
+  close.textContent = '×';
+  close.onclick = () => card.remove();
+
+  card.appendChild(text);
+  card.appendChild(open);
+  card.appendChild(close);
 }
 
 // ── Center tabs ───────────────────────────────────────────────────────────
