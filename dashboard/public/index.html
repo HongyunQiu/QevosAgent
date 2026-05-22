@@ -1549,9 +1549,11 @@ function renderSidebar(data, rid) {
   // RUN_DIR
   document.getElementById('goalRunDir').textContent = st.run_id || data.activeRunId || '—';
 
-  // User's original goal: last non-empty paragraph, skipping system-injected sections
-  let goalText = '';
-  if (st.goal) {
+  // User's original goal. Prefer the raw goal stored in meta (position-independent
+  // of how the full prompt is assembled). Fall back to the heuristic of scanning
+  // st.goal paragraphs only when meta is unavailable.
+  let goalText = (data.meta?._user_goal || data.meta?._task_desc || '').trim();
+  if (!goalText && st.goal) {
     const parts = st.goal.split(/\n\n+/);
     for (let i = parts.length - 1; i >= 0; i--) {
       const p = parts[i].trim();
