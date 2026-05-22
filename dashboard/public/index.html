@@ -356,6 +356,8 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .ev-goal { background: rgba(88,166,255,0.06); border: 1px solid rgba(88,166,255,0.15); padding: 10px 13px; }
 .ev-goal .ev-label { font-size: 12px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--blue); margin-bottom: 5px; }
 .ev-goal .ev-body  { font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.ev-goal-extra { font-size: 12px; color: var(--muted); line-height: 1.6; white-space: pre-wrap; word-break: break-word; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(88,166,255,0.2); }
+.ev-goal .expand-btn { color: var(--blue); padding: 6px 0 0; }
 
 .ev-thought { background: rgba(210,168,255,0.05); border-left: 3px solid rgba(210,168,255,0.4); padding: 7px 12px; }
 .ev-thought .ev-body { color: #c5b3f0; font-size: 16px; font-style: italic; line-height: 1.6; }
@@ -417,6 +419,21 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .ev-advisor-label { font-size:11px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:#c084fc; }
 .ev-advisor-reason { font-size:11px; color:rgba(192,132,252,0.65); font-family:var(--mono); }
 .ev-advisor .ev-body { font-size:12.5px; color:var(--text); line-height:1.65; white-space:pre-wrap; word-break:break-word; }
+
+/* System prompt — pinned at top of timeline (amber/yellow accent) */
+.ev-sysprompt { background:rgba(227,179,65,0.06); border:1px solid rgba(227,179,65,0.30); border-radius:5px; padding:8px 13px; }
+.ev-sysprompt .ev-header { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.ev-sysprompt-label { font-size:11px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--yellow); }
+.ev-sysprompt .ev-output { color:#d8c89a; }
+.ev-sysprompt .ev-output::after { background:linear-gradient(transparent,rgba(227,179,65,0.10)); }
+.ev-sysprompt .expand-btn { color:var(--yellow); }
+
+/* Runtime patch — inserted into timeline at the iteration it took effect (orange accent) */
+.ev-patch { background:rgba(255,166,87,0.06); border-left:3px solid rgba(255,166,87,0.5); border-radius:4px; padding:7px 12px; }
+.ev-patch .ev-header { display:flex; align-items:center; gap:8px; }
+.ev-patch-label { font-size:11px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase; color:var(--orange); }
+.ev-patch-meta { font-size:11px; color:rgba(255,166,87,0.65); font-family:var(--mono); }
+.ev-patch-rule { font-size:12.5px; color:var(--text); line-height:1.6; margin-top:4px; white-space:pre-wrap; word-break:break-word; }
 
 .ev-stream-output {
   background: rgba(255,166,87,0.04); border-left: 3px solid rgba(255,166,87,0.4);
@@ -1374,6 +1391,8 @@ let gStreamBuf     = [];          // stdout lines buffered while a tool_call is 
 const STREAM_MAX   = 300;
 let gPendingToolIdx = null;       // idx of the tool_call we're currently streaming for
 const gJobExpanded = {};          // { jobId: boolean } — which job cards are expanded
+let gSysPromptExpanded = false;   // persist System-Prompt expand state across re-renders
+let gGoalExpanded      = false;   // persist Goal "show more" (full assembled goal) across re-renders
 const gJobPollers  = {};          // { jobId: intervalId } — polling timers for running jobs
 let gNostop        = false;       // whether to launch agent in --nostop (continuous) mode
 let gElapsedTimer  = null;        // setInterval handle for the elapsed-time counter
@@ -1622,7 +1641,7 @@ function renderMainArea(data) {
   // Always update the events log first, then control the empty-state visibility.
   // NOTE: renderEvents replaces eventsLog.innerHTML which would destroy eventsEmpty
   // (a child node) — renderEvents now detaches/reattaches it to keep it alive.
-  renderEvents(evs, data.meta || {});
+  renderEvents(evs, data.meta || {}, data.systemPrompt || '', data.patchEvents || []);
 
   const empty = document.getElementById('eventsEmpty');
   if (empty) empty.style.display = hasEvts ? 'none' : '';
@@ -1678,7 +1697,7 @@ function updateCmdBarMode(data) {
 }
 
 // ── Events rendering ──────────────────────────────────────────────────────
-function renderEvents(events, meta = {}) {
+function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = []) {
   const log   = document.getElementById('eventsLog');
   const badge = document.getElementById('evCount');
   badge.textContent = events.length;
@@ -1702,7 +1721,7 @@ function renderEvents(events, meta = {}) {
   const empty = document.getElementById('eventsEmpty');
   if (empty && empty.parentNode === log) log.removeChild(empty);
 
-  if (!events.length) {
+  if (!events.length && !systemPrompt) {
     log.innerHTML = '';
   } else {
     // Build per-iter token stats map: token_stats event at iter=N-1 → used by separator "Iteration N"
@@ -1711,9 +1730,23 @@ function renderEvents(events, meta = {}) {
       if (ev.type === 'token_stats') tokenStatsMap[ev.iter] = ev;
     }
 
+    // Merge runtime-patch events into the timeline by iteration. Within the same
+    // iteration, regular events render first (ord 0), then patches (ord 1).
+    const merged = [];
+    events.forEach((ev, i) => merged.push({ ev, iter: ev.iter || 0, ord: 0, seq: i }));
+    (patchEvents || []).forEach((ev, i) => merged.push({ ev, iter: ev.iter || 0, ord: 1, seq: i }));
+    merged.sort((a, b) => (a.iter - b.iter) || (a.ord - b.ord) || (a.seq - b.seq));
+
+    // Original user goal (position-independent); used to collapse the assembled goal event.
+    const goalHead = (meta._user_goal || meta._task_desc || '').trim();
+
     let html = '';
+    // System prompt pinned at the very top of the timeline (default collapsed).
+    if (systemPrompt) html += renderSystemPrompt(systemPrompt);
+
     let lastIter = -1;
-    for (const ev of events) {
+    for (const m of merged) {
+      const ev = m.ev;
       if (ev.type === 'token_stats') continue;
       const iterNum = ev.iter || 0;
       if (iterNum !== lastIter && ev.type === 'tool_call') {
@@ -1727,7 +1760,7 @@ function renderEvents(events, meta = {}) {
         }
         lastIter = iterNum;
       }
-      html += renderEvent(ev);
+      html += renderEvent(ev, goalHead);
     }
     // Append live streaming output after the pending tool_call
     if (pendingCall) {
@@ -1744,13 +1777,63 @@ function renderEvents(events, meta = {}) {
   if (empty) log.appendChild(empty);
 }
 
-function renderEvent(ev) {
+// System prompt pinned at the top of the timeline. Default collapsed (it's long);
+// the user expands via the "show more" button at the bottom-left. The expand state
+// is held in gSysPromptExpanded so it survives the 500ms poll re-renders.
+function renderSystemPrompt(text) {
+  const exp = gSysPromptExpanded;
+  return `<div class="ev ev-sysprompt">
+    <div class="ev-header"><span class="ev-arrow">⚙</span><span class="ev-sysprompt-label">System Prompt</span></div>
+    <div class="ev-output${exp ? ' expanded' : ''}" id="sysprompt">${esc(text)}</div>
+    <button class="expand-btn" onclick="toggleSysPrompt(this)">${exp ? '▲ show less' : '▼ show more'}</button>
+  </div>`;
+}
+
+function toggleSysPrompt(btn) {
+  gSysPromptExpanded = !gSysPromptExpanded;
+  const out = document.getElementById('sysprompt');
+  if (out) out.classList.toggle('expanded', gSysPromptExpanded);
+  btn.textContent = gSysPromptExpanded ? '▲ show less' : '▼ show more';
+}
+
+function toggleGoal(btn) {
+  gGoalExpanded = !gGoalExpanded;
+  const extra = document.getElementById('goalextra');
+  if (extra) extra.style.display = gGoalExpanded ? '' : 'none';
+  btn.textContent = gGoalExpanded ? '▲ show less' : '▼ show more';
+}
+
+function renderEvent(ev, goalHead = '') {
   switch (ev.type) {
-    case 'goal':
+    case 'goal': {
+      const full = (ev.text || '').trim();
+      const head = (goalHead || '').trim();
+      // Collapse the assembled goal down to just the user's original goal.
+      // The remainder (pre-loaded tools/memory boilerplate) is hidden behind "show more".
+      // Only collapsible when the full text starts with the original goal (GOAL is at the front).
+      const remainder = (head && full.startsWith(head)) ? full.slice(head.length).trim() : '';
+      if (!head || !remainder) {
+        return `<div class="ev ev-goal">
+          <div class="ev-label">🎯 Goal</div>
+          <div class="ev-body">${esc(full)}</div>
+        </div>`;
+      }
+      const exp = gGoalExpanded;
       return `<div class="ev ev-goal">
         <div class="ev-label">🎯 Goal</div>
-        <div class="ev-body">${esc(ev.text)}</div>
+        <div class="ev-body">${esc(head)}</div>
+        <div class="ev-goal-extra" id="goalextra" style="${exp ? '' : 'display:none'}">${esc(remainder)}</div>
+        <button class="expand-btn" onclick="toggleGoal(this)">${exp ? '▲ show less' : '▼ show more'}</button>
       </div>`;
+    }
+    case 'runtime_patch': {
+      const tag = ev.event === 'candidate_promoted' ? 'promoted' : 'added';
+      const meta = ev.errorType ? `${esc(ev.errorType)} · ${tag}` : tag;
+      return `<div class="ev ev-patch">
+        <div class="ev-header"><span class="ev-arrow">🩹</span><span class="ev-patch-label">Runtime Patch</span><span class="ev-patch-meta">${meta}</span></div>
+        <div class="ev-patch-rule">${esc(ev.rule)}</div>
+      </div>`;
+    }
     case 'thought':
       if (!ev.thought) return '';
       return `<div class="ev ev-thought"><div class="ev-body">💭 ${esc(ev.thought)}</div></div>`;

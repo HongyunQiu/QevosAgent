@@ -400,6 +400,8 @@ let state = {
   activeRunId:  null,
   status:       null,
   scratchpad:   '',
+  systemPrompt: '',     // assembled system prompt snapshot (run_dir/system_prompt.md)
+  patchEvents:  [],     // runtime-patch timeline events derived from patch_log.jsonl
   events:       [],
   meta:         {},
   launching:    false,  // agent is being spawned, not yet writing runs/
@@ -415,6 +417,7 @@ let _linesProcessed        = 0;
 let _mtimes                = {};
 let _iterCounter           = 0;
 let _webChatLinesProcessed = 0;
+let _patchLinesProcessed   = 0;
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -613,6 +616,37 @@ function updateShortTerm(runDir) {
   return true;
 }
 
+// Derive runtime-patch timeline events from patch_log.jsonl.
+// Only meaningful "patch took effect" events are surfaced (rule_added,
+// candidate_promoted); skipped/candidate/diagnosis noise is dropped.
+const _PATCH_SHOWN_EVENTS = new Set(['rule_added', 'candidate_promoted']);
+function updatePatchEvents(runDir) {
+  const fp = path.join(runDir, 'patch_log.jsonl');
+  if (!changed(fp)) return false;
+  const raw = readText(fp);
+  if (!raw) return false;
+  const allLines = raw.split('\n').filter(l => l.trim());
+  const newLines = allLines.slice(_patchLinesProcessed);
+  if (!newLines.length) return false;
+  let added = false;
+  for (const line of newLines) {
+    let rec;
+    try { rec = JSON.parse(line); } catch { continue; }
+    if (!_PATCH_SHOWN_EVENTS.has(rec.event)) continue;
+    state.patchEvents.push({
+      type: 'runtime_patch',
+      iter: rec.iteration || 0,
+      event: rec.event,
+      errorType: rec.error_type || '',
+      rule: rec.rule || '',
+      ts: rec.ts || '',
+    });
+    added = true;
+  }
+  _patchLinesProcessed = allLines.length;
+  return added;
+}
+
 // ── Poll loop ──────────────────────────────────────────────────────────────
 
 function poll() {
@@ -637,6 +671,8 @@ function poll() {
     state.activeRunId = latest;
     state.status      = null;
     state.scratchpad  = '';
+    state.systemPrompt = '';
+    state.patchEvents  = [];
     state.events      = [];
     state.meta        = {};
     state.webDisplays = {};
@@ -646,6 +682,7 @@ function poll() {
     _iterCounter           = 0;
     _mtimes                = {};
     _webChatLinesProcessed = 0;
+    _patchLinesProcessed   = 0;
     dirty = true;
     // Once a new run directory appears, launching phase is over
     if (isLaunching) {
@@ -668,6 +705,11 @@ function poll() {
       const s = readText(path.join(dir, 'scratchpad.md'));
       if (s !== null) { state.scratchpad = s; dirty = true; }
     }
+    if (changed(path.join(dir, 'system_prompt.md'))) {
+      const s = readText(path.join(dir, 'system_prompt.md'));
+      if (s !== null) { state.systemPrompt = s; dirty = true; }
+    }
+    if (updatePatchEvents(dir)) dirty = true;
     if (changed(path.join(dir, 'meta.json'))) {
       const m = readJSON(path.join(dir, 'meta.json'));
       if (m) { state.meta = m; dirty = true; }
