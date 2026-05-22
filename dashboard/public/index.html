@@ -423,9 +423,11 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
 /* System prompt — pinned at top of timeline (amber/yellow accent) */
 .ev-sysprompt { background:rgba(227,179,65,0.06); border:1px solid rgba(227,179,65,0.30); border-radius:5px; padding:8px 13px; }
-.ev-sysprompt .ev-header { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+/* Zero out the shared .ev-header / .ev-output horizontal padding so the ⚙ icon
+   and ~tok line up with the 🎯 Goal row (which has no inner horizontal padding). */
+.ev-sysprompt .ev-header { display:flex; align-items:center; gap:8px; margin-bottom:4px; padding-left:0; padding-right:0; }
 .ev-sysprompt-label { font-size:11px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--yellow); }
-.ev-sysprompt .ev-output { color:#d8c89a; }
+.ev-sysprompt .ev-output { color:#d8c89a; padding-left:0; padding-right:0; }
 .ev-sysprompt .ev-output::after { background:linear-gradient(transparent,rgba(227,179,65,0.10)); }
 .ev-sysprompt .expand-btn { color:var(--yellow); }
 
