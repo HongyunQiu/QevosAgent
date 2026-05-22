@@ -354,7 +354,8 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 
 .ev-goal { background: rgba(88,166,255,0.06); border: 1px solid rgba(88,166,255,0.15); padding: 10px 13px; }
-.ev-goal .ev-label { font-size: 12px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--blue); margin-bottom: 5px; }
+.ev-goal .ev-label { display: flex; align-items: center; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--blue); margin-bottom: 5px; }
+.ev-tok { margin-left: auto; font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); }
 .ev-goal .ev-body  { font-family: var(--mono); font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .ev-goal-extra { font-family: var(--mono); font-size: 12px; color: var(--muted); line-height: 1.6; white-space: pre-wrap; word-break: break-word; margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(88,166,255,0.2); }
 .ev-goal .expand-btn { color: var(--blue); padding: 6px 0 0; }
@@ -1780,11 +1781,23 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = []) {
 // System prompt pinned at the top of the timeline. Default collapsed (it's long);
 // the user expands via the "show more" button at the bottom-left. The expand state
 // is held in gSysPromptExpanded so it survives the 500ms poll re-renders.
+// Rough token estimate mirroring the agent's _estimate_tokens_heuristic:
+// CJK-heavy text (>30% non-ASCII) ~2 chars/token, otherwise ~4 chars/token.
+function estTokens(text) {
+  const s = String(text || '');
+  if (!s) return 0;
+  let nonAscii = 0;
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 127) nonAscii++;
+  const ratio = nonAscii / Math.max(1, s.length);
+  return ratio > 0.3 ? Math.floor(s.length / 2) + 1 : Math.floor(s.length / 4) + 1;
+}
+function fmtTok(text) { return '~' + estTokens(text).toLocaleString() + ' tok'; }
+
 function renderSystemPrompt(text) {
   const exp = gSysPromptExpanded;
   // Collapsed = title row only (content fully hidden); expanded = full content, no cap.
   return `<div class="ev ev-sysprompt">
-    <div class="ev-header"><span class="ev-arrow">⚙</span><span class="ev-sysprompt-label">System Prompt</span></div>
+    <div class="ev-header"><span class="ev-arrow">⚙</span><span class="ev-sysprompt-label">System Prompt</span><span class="ev-tok">${fmtTok(text)}</span></div>
     <div class="ev-output expanded" id="sysprompt" style="${exp ? '' : 'display:none'}">${esc(text)}</div>
     <button class="expand-btn" onclick="toggleSysPrompt(this)">${exp ? '▲ show less' : '▼ show more'}</button>
   </div>`;
@@ -1815,13 +1828,13 @@ function renderEvent(ev, goalHead = '') {
       const remainder = (head && full.startsWith(head)) ? full.slice(head.length).trim() : '';
       if (!head || !remainder) {
         return `<div class="ev ev-goal">
-          <div class="ev-label">🎯 Goal</div>
+          <div class="ev-label">🎯 Goal<span class="ev-tok">${fmtTok(full)}</span></div>
           <div class="ev-body">${esc(full)}</div>
         </div>`;
       }
       const exp = gGoalExpanded;
       return `<div class="ev ev-goal">
-        <div class="ev-label">🎯 Goal</div>
+        <div class="ev-label">🎯 Goal<span class="ev-tok">${fmtTok(full)}</span></div>
         <div class="ev-body">${esc(head)}</div>
         <div class="ev-goal-extra" id="goalextra" style="${exp ? '' : 'display:none'}">${esc(remainder)}</div>
         <button class="expand-btn" onclick="toggleGoal(this)">${exp ? '▲ show less' : '▼ show more'}</button>
