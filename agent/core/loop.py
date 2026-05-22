@@ -277,6 +277,82 @@ def _review_completion_report(state: AgentState, final_answer: Optional[str]) ->
     return "pass", verdict_dict
 
 
+def _finalize_run(state: AgentState, final_answer, verdict, verdict_dict, hooks, nostop) -> str:
+    """收尾：保存最终答案 + 可选 RUN_OK 摘要 + 处理 weak_pass 暂停。
+
+    供正常 done 路径与"concept 门后直接调用 save_concept"的快捷收尾共用，
+    确保两条路径行为一致。返回 "paused"（需暂停等待用户）或 "done"。
+    调用方负责 break 退出主循环。
+    """
+    import os
+    import re
+
+    state.meta.pop("_pending_final", None)
+
+    if hooks.on_done:
+        hooks.on_done(final_answer or "（无最终输出）")
+    state.meta["final_answer"] = final_answer
+    persistence = _get_persistence(state)
+    if persistence is not None:
+        persistence.save_final_answer(final_answer or "")
+    _checkpoint_state(state)
+
+    if os.environ.get("AUTO_REMEMBER_ON_DONE", "0") == "1":
+        try:
+            used_tools = []
+            for m in state.short_term:
+                if m.get("role") != "assistant":
+                    continue
+                c = m.get("content", "")
+                if isinstance(c, str) and '"tool"' in c:
+                    mt = re.search(r'"tool"\s*:\s*"([^"]+)"', c)
+                    if mt:
+                        used_tools.append(mt.group(1))
+            used_tools = list(dict.fromkeys(used_tools))
+            est = state.meta.get("prompt_tokens_est")
+            ctx = state.meta.get("context_window")
+            summary = (
+                f"[RUN_OK] goal={state.goal[:120]!r} tools={used_tools} "
+                f"prompt_est={est}/{ctx} final={str(final_answer)[:200]!r}"
+            )
+            state.long_term.append(summary)
+        except Exception:
+            pass
+
+    # weak_pass：系统主动发起 ask_user，让用户决定是否在当前基础上继续
+    # nostop 模式下不 pause：人用下一条指令自然跟进即可
+    if verdict == "weak_pass" and not nostop:
+        report = (verdict_dict or {}).get("report", {})
+        outcome = report.get("outcome", "done_partial")
+        completed = report.get("completed_work", [])
+        gaps = report.get("remaining_gaps", [])
+
+        completed_str = "\n".join(f"  - {item}" for item in completed) if completed else "  （无）"
+        gaps_str = "\n".join(f"  - {item}" for item in gaps) if gaps else "  （无）"
+
+        if outcome == "done_blocked":
+            status_label = "遇到外部阻塞，已完成可做部分"
+        else:
+            status_label = "主体工作完成，有已知遗留"
+
+        question = (
+            f"[{status_label}]\n\n"
+            f"已完成:\n{completed_str}\n\n"
+            f"遗留/阻塞:\n{gaps_str}\n\n"
+            "是否在此基础上继续推进？"
+            "如果是，请告诉我下一步的重点；如果不需要，直接回复「完成」即可。"
+        )
+
+        state.meta["awaiting_input"] = question
+        state.meta["paused"] = True
+        if hooks.on_error:
+            hooks.on_error(f"[弱通过] {status_label}，暂停等待用户决策")
+        _checkpoint_state(state, status="paused")
+        return "paused"
+
+    return "done"
+
+
 # ── 默认钩子：打印到控制台 ────────────────────────────────────────────────────
 
 def console_hooks() -> AgentHooks:
@@ -795,6 +871,14 @@ def run(
                     state.meta["_concept_evaluated"] = True
                     concept_path = state.meta.get("_concept_path", "./memory_macro.md")
                     if not _nostop:
+                        # 暂存收尾信息：若 agent 接下来调用 save_concept，可在工具执行后
+                        # 直接收尾，省去一次"再 done"的完整迭代——该迭代因 concept_memory
+                        # 变更会导致整段 system prompt 前缀缓存失效（末尾上下文最大，最贵）。
+                        state.meta["_pending_final"] = {
+                            "final_answer": action.final_answer,
+                            "verdict": verdict,
+                            "verdict_dict": verdict_dict,
+                        }
                         feedback = (
                             f"[系统][记忆评估] 任务已完成。请判断本次任务是否带来了新的领域认知或经验规律。\n"
                             f"  - 如果有：调用 save_concept(path='{concept_path}', content=...) 更新宏观工作记忆\n"
@@ -806,69 +890,8 @@ def run(
                         state.iteration += 1
                         continue
 
-                # weak_pass 或 pass：先保存最终答案和运行摘要
-                if hooks.on_done:
-                    hooks.on_done(action.final_answer or "（无最终输出）")
-                state.meta["final_answer"] = action.final_answer
-                persistence = _get_persistence(state)
-                if persistence is not None:
-                    persistence.save_final_answer(action.final_answer or "")
-                _checkpoint_state(state)
-
-                if os.environ.get("AUTO_REMEMBER_ON_DONE", "0") == "1":
-                    try:
-                        used_tools = []
-                        for m in state.short_term:
-                            if m.get("role") != "assistant":
-                                continue
-                            c = m.get("content", "")
-                            if isinstance(c, str) and '"tool"' in c:
-                                mt = re.search(r'"tool"\s*:\s*"([^"]+)"', c)
-                                if mt:
-                                    used_tools.append(mt.group(1))
-                        used_tools = list(dict.fromkeys(used_tools))
-                        est = state.meta.get("prompt_tokens_est")
-                        ctx = state.meta.get("context_window")
-                        summary = (
-                            f"[RUN_OK] goal={state.goal[:120]!r} tools={used_tools} "
-                            f"prompt_est={est}/{ctx} final={str(action.final_answer)[:200]!r}"
-                        )
-                        state.long_term.append(summary)
-                    except Exception:
-                        pass
-
-                # weak_pass：系统主动发起 ask_user，让用户决定是否在当前基础上继续
-                # nostop 模式下不 pause：人用下一条指令自然跟进即可
-                if verdict == "weak_pass" and not _nostop:
-                    report = verdict_dict.get("report", {})
-                    outcome = report.get("outcome", "done_partial")
-                    completed = report.get("completed_work", [])
-                    gaps = report.get("remaining_gaps", [])
-
-                    completed_str = "\n".join(f"  - {item}" for item in completed) if completed else "  （无）"
-                    gaps_str = "\n".join(f"  - {item}" for item in gaps) if gaps else "  （无）"
-
-                    if outcome == "done_blocked":
-                        status_label = "遇到外部阻塞，已完成可做部分"
-                    else:
-                        status_label = "主体工作完成，有已知遗留"
-
-                    question = (
-                        f"[{status_label}]\n\n"
-                        f"已完成:\n{completed_str}\n\n"
-                        f"遗留/阻塞:\n{gaps_str}\n\n"
-                        "是否在此基础上继续推进？"
-                        "如果是，请告诉我下一步的重点；如果不需要，直接回复「完成」即可。"
-                    )
-
-                    state.meta["awaiting_input"] = question
-                    state.meta["paused"] = True
-                    if hooks.on_error:
-                        hooks.on_error(f"[弱通过] {status_label}，暂停等待用户决策")
-                    _checkpoint_state(state, status="paused")
-                    break
-
-                # 正常 pass（或 nostop 下的 weak_pass 直接通过）：退出
+                # weak_pass 或 pass：保存最终答案、运行摘要，并处理 weak_pass 暂停
+                _finalize_run(state, action.final_answer, verdict, verdict_dict, hooks, _nostop)
                 break
 
             if action.type == ActionType.ERROR:
@@ -974,6 +997,22 @@ def run(
                             "content": feedback,
                         },
                     )
+
+                # ── 收尾优化：concept 门后调用 save_concept 成功 → 直接收尾 ────────
+                # 此时 concept_memory 已更新（system prompt 前缀已变），若再走一次 done
+                # 复评，该迭代会在最大上下文上全前缀重算缓存。直接用暂存的收尾信息结束。
+                _pending_final = state.meta.get("_pending_final")
+                if action.tool == "save_concept" and result.success and _pending_final:
+                    _checkpoint_state(state)
+                    _finalize_run(
+                        state,
+                        _pending_final.get("final_answer"),
+                        _pending_final.get("verdict"),
+                        _pending_final.get("verdict_dict"),
+                        hooks,
+                        _nostop_mode,
+                    )
+                    break
 
                 # ── 循环升级：高级指导员介入 → 用户求助 ──────────────────────
                 # _build_feedback 检测到循环次数超阈值时会设置此标志。
