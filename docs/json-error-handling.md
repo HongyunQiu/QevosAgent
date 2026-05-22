@@ -29,7 +29,7 @@ LLM 原始输出
     │  ├── 连续失败计数 + 过载提示
     │  └── _apply_runtime_patch：生成运行时补丁规则
     ▼
-【层 4】runtime_patches：注入 system prompt，持久化到 AGENTS.md
+【层 4】runtime_patches：每轮注入到 context 末尾后缀，可持久化到 AGENTS.md
 ```
 
 ---
@@ -137,9 +137,9 @@ _JSON_ERROR_PATCH_RULES = {
 
 mini LLM 调用使用 `complete_text`（无 JSON 格式要求，max_tokens=60），输入仅为错误信息摘要和原始输出片段，延迟极低。
 
-### 6.4 注入 system prompt
+### 6.4 注入 context 末尾后缀
 
-[`build_system_prompt`](../agent/core/llm.py) 每轮重建时，若 `runtime_patches` 非空，在 system prompt 中插入独立节：
+[`build_context_messages`](../agent/core/llm.py) → [`_build_context_suffix`](../agent/core/llm.py) 每轮把 `runtime_patches`（与草稿本一起）拼接到**最后一条 user 消息末尾**，而非 system prompt：
 
 ```
 ## 运行时格式规范（自动生成，必须严格遵守）
@@ -147,7 +147,7 @@ mini LLM 调用使用 `complete_text`（无 JSON 格式要求，max_tokens=60）
 - ...
 ```
 
-位置在工具列表之后、草稿本之前，确保每轮都可见。
+之所以放在 context 末尾而非 system prompt，是为了保持 system prompt 前缀稳定、最大化 KV Cache 命中率——补丁随时新增，若写进 system prompt 会导致每轮整段前缀缓存失效。
 
 ### 6.5 持久化工具
 
