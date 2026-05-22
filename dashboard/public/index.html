@@ -1735,12 +1735,19 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = []) {
       if (ev.type === 'token_stats') tokenStatsMap[ev.iter] = ev;
     }
 
-    // Merge runtime-patch events into the timeline by iteration. Within the same
-    // iteration, regular events render first (ord 0), then patches (ord 1).
+    // Merge runtime-patch events into the timeline by short_term line position.
+    // Patches carry anchorIdx (short_term length at patch time); regular events
+    // carry idx (their line index). Sorting by this shared line-position scale
+    // places each patch where it actually occurred — using the agent's iteration
+    // number here would not work, since the dashboard reconstructs a different
+    // iter scale (it drops malformed lines), pushing patches to the bottom.
+    // anchorIdx = short_term length at patch time = index just past the malformed
+    // line (which the dashboard drops). Subtract 0.5 so the patch renders in that
+    // gap — right before the retry event — rather than after it.
     const merged = [];
-    events.forEach((ev, i) => merged.push({ ev, iter: ev.iter || 0, ord: 0, seq: i }));
-    (patchEvents || []).forEach((ev, i) => merged.push({ ev, iter: ev.iter || 0, ord: 1, seq: i }));
-    merged.sort((a, b) => (a.iter - b.iter) || (a.ord - b.ord) || (a.seq - b.seq));
+    events.forEach((ev, i) => merged.push({ ev, pos: (ev.idx != null ? ev.idx : 0), ord: 0, seq: i }));
+    (patchEvents || []).forEach((ev, i) => merged.push({ ev, pos: (ev.anchorIdx != null ? ev.anchorIdx - 0.5 : 1e9), ord: 1, seq: i }));
+    merged.sort((a, b) => (a.pos - b.pos) || (a.ord - b.ord) || (a.seq - b.seq));
 
     // Original user goal (position-independent); used to collapse the assembled goal event.
     const goalHead = (meta._user_goal || meta._task_desc || '').trim();

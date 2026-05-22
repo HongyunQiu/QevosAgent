@@ -523,6 +523,11 @@ def _log_patch_event(
         entry = {
             "ts":        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "iteration": getattr(state, "iteration", 0),
+            # 短期历史长度：作为 dashboard 时间线定位锚点。patch 由畸形输出触发，
+            # 而该输出此刻已 append 进 short_term，故此长度≈出错那条的行位置。
+            # dashboard 据此把 patch 插到对应位置，而非按 iteration（与看板重建的
+            # iter 编号体系不一致，会导致 patch 总沉到底部）。
+            "short_term_len": len(getattr(state, "short_term", []) or []),
             "event":     event,
             "error_type": error_type,
             "rule":      rule,

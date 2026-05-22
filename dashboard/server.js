@@ -636,6 +636,9 @@ function updatePatchEvents(runDir) {
     state.patchEvents.push({
       type: 'runtime_patch',
       iter: rec.iteration || 0,
+      // Timeline anchor = short_term line index at patch time. Falls back to the
+      // current processed-line count for old logs without the field (best effort).
+      anchorIdx: (typeof rec.short_term_len === 'number') ? rec.short_term_len : _linesProcessed,
       event: rec.event,
       errorType: rec.error_type || '',
       rule: rec.rule || '',
@@ -709,12 +712,13 @@ function poll() {
       const s = readText(path.join(dir, 'system_prompt.md'));
       if (s !== null) { state.systemPrompt = s; dirty = true; }
     }
-    if (updatePatchEvents(dir)) dirty = true;
     if (changed(path.join(dir, 'meta.json'))) {
       const m = readJSON(path.join(dir, 'meta.json'));
       if (m) { state.meta = m; dirty = true; }
     }
     if (updateShortTerm(dir)) dirty = true;
+    // After short_term so the fallback anchor (_linesProcessed) is current.
+    if (updatePatchEvents(dir)) dirty = true;
 
     // ── web_display_*.json ───────────────────────────────────────────────────
     let dispFiles;
