@@ -111,6 +111,7 @@ class RunPersistence:
         self.meta_path = self.run_dir / "meta.json"
         self.status_path = self.run_dir / "status.json"
         self.scratchpad_path = self.run_dir / "scratchpad.md"
+        self.system_prompt_path = self.run_dir / "system_prompt.md"
         self.final_answer_path = self.run_dir / "final_answer.md"
         self.execution_summary_path = self.run_dir / "execution_summary.md"
         self.issues_path = self.run_dir / "issues.json"
@@ -220,6 +221,9 @@ class RunPersistence:
 
     def save_scratchpad(self, text: str) -> None:
         _write_text_atomic(self.scratchpad_path, text or "")
+
+    def save_system_prompt(self, text: str) -> None:
+        _write_text_atomic(self.system_prompt_path, text or "")
 
     def checkpoint(self, state, status: str = "running", error: Optional[str] = None, summary_override: Optional[str] = None) -> None:
         if state is not None:

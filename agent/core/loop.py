@@ -4,6 +4,7 @@
 LOOP: 感知 → 思考 → 行动 → 反思 → 重复
 """
 
+import hashlib
 import json
 import os
 import re
@@ -645,6 +646,16 @@ def run(
             pack = _maybe_compress_for_context(state, llm, system, messages)
             system = pack["system"]
             messages = pack["messages"]
+
+            # 落盘系统提示词供 dashboard 时间线展示：仅在内容变化时写
+            # （首轮必写；之后只有工具进化/记忆/concept 变化才会触发重写）。
+            _sp_hash = hashlib.sha1(system.encode("utf-8", "ignore")).hexdigest()
+            if state.meta.get("_system_prompt_hash") != _sp_hash:
+                state.meta["_system_prompt_hash"] = _sp_hash
+                _sp_persistence = _get_persistence(state)
+                if _sp_persistence is not None:
+                    _sp_persistence.save_system_prompt(system)
+
             if state.meta.get("prompt_tokens_est"):
                 est = state.meta.get("prompt_tokens_est")
                 ctx = state.meta.get("context_window")
