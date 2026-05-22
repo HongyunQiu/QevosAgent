@@ -1782,9 +1782,10 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = []) {
 // is held in gSysPromptExpanded so it survives the 500ms poll re-renders.
 function renderSystemPrompt(text) {
   const exp = gSysPromptExpanded;
+  // Collapsed = title row only (content fully hidden); expanded = full content, no cap.
   return `<div class="ev ev-sysprompt">
     <div class="ev-header"><span class="ev-arrow">⚙</span><span class="ev-sysprompt-label">System Prompt</span></div>
-    <div class="ev-output${exp ? ' expanded' : ''}" id="sysprompt">${esc(text)}</div>
+    <div class="ev-output expanded" id="sysprompt" style="${exp ? '' : 'display:none'}">${esc(text)}</div>
     <button class="expand-btn" onclick="toggleSysPrompt(this)">${exp ? '▲ show less' : '▼ show more'}</button>
   </div>`;
 }
@@ -1792,7 +1793,7 @@ function renderSystemPrompt(text) {
 function toggleSysPrompt(btn) {
   gSysPromptExpanded = !gSysPromptExpanded;
   const out = document.getElementById('sysprompt');
-  if (out) out.classList.toggle('expanded', gSysPromptExpanded);
+  if (out) out.style.display = gSysPromptExpanded ? '' : 'none';
   btn.textContent = gSysPromptExpanded ? '▲ show less' : '▼ show more';
 }
 
