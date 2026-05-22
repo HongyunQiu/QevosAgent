@@ -433,7 +433,9 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
 /* Runtime patch — inserted into timeline at the iteration it took effect (orange accent) */
 .ev-patch { background:rgba(255,166,87,0.06); border-left:3px solid rgba(255,166,87,0.5); border-radius:4px; padding:7px 12px; }
-.ev-patch .ev-header { display:flex; align-items:center; gap:8px; }
+/* Zero out the shared .ev-header horizontal padding so the 🩹 icon lines up with
+   the rule text below it (.ev-patch-rule has no inner horizontal padding). */
+.ev-patch .ev-header { display:flex; align-items:center; gap:8px; padding-left:0; padding-right:0; }
 .ev-patch-label { font-size:11px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase; color:var(--orange); }
 .ev-patch-meta { font-size:11px; color:rgba(255,166,87,0.65); font-family:var(--mono); }
 .ev-patch-rule { font-size:12.5px; color:var(--text); line-height:1.6; margin-top:4px; white-space:pre-wrap; word-break:break-word; }
