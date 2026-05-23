@@ -277,9 +277,22 @@ body.large-font .app {
 .stat-val.muted  { color: var(--muted); font-size: 13px; font-weight: 400; }
 
 .goal-box { padding: 8px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
-.goal-row { font-size: 11px; line-height: 1.45; font-family: var(--mono); }
+.goal-row { font-size: 11px; line-height: 1.45; font-family: var(--mono); display: flex; align-items: center; gap: 6px; }
 .goal-row-label { font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
 .goal-rundir { color: var(--muted); word-break: break-all; }
+.rundir-copy {
+  flex-shrink: 0; width: 18px; height: 18px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: 50%;
+  background: var(--bg3); color: var(--muted); cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.rundir-copy:hover { color: var(--blue); border-color: var(--blue); }
+.rundir-copy .ic-check { display: none; }
+.rundir-copy.copied { color: var(--green); border-color: var(--green); }
+.rundir-copy.copied:hover { color: var(--green); border-color: var(--green); }
+.rundir-copy.copied .ic-copy { display: none; }
+.rundir-copy.copied .ic-check { display: inline; }
 .goal-text { color: var(--cyan); font-size: 12.5px; line-height: 1.5; height: calc(1.5em * 5); overflow-y: auto; overflow-x: hidden; }
 
 .runs-scroller { flex: 1; overflow-y: auto; }
@@ -1147,6 +1160,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
       <div class="goal-row">
         <span class="goal-row-label">Run Dir:</span>
         <span class="goal-rundir" id="goalRunDir">—</span>
+        <button class="rundir-copy" id="goalRunDirCopy" type="button" title="复制序号" onclick="copyRunDir()" hidden>
+          <svg class="ic-copy" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <svg class="ic-check" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        </button>
       </div>
       <div class="goal-text" id="goalText">No active goal</div>
     </div>
@@ -1571,7 +1588,10 @@ function renderSidebar(data, rid) {
   document.getElementById('sTools').textContent  = evs.filter(e => e.type === 'tool_call').length;
 
   // RUN_DIR
-  document.getElementById('goalRunDir').textContent = st.run_id || data.activeRunId || '—';
+  const _runId = st.run_id || data.activeRunId || '—';
+  document.getElementById('goalRunDir').textContent = _runId;
+  const _copyBtn = document.getElementById('goalRunDirCopy');
+  if (_copyBtn) _copyBtn.hidden = (_runId === '—');
 
   // User's original goal. Prefer the raw goal stored in meta (position-independent
   // of how the full prompt is assembled). Fall back to the heuristic of scanning
@@ -1608,6 +1628,31 @@ function hlText(text, q) {
 function onRunsSearch(val) {
   gRunSearch = val.trim();
   renderRunsList((gState && gState.runs) || [], gViewRunId);
+}
+
+let _runDirCopyTimer = null;
+async function copyRunDir() {
+  const txt = document.getElementById('goalRunDir').textContent.trim();
+  if (!txt || txt === '—') return;
+  const btn = document.getElementById('goalRunDirCopy');
+  try {
+    await navigator.clipboard.writeText(txt);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+  }
+  if (btn) {
+    btn.classList.add('copied');
+    btn.title = '已复制';
+    clearTimeout(_runDirCopyTimer);
+    _runDirCopyTimer = setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.title = '复制序号';
+    }, 1500);
+  }
 }
 
 function renderRunsList(runs, activeId) {
