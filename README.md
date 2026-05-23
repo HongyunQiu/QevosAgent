@@ -24,6 +24,12 @@
 
 A local AI agent truly designed for everyone — native Windows/macOS/Linux installation, no WSL required, works out of the box.
 
+The core design philosophy of QevosAgent is to keep the execution process as simple as possible, move complexity out of the runtime logic, and encapsulate capabilities into an extensible tool system.
+
+Instead of relying on complex and opaque internal workflows, QevosAgent defines capabilities as tools. These tools can continuously evolve and improve, which means the capability boundary of QevosAgent is not fixed. It can expand over time as the tool ecosystem grows, giving it a broad and open-ended potential.
+
+At the same time, QevosAgent emphasizes observability and transparency. Through a visual dashboard, users can monitor the Agent’s execution process, task status, and key information in real time, making the progress of complex work clear, visible, and easy to understand.
+
 ### 🌟 Why QevosAgent?
 
 #### 🪟 Cross-Platform Native Experience
@@ -234,6 +240,12 @@ If QevosAgent has been helpful to you, please give it a ⭐ Star!
 **🦊 你的本地 AI 智能体，开箱即用**
 
 一个真正为所有人设计的本地 AI 智能体——支持 Windows/macOS/Linux 原生安装，无需 WSL，开箱即用。
+
+QevosAgent 的核心设计哲学是：尽可能简化运行流程，将复杂性从系统逻辑中剥离出来，并沉淀到可扩展的工具体系中。
+
+它不依赖复杂、封闭的运行机制，而是将各种能力定义为工具。工具可以持续发展、不断进化，因此 QevosAgent 的能力边界并不是固定的，而是可以随着工具生态的扩展而不断延伸，具备广阔的成长空间。
+
+同时，QevosAgent 倡导运行过程的可观测化与透明化。通过可视化看板，用户可以实时观察 Agent 的执行过程、任务状态和关键信息，让复杂任务的推进过程清晰可见、一目了然。
 
 ### 🌟 为什么选择 QevosAgent？
 
