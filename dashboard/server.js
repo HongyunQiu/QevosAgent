@@ -1098,7 +1098,7 @@ const server = http.createServer(async (req, res) => {
 
   // ── GET /api/version ─────────────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/version') {
-    json(200, { version: APP_VERSION });
+    json(200, { version: APP_VERSION, instanceName: state.instanceName || '' });
     return;
   }
 

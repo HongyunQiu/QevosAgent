@@ -1,41 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.coordinatorlayout.widget.CoordinatorLayout
+<FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:fitsSystemWindows="true">
 
-    <com.google.android.material.appbar.AppBarLayout
-        android:id="@+id/appBarLayout"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content">
-
-        <androidx.appcompat.widget.Toolbar
-            android:id="@+id/toolbar"
-            android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:minHeight="44dp"
-            android:background="?attr/colorPrimary"
-            app:titleTextAppearance="@style/ToolbarTitleText"
-            app:contentInsetStartWithNavigation="0dp" />
-
-        <ProgressBar
-            android:id="@+id/progressBar"
-            style="?android:attr/progressBarStyleHorizontal"
-            android:layout_width="match_parent"
-            android:layout_height="3dp"
-            android:max="100"
-            android:visibility="gone"
-            android:progressTint="@color/colorAccent" />
-
-    </com.google.android.material.appbar.AppBarLayout>
-
     <WebView
         android:id="@+id/webView"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior" />
+        android:layout_height="match_parent" />
+
+    <!-- Thin page-load progress bar pinned to the top -->
+    <ProgressBar
+        android:id="@+id/progressBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="3dp"
+        android:layout_gravity="top"
+        android:max="100"
+        android:visibility="gone"
+        android:progressTint="@color/colorAccent" />
 
     <!-- 连接失败时的错误界面 -->
     <LinearLayout
@@ -45,8 +29,8 @@
         android:orientation="vertical"
         android:gravity="center"
         android:padding="40dp"
-        android:visibility="gone"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+        android:background="@color/white"
+        android:visibility="gone">
 
         <TextView
             android:layout_width="wrap_content"
@@ -85,8 +69,27 @@
             android:id="@+id/btnSettings"
             android:layout_width="200dp"
             android:layout_height="wrap_content"
-            android:text="修改连接设置" />
+            android:text="服务器设置" />
 
     </LinearLayout>
 
-</androidx.coordinatorlayout.widget.CoordinatorLayout>
+    <!-- Right-edge floating handle (draggable vertically); tap opens the action menu.
+         Placed last so it floats above the error screen too (switch servers while disconnected). -->
+    <FrameLayout
+        android:id="@+id/edgeHandle"
+        android:layout_width="26dp"
+        android:layout_height="56dp"
+        android:layout_gravity="end|top"
+        android:alpha="0.4"
+        android:background="@drawable/bg_edge_handle">
+
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_handle"
+            android:contentDescription="菜单" />
+
+    </FrameLayout>
+
+</FrameLayout>
