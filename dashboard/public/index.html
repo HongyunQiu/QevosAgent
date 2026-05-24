@@ -1605,11 +1605,11 @@ function renderTopBar(data, rid) {
   if (gKillHoldTimer) pill.classList.add('holding');   // preserve hold highlight across 500ms re-renders
 
   const startDate = parseRunIdDate(rid);
-  // On mobile the run-pill is the kill control, so show a "hold to kill" hint
-  // instead of the elapsed timer whenever the agent is killable.
-  const pillText = () => (isMobileLayout() && pill.dataset.killable === '1')
+  // Normally show the elapsed timer; only while the user is actively pressing the
+  // run-pill (mobile hold-to-kill) does it switch to the "长按中止" hint.
+  const pillText = () => (gKillHolding
     ? uiT('runpill.kill_hint')
-    : fmtElapsed(Date.now() - gElapsedStart);
+    : fmtElapsed(Date.now() - gElapsedStart));
   if (data.agentAlive && startDate) {
     if (!gElapsedTimer || gElapsedStart !== startDate.getTime()) {
       clearInterval(gElapsedTimer);
@@ -2294,6 +2294,7 @@ async function killAgent() {
 // the hold; releasing early cancels. The hold itself is the confirmation.
 const KILL_HOLD_MS = 1200;
 let gKillHoldTimer = null;
+let gKillHolding   = false;   // true only while the user is actively pressing the run-pill
 function isMobileLayout() {
   return window.matchMedia('(max-width: 768px), (orientation: portrait)').matches;
 }
@@ -2301,16 +2302,22 @@ function setupKillHold() {
   const pill = document.getElementById('runPill');
   const fill = document.getElementById('pillHold');
   if (!pill || !fill) return;
+  const label = document.getElementById('runPillLabel');
   const reset = () => {
     clearTimeout(gKillHoldTimer); gKillHoldTimer = null;
+    gKillHolding = false;
     pill.classList.remove('holding');
     fill.style.transition = 'width 140ms ease-out';
     fill.style.width = '0%';
+    // restore the elapsed-time label immediately (the 1s tick would otherwise lag)
+    if (label && gElapsedStart) label.textContent = fmtElapsed(Date.now() - gElapsedStart);
   };
   pill.addEventListener('pointerdown', (e) => {
     if (!isMobileLayout() || pill.dataset.killable !== '1') return;
     e.preventDefault();
     try { pill.setPointerCapture(e.pointerId); } catch (_) {}
+    gKillHolding = true;
+    if (label) label.textContent = uiT('runpill.kill_hint');   // show "长按中止" only while pressing
     pill.classList.add('holding');
     fill.style.transition = 'none';
     fill.style.width = '0%';
