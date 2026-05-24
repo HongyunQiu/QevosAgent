@@ -14,8 +14,11 @@
         <androidx.appcompat.widget.Toolbar
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
-            android:layout_height="?attr/actionBarSize"
-            android:background="?attr/colorPrimary" />
+            android:layout_height="44dp"
+            android:minHeight="44dp"
+            android:background="?attr/colorPrimary"
+            app:titleTextAppearance="@style/ToolbarTitleText"
+            app:contentInsetStartWithNavigation="0dp" />
 
         <ProgressBar
             android:id="@+id/progressBar"

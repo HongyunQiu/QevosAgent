@@ -1,0 +1,18 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Gradle wrapper jar — CI 现生成，不提交二进制（见 .github/workflows/release.yml）
+gradle/wrapper/gradle-wrapper.jar
+
+# Build logs
+last-build.log

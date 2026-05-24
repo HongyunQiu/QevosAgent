@@ -362,9 +362,16 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
   border-radius: 9px; padding: 1px 8px; font-family: var(--mono); white-space: nowrap;
 }
 .iter-sep .iter-token {
-  font-family: var(--mono); font-size: 10px; color: var(--muted); opacity: 0.65;
-  white-space: nowrap; order: 3;
+  display: flex; align-items: center; gap: 6px; order: 3; flex-shrink: 0;
 }
+.tokbar {
+  display: flex; width: 80px; height: 7px; border-radius: 4px;
+  background: var(--bg3); border: 1px solid var(--border); overflow: hidden;
+}
+.tokbar-seg { height: 100%; }
+.tokbar-prompt { background: var(--blue); opacity: 0.45; }
+.tokbar-output { background: var(--orange); opacity: 0.35; }
+.tokbar-max { font-family: var(--mono); font-size: 9.5px; color: var(--muted); opacity: 0.75; }
 
 .ev-goal { background: rgba(88,166,255,0.06); border: 1px solid rgba(88,166,255,0.15); padding: 10px 13px; }
 .ev-goal .ev-label { display: flex; align-items: center; font-size: 12px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--blue); margin-bottom: 5px; }
@@ -1030,9 +1037,12 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
 /* ── Mobile layout (≤ 768px portrait) ───────────────────────────────────── */
 @media (max-width: 768px), (orientation: portrait) {
-  /* Single-column grid — sidebar and right panel removed from flow */
+  /* Single-column grid — sidebar and right panel removed from flow.
+     minmax(0,1fr) lets the track shrink to the viewport instead of growing
+     to a child's min-content (otherwise the wide tab strip forces the whole
+     column past the screen, clipping the topbar/cmdbar right edge). */
   .app {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 44px 1fr 54px;
     grid-template-areas:
       "topbar"
@@ -1041,11 +1051,21 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     height: 100dvh;
   }
 
+  /* Allow grid children to shrink below their content's min-content width */
+  .topbar, .events-panel, .center-pane, .events-log, .cmdbar { min-width: 0; }
+
+  /* The center tab strip is wider than the screen — scroll it horizontally
+     inside its own box instead of pushing the page sideways */
+  .center-tab-strip { overflow-x: auto; scrollbar-width: none; }
+  .center-tab-strip::-webkit-scrollbar { display: none; }
+  .center-tab { flex-shrink: 0; }
+
   /* Topbar: taller for touch, hide desktop-only items */
-  .topbar         { height: 44px; padding: 0 12px; gap: 8px; }
+  .topbar         { height: 44px; padding: 0 10px; gap: 6px; }
   .font-size-btn  { display: none; }
   .topbar-sep     { display: none; }
   .ws-pill        { display: none; }
+  .app-version    { display: none; }  /* save width so right-edge controls aren't clipped */
 
   /* Show mobile toggle buttons */
   .mobile-menu-btn,
@@ -1820,9 +1840,7 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = []) {
       if (iterNum !== lastIter && ev.type === 'tool_call') {
         if (lastIter >= 0) {
           const ts = tokenStatsMap[iterNum - 1];
-          const tokenHtml = ts
-            ? `<span class="iter-token">[token] prompt≈${ts.promptEst} / context=${ts.contextWindow} (est), max_tokens=${ts.maxTokens}</span>`
-            : '';
+          const tokenHtml = renderTokenBar(ts);
           const _maxIterSuffix = meta._max_iterations != null ? ` of ${meta._max_iterations}` : '';
           html += `<div class="iter-sep"><span class="iter-label">Iteration ${iterNum}${_maxIterSuffix}</span>${tokenHtml}</div>`;
         }
@@ -1859,6 +1877,31 @@ function estTokens(text) {
   return ratio > 0.3 ? Math.floor(s.length / 2) + 1 : Math.floor(s.length / 4) + 1;
 }
 function fmtTok(text) { return '~' + estTokens(text).toLocaleString() + ' tok'; }
+
+// Context-budget bar for the iteration separator: a fixed-width track represents
+// the model's context window; the prompt (input) and reserved output ("下文") are
+// drawn as proportional colored segments. Replaces the old long numeric line that
+// could overflow the events log horizontally on narrow screens.
+function fmtK(n) {
+  const k = n / 1000;
+  return (k >= 10 ? Math.round(k) : k.toFixed(1)) + 'K';
+}
+function renderTokenBar(ts) {
+  if (!ts || !ts.contextWindow) return '';
+  const ctx = ts.contextWindow;
+  const prompt = Math.max(0, ts.promptEst || 0);
+  const out = Math.max(0, ts.maxTokens || 0);
+  const p = Math.min(100, prompt / ctx * 100);
+  const o = Math.min(Math.max(0, 100 - p), out / ctx * 100);
+  const title = `prompt≈${prompt.toLocaleString()} · 下文≤${out.toLocaleString()} · 上下文 ${ctx.toLocaleString()}`;
+  return `<span class="iter-token" title="${esc(title)}">`
+       +   `<span class="tokbar">`
+       +     `<span class="tokbar-seg tokbar-prompt" style="width:${p.toFixed(1)}%"></span>`
+       +     `<span class="tokbar-seg tokbar-output" style="width:${o.toFixed(1)}%"></span>`
+       +   `</span>`
+       +   `<span class="tokbar-max">${fmtK(ctx)}</span>`
+       + `</span>`;
+}
 
 function renderSystemPrompt(text) {
   const exp = gSysPromptExpanded;
