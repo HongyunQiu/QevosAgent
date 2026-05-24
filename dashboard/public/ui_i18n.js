@@ -7,6 +7,7 @@
       // index.html
       'nostop.title':          '持续对话模式：完成任务后不退出，等待下一个目标',
       'nostop.idle_banner':    '任务完成 — 请输入下一个目标',
+      'runpill.kill_hint':     '长按中止',
       'ask_user.label':        '💬 Agent 向你提问',
       'openview.prompt':       '🔔 Agent 想展示:',
       'openview.open_btn':     '打开展示页',
@@ -42,6 +43,7 @@
       // index.html
       'nostop.title':          'Continuous dialogue mode: stay running after task completion and wait for the next goal',
       'nostop.idle_banner':    'Task complete — enter the next goal',
+      'runpill.kill_hint':     'Kill Task',
       'ask_user.label':        '💬 Agent is asking you',
       'openview.prompt':       '🔔 Agent wants to show:',
       'openview.open_btn':     'Open',

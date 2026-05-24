@@ -148,9 +148,17 @@ input, textarea { font-family: inherit; font-size: inherit; }
   border-radius: 20px; padding: 4px 12px;
   font-family: var(--mono); font-size: 11.5px; color: var(--muted);
   transition: border-color 0.2s;
+  position: relative; overflow: hidden;
 }
 .run-pill.live { border-color: rgba(63,185,80,0.4); color: var(--text); }
 .run-pill.launching { border-color: rgba(255,166,87,0.5); color: var(--orange); }
+/* press-and-hold-to-kill progress fill (mobile); sits behind the dot + label */
+.run-pill > .pill-hold {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 0;
+  background: rgba(248,81,73,0.45); z-index: 0; pointer-events: none;
+}
+.run-pill > .status-dot, .run-pill > #runPillLabel { position: relative; z-index: 1; }
+.run-pill.holding { border-color: rgba(248,81,73,0.7); }
 
 .status-dot {
   width: 8px; height: 8px; border-radius: 50%;
@@ -550,8 +558,9 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .cmd-input::placeholder { color:var(--muted); }
 .cmd-input:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(88,166,255,0.12); }
 .cmd-send {
-  background:linear-gradient(135deg,#1f6feb,#3b82f6); border:none; color:#fff;
-  padding:8px 18px; border-radius:7px; font-weight:600; font-size:12px;
+  background:linear-gradient(135deg,#1f6feb,#3b82f6); border:1px solid transparent; color:#fff;
+  box-sizing:border-box; width:72px; padding:8px 0; text-align:center;
+  border-radius:7px; font-weight:600; font-size:12px;
   transition:all 0.15s; flex-shrink:0; box-shadow:0 1px 4px rgba(31,111,235,0.4); white-space:nowrap;
 }
 .cmd-send:hover  { background:linear-gradient(135deg,#2d7ef7,#4f93ff); }
@@ -611,8 +620,9 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 /* ── Nostop toggle button ────────────────────────────────────────────── */
 .nostop-btn {
   background: var(--bg3); border: 1px solid var(--border);
-  color: var(--muted); border-radius: 6px; padding: 6px 10px;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+  color: var(--muted); border-radius: 7px;
+  box-sizing: border-box; width: 72px; padding: 8px 0; text-align: center;
+  font-size: 12px; font-weight: 600; letter-spacing: 0.3px;
   transition: all 0.15s; flex-shrink: 0; white-space: nowrap;
 }
 .nostop-btn:hover { border-color: var(--green); color: var(--green); }
@@ -1066,6 +1076,9 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
   .topbar-sep     { display: none; }
   .ws-pill        { display: none; }
   .app-version    { display: none; }  /* save width so right-edge controls aren't clipped */
+  /* Hide the KILL button on touch (easy to mis-tap); kill via press-and-hold on the run-pill */
+  .kill-btn, .kill-btn.visible { display: none; }
+  .run-pill[data-killable="1"] { cursor: pointer; touch-action: none; -webkit-user-select: none; user-select: none; }
 
   /* Show mobile toggle buttons */
   .mobile-menu-btn,
@@ -1095,9 +1108,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
   }
   .right-panel.open { transform: translateX(0); }
 
-  /* Command bar: larger touch targets */
+  /* Command bar: larger touch targets — keep Send and nostop identical size.
+     Narrower than desktop so the input keeps more room on small screens. */
   .cmd-input { padding: 10px 13px; }
-  .cmd-send  { padding: 10px 16px; }
+  .cmd-send, .nostop-btn { padding: 10px 0; width: 60px; }
 
   /* Run Files: stack tree above content instead of side-by-side */
   .files-body { flex-direction: column; }
@@ -1131,6 +1145,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     <div class="topbar-skills" id="topbarSkills"></div>
     <div class="topbar-sep"></div>
     <div class="run-pill" id="runPill">
+      <span class="pill-hold" id="pillHold"></span>
       <div class="status-dot" id="statusDot"></div>
       <span id="runPillLabel">No run</span>
     </div>
@@ -1407,7 +1422,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
            placeholder="/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20"
            onkeydown="onCmdKey(event)">
     <button class="cmd-send" id="cmdSendBtn" onclick="sendCmd()">Send</button>
-    <button class="nostop-btn" id="nostopBtn" onclick="toggleNostop()">⟳ nostop</button>
+    <button class="nostop-btn" id="nostopBtn" onclick="toggleNostop()">nostop</button>
   </div>
 </div>
 
@@ -1568,6 +1583,7 @@ function renderTopBar(data, rid) {
     dot.className   = 'status-dot launching';
     label.textContent = 'Launching…';
     kill.className  = 'kill-btn visible';
+    pill.dataset.killable = '0';
     return;
   }
 
@@ -1576,22 +1592,33 @@ function renderTopBar(data, rid) {
     dot.className  = 'status-dot';
     label.textContent = 'No run';
     kill.className = 'kill-btn';
+    pill.dataset.killable = '0';
     return;
   }
 
   const s = (data.status && data.status.status) || 'unknown';
   pill.className = 'run-pill' + (data.agentAlive ? ' live' : '');
   dot.className  = 'status-dot ' + s;
-  kill.className = (data.agentAlive && data.agentPid) ? 'kill-btn visible' : 'kill-btn';
+  const killable = !!(data.agentAlive && data.agentPid);
+  kill.className = killable ? 'kill-btn visible' : 'kill-btn';
+  pill.dataset.killable = killable ? '1' : '0';
+  if (gKillHoldTimer) pill.classList.add('holding');   // preserve hold highlight across 500ms re-renders
 
   const startDate = parseRunIdDate(rid);
+  // On mobile the run-pill is the kill control, so show a "hold to kill" hint
+  // instead of the elapsed timer whenever the agent is killable.
+  const pillText = () => (isMobileLayout() && pill.dataset.killable === '1')
+    ? uiT('runpill.kill_hint')
+    : fmtElapsed(Date.now() - gElapsedStart);
   if (data.agentAlive && startDate) {
     if (!gElapsedTimer || gElapsedStart !== startDate.getTime()) {
       clearInterval(gElapsedTimer);
       gElapsedStart = startDate.getTime();
-      const tick = () => { label.textContent = fmtElapsed(Date.now() - gElapsedStart); };
+      const tick = () => { label.textContent = pillText(); };
       tick();
       gElapsedTimer = setInterval(tick, 1000);
+    } else {
+      label.textContent = pillText();   // refresh now so layout/killable changes apply within this render
     }
   } else {
     clearInterval(gElapsedTimer);
@@ -2249,13 +2276,52 @@ async function launchAgent(goal) {
   // gIsLaunching will be cleared when the server broadcasts launching:false
 }
 
-async function killAgent() {
-  if (!confirm('Terminate the running agent process?')) return;
+async function killAgentNow() {
   try {
     const res  = await fetch('/api/kill', { method: 'POST' });
     const data = await res.json();
     toast(data.ok ? '⏹ Kill signal sent' : `✗ ${data.error}`);
   } catch { toast('✗ Network error'); }
+}
+// Desktop KILL button: explicit confirm dialog.
+async function killAgent() {
+  if (!confirm('Terminate the running agent process?')) return;
+  await killAgentNow();
+}
+
+// Mobile: the KILL button is hidden (mis-tap risk); instead press-and-hold the
+// run-pill (the timer) for ~1.2s to terminate. A red bar fills the pill during
+// the hold; releasing early cancels. The hold itself is the confirmation.
+const KILL_HOLD_MS = 1200;
+let gKillHoldTimer = null;
+function isMobileLayout() {
+  return window.matchMedia('(max-width: 768px), (orientation: portrait)').matches;
+}
+function setupKillHold() {
+  const pill = document.getElementById('runPill');
+  const fill = document.getElementById('pillHold');
+  if (!pill || !fill) return;
+  const reset = () => {
+    clearTimeout(gKillHoldTimer); gKillHoldTimer = null;
+    pill.classList.remove('holding');
+    fill.style.transition = 'width 140ms ease-out';
+    fill.style.width = '0%';
+  };
+  pill.addEventListener('pointerdown', (e) => {
+    if (!isMobileLayout() || pill.dataset.killable !== '1') return;
+    e.preventDefault();
+    try { pill.setPointerCapture(e.pointerId); } catch (_) {}
+    pill.classList.add('holding');
+    fill.style.transition = 'none';
+    fill.style.width = '0%';
+    void fill.offsetWidth;                       // reflow so the fill animates from 0
+    fill.style.transition = `width ${KILL_HOLD_MS}ms linear`;
+    fill.style.width = '100%';
+    gKillHoldTimer = setTimeout(() => { reset(); killAgentNow(); }, KILL_HOLD_MS);
+  });
+  pill.addEventListener('pointerup', reset);
+  pill.addEventListener('pointercancel', reset);
+  pill.addEventListener('pointerleave', reset);
 }
 
 // ── Run selection ─────────────────────────────────────────────────────────
@@ -3634,6 +3700,7 @@ function toggleTheme() {
 
 document.getElementById('wsPort').textContent = wsPortLabel();
 document.getElementById('nostopBtn').title = uiT('nostop.title');
+setupKillHold();
 
 // ── ws-pill hover info cycle ──────────────────────────────────────────────
 (function () {
