@@ -69,7 +69,7 @@ QevosAgent is not just a tool for developers:
 | 🐧 **Linux** | [Download Linux AppImage](https://github.com/HongyunQiu/QevosAgent/releases/latest) |
 
 <p align="center">
-  <img src="./assets/simpleAgent_dashboard.gif" alt="QevosAgent Demo" width="100%" />
+  <img src="./assets/kitty.mp4" alt="QevosAgent Demo" width="100%" />
 </p>
 
 #### Install from Source
