@@ -190,7 +190,7 @@ input, textarea { font-family: inherit; font-size: inherit; }
 .ws-dot.ok { background: var(--green); }
 .ws-port {
   font-family: var(--mono); font-size: 10.5px; opacity: 0.65; letter-spacing: 0.02em;
-  max-width: 60px; overflow: hidden; white-space: nowrap;
+  max-width: 160px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   transition: max-width 0.2s ease, opacity 0.15s ease;
 }
 
@@ -1432,9 +1432,16 @@ function connectWs() {
   };
 }
 
+let gInstanceName = '';
+// "name:port" when an instance nickname is set, else just ":port".
+function wsPortLabel() {
+  const port = ':' + (location.port || '80');
+  return gInstanceName ? gInstanceName + port : port;
+}
+
 function setWsUI(ok) {
   document.getElementById('wsDot').className    = 'ws-dot' + (ok ? ' ok' : '');
-  document.getElementById('wsPort').textContent = ':' + (location.port || '80');
+  document.getElementById('wsPort').textContent = wsPortLabel();
   document.getElementById('wsLabel').textContent = ok ? 'Live' : 'Reconnecting…';
 }
 
@@ -1445,6 +1452,10 @@ function handleMsg(msg) {
     // automatically follow the new activeRunId when it changes.
     const prevActiveRunId = gState && gState.activeRunId;
     gState = msg;
+    if ((msg.instanceName || '') !== gInstanceName) {
+      gInstanceName = msg.instanceName || '';
+      document.getElementById('wsPort').textContent = wsPortLabel();
+    }
     if (window._wsPillUpdateInfo) window._wsPillUpdateInfo(msg.networkInfo, msg.teamNodeId);
     // Clear the local launching flag once the server confirms launch is done
     if (!msg.launching) gIsLaunching = false;
@@ -3578,7 +3589,7 @@ function toggleTheme() {
   }
 })();
 
-document.getElementById('wsPort').textContent = ':' + (location.port || '80');
+document.getElementById('wsPort').textContent = wsPortLabel();
 document.getElementById('nostopBtn').title = uiT('nostop.title');
 
 // ── ws-pill hover info cycle ──────────────────────────────────────────────

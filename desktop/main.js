@@ -575,6 +575,7 @@ function registerIPC() {
     OPENAI_API_KEY:  process.env.OPENAI_API_KEY  || '',
     OPENAI_MODEL:    process.env.OPENAI_MODEL     || '',
     MAX_ITERS:       process.env.MAX_ITERS        || '100',
+    INSTANCE_NAME:   process.env.INSTANCE_NAME    || '',
   }));
 
   ipcMain.handle('env:save', (_, data) => {
@@ -588,14 +589,21 @@ function registerIPC() {
         }
       }
     } catch {}
+    // Form fields are authoritative for the keys they manage: a non-empty value
+    // sets the key, an empty value removes it (so clearing a field in the panel
+    // clears it in .env). Keys the form doesn't manage are preserved via `existing`.
     const merged = { ...existing };
+    const cleared = [];
     for (const [k, v] of Object.entries(data)) {
-      if (v && v.trim()) merged[k] = v.trim();
+      const val = (v || '').trim();
+      if (val) merged[k] = val;
+      else { delete merged[k]; cleared.push(k); }
     }
     const content = Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
     fs.mkdirSync(DOT_ENV_DIR, { recursive: true });
     fs.writeFileSync(envPath, content, 'utf8');
     for (const [k, v] of Object.entries(merged)) process.env[k] = v;
+    for (const k of cleared) delete process.env[k];  // sync live process so cleared keys take effect without restart
     return { ok: true };
   });
 

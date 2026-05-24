@@ -411,6 +411,7 @@ let state = {
   fileTabs:     null,   // { tabs: [...], active: string } loaded from file_tabs.json
   networkInfo:  NETWORK_INFO,
   teamNodeId:   null,
+  instanceName: process.env.INSTANCE_NAME || '',  // display-only label shown as "name:port"
 };
 
 let _linesProcessed        = 0;
@@ -763,6 +764,14 @@ function poll() {
         _webChatLinesProcessed = lines.length;
       }
     }
+  }
+
+  // Pick up live nickname edits from the settings panel (same Node process in
+  // Electron mode, so env:save updates process.env without a restart).
+  const newInstanceName = process.env.INSTANCE_NAME || '';
+  if (state.instanceName !== newInstanceName) {
+    state.instanceName = newInstanceName;
+    dirty = true;
   }
 
   // Keep launching / agentPid in sync

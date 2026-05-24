@@ -249,6 +249,14 @@
         <div class="hint">Agent 单次任务最多执行的步骤数，默认 100</div>
       </div>
 
+      <!-- 实例昵称 -->
+      <div class="form-group">
+        <label for="instance-name">实例昵称</label>
+        <input type="text" id="instance-name" name="INSTANCE_NAME"
+               placeholder="（可选，如 主控机）" maxlength="24">
+        <div class="hint">显示在看板右上角的「昵称:端口」，便于区分多个实例；留空则只显示端口</div>
+      </div>
+
       <hr class="divider">
 
       <button type="submit" class="btn-primary" id="btn-save">保存并启动</button>
@@ -280,6 +288,7 @@
         if (env.OPENAI_API_KEY)  document.getElementById('api-key').value   = env.OPENAI_API_KEY;
         if (env.OPENAI_MODEL)    document.getElementById('model').value     = env.OPENAI_MODEL;
         if (env.MAX_ITERS)       document.getElementById('max-iters').value = env.MAX_ITERS;
+        if (env.INSTANCE_NAME)   document.getElementById('instance-name').value = env.INSTANCE_NAME;
       } catch (e) { /* first run, no .env yet */ }
     }
     prefill();
@@ -317,6 +326,7 @@
           OPENAI_API_KEY:  document.getElementById('api-key').value.trim() || 'local',
           OPENAI_MODEL:    model,
           MAX_ITERS:       document.getElementById('max-iters').value.trim() || '100',
+          INSTANCE_NAME:   document.getElementById('instance-name').value.trim(),
         };
         await window.electronAPI.saveEnv(data);
         await launchDashboard();
