@@ -11,8 +11,9 @@ android {
         applicationId "com.qevos.agent"
         minSdk 24
         targetSdk 34
-        versionCode 308
-        versionName "0.3.8"
+        // 版本号优先从 CI 注入（-Pvc/-Pvn，由 git tag 计算），缺省回退到下方默认值
+        versionCode (project.hasProperty('vc') && project.property('vc')) ? project.property('vc').toInteger() : 308
+        versionName (project.hasProperty('vn') && project.property('vn')) ? project.property('vn') : "0.3.8"
     }
 
     buildTypes {

@@ -151,7 +151,10 @@ jobs:
 
       - name: Build debug APK
         working-directory: mobile/android
-        run: ./gradlew assembleDebug --no-daemon
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          VC=$(echo "$VER" | awk -F. '{printf "%d", ($1*10000)+($2*100)+$3}')
+          ./gradlew assembleDebug --no-daemon -Pvn="$VER" -Pvc="$VC"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -171,18 +174,16 @@ jobs:
         with:
           path: artifacts
 
-      # 重命名为固定文件名，让网站下载链接永远指向最新版
-      - name: Rename to stable download names
+      # Android（gradle 产出无版本号的 app-debug.apk）改名为带版本号，与其余平台保持一致
+      # 其余平台 electron-builder 已自带版本号，无需处理；不再生成重复的固定名文件
+      - name: Rename Android APK with version
         run: |
-          find artifacts -name "*.exe"       -exec cp {} artifacts/QevosAgent-Setup.exe \;
-          find artifacts -name "*.pkg" -exec cp {} artifacts/QevosAgent-macOS-arm64.pkg \;
-          find artifacts -name "*.AppImage"  -exec cp {} artifacts/QevosAgent.AppImage \;
-          find artifacts -name "*.apk"       -exec cp {} artifacts/QevosAgent-Android.apk \;
+          find artifacts -name "app-debug.apk" -exec mv {} "artifacts/QevosAgent-${GITHUB_REF_NAME#v}.apk" \;
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # 上传所有文件（含原版本号文件 + 固定名文件）
+          # 上传所有产物（每平台仅一个带版本号文件，无重复）
           files: artifacts/**/*
           generate_release_notes: false
           fail_on_unmatched_files: false
@@ -193,6 +194,6 @@ jobs:
             > 2. 在终端执行：`xattr -cr QevosAgent-macOS-*.pkg && open QevosAgent-macOS-*.pkg`
             > 之后按提示完成安装，无需重复操作。
 
-            > **Android 用户注意**：`QevosAgent-Android.apk` 为调试版本，安装前需在手机设置中开启"允许安装未知来源应用"。
+            > **Android 用户注意**：`QevosAgent-<版本>.apk` 为调试版本，安装前需在手机设置中开启"允许安装未知来源应用"。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
