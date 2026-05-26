@@ -351,6 +351,9 @@ function getLanIps() {
 const NETWORK_INFO = { hostname: os.hostname(), ips: getLanIps() };
 
 const PORT       = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
+// 默认只绑回环地址，避免在没有鉴权时被内网其他主机直接访问。
+// 等加上密码鉴权后，再通过 DASHBOARD_HOST=0.0.0.0 显式开放局域网。
+const HOST       = process.env.DASHBOARD_HOST || '127.0.0.1';
 const RUNS_DIR        = path.resolve(process.env.RUNS_DIR        || path.join(__dirname, '..', 'runs'));
 const AGENT_DIR       = path.resolve(process.env.AGENT_DIR       || path.join(__dirname, '..'));
 const SKILLS_DIR      = path.resolve(process.env.SKILLS_DIR      || path.join(AGENT_DIR, 'SKILLS'));
@@ -608,6 +611,11 @@ function updateShortTerm(runDir) {
   for (let i = 0; i < newLines.length; i++) {
     const ev = parseLine(newLines[i], _linesProcessed + i);
     if (!ev) continue;
+    if (ev.type === 'injected') {
+      // Real injected line landed — drop the optimistic placeholder from /api/inject.
+      const k = state.events.findIndex(e => e && e.optimistic && e.type === 'injected');
+      if (k !== -1) state.events.splice(k, 1);
+    }
     if (ev.type === 'tool_call' || ev.type === 'done' || ev.type === 'error') iter++;
     ev.iter = iter;
     state.events.push(ev);
@@ -1060,8 +1068,16 @@ const server = http.createServer(async (req, res) => {
       const target = runId || state.activeRunId;
       if (!target || !command) { json(400, { error: 'missing command or active run' }); return; }
       const cmdFile = path.join(RUNS_DIR, target, 'web_cmd.txt');
-      fs.writeFileSync(cmdFile, command.trim() + '\n', 'utf8');
-      state.events.push({ type: 'injected', text: command.trim(), iter: _iterCounter, idx: -1 });
+      const trimmed = command.trim();
+      // Push the optimistic placeholder BEFORE triggering the agent. Otherwise a fast
+      // agent can append the real injected line to short_term.jsonl, updateShortTerm()
+      // runs dedup, finds no optimistic yet, and the optimistic — pushed after —
+      // lingers at the bottom forever. Only for /inject — other slash commands don't
+      // land in short_term and would never get deduped.
+      if (trimmed.startsWith('/inject')) {
+        state.events.push({ type: 'injected', text: trimmed.replace(/^\/inject\s+/, ''), iter: _iterCounter, idx: Number.MAX_SAFE_INTEGER, optimistic: true });
+      }
+      fs.writeFileSync(cmdFile, trimmed + '\n', 'utf8');
       broadcast();
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
@@ -1087,9 +1103,10 @@ const server = http.createServer(async (req, res) => {
       const relPath = `artifacts/${imgName}`;
       const userText = message ? `[Web用户]: ${message}` : '[Web用户]: （图片）';
       const cmd = `/inject ${userText}\n[系统提示]: 用户通过看板上传了图片，已保存至 ${relPath}，请调用 load_image(path="${relPath}") 加载后分析。`;
+      // Push optimistic BEFORE triggering the agent — otherwise updateShortTerm()
+      // can dedup against an empty list before this push lands. See /api/inject above.
+      state.events.push({ type: 'injected', text: userText, iter: _iterCounter, idx: Number.MAX_SAFE_INTEGER, optimistic: true });
       fs.writeFileSync(path.join(RUNS_DIR, target, 'web_cmd.txt'), cmd.trim() + '\n', 'utf8');
-
-      state.events.push({ type: 'injected', text: userText, iter: _iterCounter, idx: -1 });
       broadcast();
       json(200, { ok: true, path: relPath });
     } catch (e) { json(500, { error: String(e) }); }
@@ -1600,11 +1617,14 @@ function findFreePort(startPort) {
 findFreePort(PORT).then(port => {
   if (port !== PORT) console.log(`  端口 ${PORT} 已被占用，改用 ${port}`);
   process.env.DASHBOARD_PORT = String(port);
-  server.listen(port, '0.0.0.0', () => {
+  server.listen(port, HOST, () => {
+    const lanNote = (HOST === '127.0.0.1' || HOST === 'localhost')
+      ? ' (仅本机可访问；设置 DASHBOARD_HOST=0.0.0.0 可开放局域网)'
+      : ` (绑定 ${HOST}，局域网可达)`;
     console.log('');
     console.log(`  🦊 QevosAgent Dashboard  v${APP_VERSION}`);
     console.log('  ─────────────────────────────────────');
-    console.log(`  URL      : http://localhost:${port}`);
+    console.log(`  URL      : http://localhost:${port}${lanNote}`);
     console.log(`  Runs     : ${RUNS_DIR}`);
     console.log(`  Agent    : ${AGENT_DIR}`);
     console.log(`  Python   : ${PYTHON_CMD}`);
