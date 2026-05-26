@@ -3,6 +3,10 @@ package com.qevos.agent
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.http.SslError
 import android.os.Bundle
 import android.util.TypedValue
@@ -34,6 +38,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private var settingsChanged = false
 
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    // True while the WebView is showing the error overlay (main-frame load failed).
+    // We only auto-reload on network-restore when we know the page is broken —
+    // otherwise we'd nuke the in-page WebSocket / pending send-message fetch.
+    private var inErrorState = false
+
     companion object {
         const val PREFS_NAME = "qevos_prefs"
         const val KEY_HOST = "host"
@@ -63,6 +74,8 @@ class MainActivity : AppCompatActivity() {
         binding.btnRetry.setOnClickListener { loadDashboard() }
         binding.btnSettings.setOnClickListener { openSettingsActivity() }
 
+        registerNetworkCallback()
+
         loadDashboard()
     }
 
@@ -71,7 +84,48 @@ class MainActivity : AppCompatActivity() {
         if (settingsChanged) {
             settingsChanged = false
             loadDashboard()
+            return
         }
+        // If the page died while we were backgrounded (Wi-Fi switch, Doze, etc.)
+        // and the error overlay is showing, try to recover automatically.
+        // When the page is healthy, the in-page JS handles reconnect on its own.
+        if (inErrorState) loadDashboard()
+    }
+
+    override fun onDestroy() {
+        unregisterNetworkCallback()
+        super.onDestroy()
+    }
+
+    // ── Network-change recovery ─────────────────────────────────────────────
+    // Only reloads when the WebView is already in the error state. A healthy
+    // page has its own JS-layer reconnect (online / visibilitychange events),
+    // and reloading would interrupt any in-flight send.
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        connectivityManager = cm
+        val req = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                runOnUiThread {
+                    if (inErrorState) loadDashboard()
+                }
+            }
+        }
+        try {
+            cm.registerNetworkCallback(req, cb)
+            networkCallback = cb
+        } catch (_: SecurityException) {
+            // Some OEM ROMs reject this without ACCESS_NETWORK_STATE — fail quietly.
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cb = networkCallback ?: return
+        try { connectivityManager?.unregisterNetworkCallback(cb) } catch (_: Exception) {}
+        networkCallback = null
     }
 
     private fun setupWebView() {
@@ -274,8 +328,10 @@ class MainActivity : AppCompatActivity() {
             try {
                 val url = java.net.URL("${s.url()}/api/version")
                 val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 1500
-                conn.readTimeout = 1500
+                // Mobile networks need real headroom — 1.5s used to fail on
+                // freshly-associated Wi-Fi and fall back to the IP label.
+                conn.connectTimeout = 4000
+                conn.readTimeout = 4000
                 conn.requestMethod = "GET"
                 if (conn.responseCode == 200) {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
@@ -301,6 +357,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showError(show: Boolean) {
+        inErrorState = show
         binding.layoutError.visibility = if (show) View.VISIBLE else View.GONE
         binding.webView.visibility = if (show) View.GONE else View.VISIBLE
     }

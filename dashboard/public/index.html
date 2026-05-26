@@ -1456,15 +1456,123 @@ let gElapsedTimer  = null;        // setInterval handle for the elapsed-time cou
 let gElapsedStart  = null;        // Date when current run started (parsed from run ID)
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
+// Reconnect strategy:
+//   - exponential backoff (0s → 1s → 3s → 5s → 10s, capped)
+//   - immediate reconnect on `online`, `visibilitychange=visible`, `pageshow`
+//   - app-level ping every 25s; if no pong within 10s, force a reconnect
+//     (works around mobile NAT/Wi-Fi silently dropping idle TCP).
+let gReconnAttempt = 0;
+let gPingTimer     = null;
+let gPongTimer     = null;
+
+function scheduleReconnect() {
+  clearTimeout(gReconnTimer);
+  const delays = [0, 1000, 3000, 5000, 10000];
+  const d = delays[Math.min(gReconnAttempt, delays.length - 1)];
+  gReconnAttempt++;
+  gReconnTimer = setTimeout(connectWs, d);
+}
+
+function stopHeartbeat() {
+  clearInterval(gPingTimer); gPingTimer = null;
+  clearTimeout(gPongTimer);  gPongTimer = null;
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  gPingTimer = setInterval(() => {
+    if (!gWs || gWs.readyState !== WebSocket.OPEN) return;
+    try { gWs.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch {}
+    clearTimeout(gPongTimer);
+    // Any inbound message resets this timer (see onmessage).
+    gPongTimer = setTimeout(() => {
+      // No traffic for 10s after ping → assume dead socket, force reconnect.
+      try { gWs && gWs.close(); } catch {}
+    }, 10000);
+  }, 25000);
+}
+
 function connectWs() {
+  clearTimeout(gReconnTimer);
+  // If a stale socket is still hanging around, drop it before opening a new one.
+  if (gWs && gWs.readyState !== WebSocket.CLOSED) {
+    try { gWs.onclose = null; gWs.close(); } catch {}
+  }
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   gWs = new WebSocket(`${proto}//${location.host}`);
-  gWs.onopen  = ()  => { setWsUI(true); clearTimeout(gReconnTimer); };
-  gWs.onclose = ()  => { setWsUI(false); gReconnTimer = setTimeout(connectWs, 3000); };
+  gWs.onopen  = ()  => {
+    gReconnAttempt = 0;
+    setWsUI(true);
+    clearTimeout(gReconnTimer);
+    startHeartbeat();
+  };
+  gWs.onclose = ()  => {
+    setWsUI(false);
+    stopHeartbeat();
+    scheduleReconnect();
+  };
   gWs.onerror = ()  => setWsUI(false);
   gWs.onmessage = e => {
-    try { handleMsg(JSON.parse(e.data)); } catch {}
+    // Any inbound traffic counts as a heartbeat — reset the pong watchdog.
+    clearTimeout(gPongTimer); gPongTimer = null;
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg && msg.type === 'pong') return;  // pong-only, no UI handling
+      handleMsg(msg);
+    } catch {}
   };
+}
+
+// Wake the socket as soon as the OS/browser tells us the network or page is alive again.
+// On Android WebView these fire on Wi-Fi reassociation, app foregrounding, etc.
+function kickReconnectIfDead() {
+  if (!gWs || gWs.readyState === WebSocket.CLOSED || gWs.readyState === WebSocket.CLOSING) {
+    gReconnAttempt = 0;
+    connectWs();
+  }
+}
+window.addEventListener('online',   kickReconnectIfDead);
+window.addEventListener('pageshow', kickReconnectIfDead);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') kickReconnectIfDead();
+});
+
+// ── Robust POST with retry ────────────────────────────────────────────────
+// Mobile networks (Wi-Fi reassociation, Doze, NAT timeout) frequently leave
+// dead keep-alive sockets. The first request reuses the dead socket and fails
+// with TypeError; the second opens a fresh TCP connection and succeeds.
+// We retry network/5xx failures up to `tries` times with short backoff so the
+// user doesn't have to tap "send" 2-3 times.
+async function postJsonWithRetry(url, body, { tries = 3, timeoutMs = 8000 } = {}) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    const ctl = new AbortController();
+    const to  = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+        cache:   'no-store',
+        signal:  ctl.signal,
+      });
+      clearTimeout(to);
+      // Retry on transient server errors; surface 4xx immediately (caller's fault).
+      if (res.status >= 500 && res.status < 600 && i < tries - 1) {
+        lastErr = new Error('HTTP ' + res.status);
+      } else {
+        return res;
+      }
+    } catch (e) {
+      clearTimeout(to);
+      lastErr = e;
+      // If the WS is also dead, this is a good moment to kick it.
+      kickReconnectIfDead();
+    }
+    // Backoff: 0ms, 400ms, 1200ms — fast enough to feel like one tap.
+    await new Promise(r => setTimeout(r, i === 0 ? 0 : 400 * i));
+  }
+  throw lastErr || new Error('Network error');
 }
 
 let gInstanceName = '';
@@ -2356,14 +2464,10 @@ async function sendCmd() {
       const runId = (gState && gState.activeRunId) || gViewRunId;
       if (!runId) { toast('⚠ No active run'); return; }
       try {
-        const res = await fetch('/api/inject', {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ command: raw, runId }),
-        });
+        const res = await postJsonWithRetry('/api/inject', { command: raw, runId });
         if (res.ok) { input.value = ''; toast(`▶ New goal sent`); }
         else toast('✗ Server rejected');
-      } catch { toast('✗ Network error'); }
+      } catch { toast('✗ Network error (retried)'); }
       return;
     }
     // Slash commands fall through to normal handling below
@@ -2396,14 +2500,10 @@ async function sendCmd() {
   }
 
   try {
-    const res = await fetch('/api/inject', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ command: cmd, runId }),
-    });
+    const res = await postJsonWithRetry('/api/inject', { command: cmd, runId });
     if (res.ok) { input.value = ''; toast(`✓ Sent: ${raw}`); }
     else toast('✗ Server rejected the command');
-  } catch { toast('✗ Network error'); }
+  } catch { toast('✗ Network error (retried)'); }
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────
