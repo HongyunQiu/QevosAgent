@@ -996,6 +996,23 @@ function killAgent() {
 let cronLib = null;
 try { cronLib = require('node-cron'); } catch { /* optional dependency missing */ }
 
+let cronstrue = null;
+try {
+  cronstrue = require('cronstrue');
+  // Preload zh locale; cronstrue auto-falls-back to English when locale unknown.
+  try { require('cronstrue/locales/zh_CN'); } catch {}
+} catch { /* optional */ }
+
+function cronToHuman(expr) {
+  if (!cronstrue || !expr) return '';
+  try {
+    return cronstrue.toString(expr, {
+      locale: LANG === 'zh' ? 'zh_CN' : 'en',
+      use24HourTimeFormat: true,
+    });
+  } catch { return ''; }
+}
+
 /** id → { task: node-cron task, meta: parsed frontmatter, body, mtime } */
 const cronJobs = new Map();
 
@@ -1079,6 +1096,7 @@ function cronsList() {
       meta: job ? job.meta : null,
       valid: job ? !!job.task : false,
       error: job ? (job.error || null) : null,
+      humanCron: job && job.meta && job.meta.cron ? cronToHuman(job.meta.cron) : '',
     };
   });
 }
@@ -1553,7 +1571,12 @@ const server = http.createServer(async (req, res) => {
     if (!fs.existsSync(fp)) { json(404, { error: 'cron not found' }); return; }
     const content = readText(fp) || '';
     const job     = cronJobs.get(id);
-    json(200, { id, content, meta: job ? job.meta : null, error: job ? job.error : null });
+    json(200, {
+      id, content,
+      meta: job ? job.meta : null,
+      error: job ? job.error : null,
+      humanCron: job && job.meta && job.meta.cron ? cronToHuman(job.meta.cron) : '',
+    });
     return;
   }
 

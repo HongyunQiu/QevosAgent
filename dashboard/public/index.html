@@ -3055,9 +3055,19 @@ function renderCronsList() {
     else dot.style.background = 'var(--green)';
     dot.title = c.error || (c.meta && c.meta.enabled === false ? 'disabled' : 'active');
 
+    const nameCol = document.createElement('div');
+    nameCol.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:1px';
     const nameSpan = document.createElement('span');
     nameSpan.className = 'skill-item-name';
     nameSpan.textContent = (c.meta && c.meta.name) ? c.meta.name : c.id;
+    nameCol.appendChild(nameSpan);
+    if (c.humanCron) {
+      const sub = document.createElement('span');
+      sub.style.cssText = 'font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      sub.textContent = c.humanCron;
+      sub.title = c.humanCron;
+      nameCol.appendChild(sub);
+    }
 
     const cronExpr = document.createElement('span');
     cronExpr.className = 'skill-item-size';
@@ -3065,7 +3075,7 @@ function renderCronsList() {
     cronExpr.textContent = (c.meta && c.meta.cron) ? c.meta.cron : '—';
 
     row.appendChild(dot);
-    row.appendChild(nameSpan);
+    row.appendChild(nameCol);
     row.appendChild(cronExpr);
     row.addEventListener('click', () => openCron(c.id));
     container.appendChild(row);
@@ -3089,6 +3099,7 @@ async function openCron(id) {
     const m = data.meta || {};
     const parts = [];
     if (m.cron) parts.push('cron: ' + m.cron);
+    if (data.humanCron) parts.push('“' + data.humanCron + '”');
     if (m.on_conflict) parts.push(m.on_conflict);
     if (m.enabled === false) parts.push('disabled');
     if (data.error) parts.push('⚠ ' + data.error);
