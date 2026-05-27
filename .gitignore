@@ -53,6 +53,10 @@ config/
 SKILLS/*
 CLAUDE.md
 
+# Cron runtime state (per-machine, not source)
+crons/.history.jsonl
+crons/.pending.json
+
 # Local release scripts (private build tooling)
 release.ps1
 release.sh
