@@ -300,6 +300,7 @@ async function startDashboard() {
   process.env.AGENT_CONCEPT    = path.join(userDataDir, 'memory_macro.md');
   process.env.AGENT_EPISODIC   = path.join(userDataDir, 'memory_episodic.jsonl');
   process.env.SKILLS_DIR       = userSkills;
+  process.env.CRONS_DIR        = path.join(userDataDir, 'crons');
 
   const serverPath = path.join(APP_ROOT, 'dashboard', 'server.js');
   try {

@@ -1216,6 +1216,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
       <div class="ctab-sep"></div>
       <button class="center-tab" id="ctab-agentsmd" onclick="setCenterTab('agentsmd')">AGENTS.md</button>
       <button class="center-tab" id="ctab-skills" onclick="setCenterTab('skills')">Skills</button>
+      <button class="center-tab" id="ctab-crons" onclick="setCenterTab('crons')">Crons</button>
       <button class="center-tab" id="ctab-advisormd" onclick="setCenterTab('advisormd')">ADVISOR.md</button>
       <button class="center-tab" id="ctab-memory" onclick="setCenterTab('memory')">Memory</button>
       <button class="center-tab" id="ctab-files" onclick="setCenterTab('files')">Run Files</button>
@@ -1287,6 +1288,50 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
             <div class="agents-body">
               <div class="md-render agents-view" id="skillsView"></div>
               <textarea class="agents-edit" id="skillsEdit" style="display:none" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Crons pane -->
+    <div class="center-pane" id="cpane-crons">
+      <div class="agents-toolbar">
+        <span class="agents-title">Crons</span>
+        <span class="agents-hint" id="cronsHint"></span>
+        <div class="bar-gap"></div>
+        <button class="icon-btn" onclick="loadCrons()">↺ Refresh</button>
+        <button class="icon-btn" onclick="cronsNewPrompt()">＋ New</button>
+      </div>
+      <div class="skills-body">
+        <div class="skills-list" id="cronsList">
+          <div class="skills-list-header">
+            <span>Schedules</span>
+            <span id="cronsPendingCount" style="color:var(--yellow)"></span>
+          </div>
+          <div id="cronsItems"></div>
+          <button class="skills-add-btn" onclick="cronsNewPrompt()">＋ New cron…</button>
+        </div>
+        <div class="skills-editor">
+          <div id="cronsEditorEmpty" class="skills-empty-hint">Select a cron to view or edit</div>
+          <div id="cronsEditorPanel" style="display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden">
+            <div class="skills-editor-header">
+              <span class="skills-editor-name" id="cronsEditorName"></span>
+              <span id="cronsEditorMeta" style="font-size:11px;color:var(--muted);margin-left:8px"></span>
+              <div class="bar-gap"></div>
+              <button class="icon-btn" id="cronsRunBtn" onclick="runCronNow()" title="Run now">▶ Run now</button>
+              <button class="icon-btn" id="cronsEditBtn" onclick="enterCronEdit()">✎ Edit</button>
+              <button class="icon-btn" id="cronsSaveBtn" style="display:none" onclick="saveCron()">✓ Save</button>
+              <button class="icon-btn" id="cronsCancelBtn" style="display:none" onclick="cancelCronEdit()">✕ Cancel</button>
+              <button class="icon-btn" style="color:var(--red)" onclick="deleteCron()">🗑</button>
+            </div>
+            <div class="agents-body">
+              <div class="md-render agents-view" id="cronsView"></div>
+              <textarea class="agents-edit" id="cronsEdit" style="display:none" spellcheck="false"></textarea>
+            </div>
+            <div id="cronsHistoryPanel" style="border-top:1px solid var(--border);max-height:160px;overflow:auto;padding:6px 10px;font-size:11px;color:var(--muted);background:var(--bg2)">
+              <div style="font-weight:600;color:var(--cyan);margin-bottom:4px">Recent triggers</div>
+              <div id="cronsHistoryList"><span style="color:var(--muted)">(none yet)</span></div>
             </div>
           </div>
         </div>
@@ -1619,6 +1664,13 @@ function handleMsg(msg) {
   } else if (msg.type === 'console') {
     pushConsole(msg.stream, msg.text);
     if (msg.stream === 'stdout') pushStreamLine(msg.text);
+  } else if (msg.type === 'crons') {
+    if (gCenterTab === 'crons') {
+      gCrons = msg.list || [];
+      gCronPending = msg.pending || [];
+      renderCronsList();
+      renderCronsPending();
+    }
   } else if (msg.type === 'open-view') {
     const url = window.location.origin + msg.path;
     const w = window.open(url, '_blank');
@@ -2666,6 +2718,8 @@ let gCenterTab     = 'events';
 let gAgentsMdOrig  = '';
 let gAdvisorMdOrig = '';
 let gSelectedFile  = null;
+let gFileTabsSig   = '';     // last applied fileTabs serialization — skip rebuild if unchanged
+let gFileTabsInit  = false;  // restore saved active tab only on first state push
 
 function setCenterTab(name) {
   gCenterTab = name;
@@ -2678,6 +2732,7 @@ function setCenterTab(name) {
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
   if (name === 'agentsmd')       loadAgentsMd();
   if (name === 'skills')         loadSkills();
+  if (name === 'crons')          loadCrons();
   if (name === 'advisormd')      loadAdvisorMd();
   if (name === 'files')          loadRunFiles();
   if (name === 'memory')         loadMemory();
@@ -2934,6 +2989,235 @@ async function skillsCommitInlineAdd(raw) {
       toast('✗ Create failed: ' + (data.error || 'unknown'));
     }
   } catch (e) { renderSkillsList(); toast('✗ ' + e.message); }
+}
+
+// ── Crons ─────────────────────────────────────────────────────────────────
+let gCrons        = [];      // [{id, filename, size, meta, valid, error}]
+let gCronPending  = [];      // [{id, triggeredAt, on_conflict, wasBusy}]
+let gCronCurrent  = null;
+let gCronOrig     = '';
+let gCronAdding   = false;
+
+async function loadCrons() {
+  try {
+    const data = await fetch('/api/crons').then(r => r.json());
+    gCrons = data.crons || [];
+    gCronPending = data.pending || [];
+    renderCronsList();
+    renderCronsPending();
+    document.getElementById('cronsHint').textContent =
+      gCrons.length + ' cron' + (gCrons.length !== 1 ? 's' : '') +
+      (data.cronAvailable === false ? ' — node-cron missing' : '');
+    if (gCronCurrent) loadCronHistory();
+  } catch (e) {
+    document.getElementById('cronsHint').textContent = 'Error: ' + e.message;
+  }
+}
+
+function renderCronsPending() {
+  const el = document.getElementById('cronsPendingCount');
+  if (!el) return;
+  el.textContent = gCronPending.length ? gCronPending.length + ' pending' : '';
+}
+
+function renderCronsList() {
+  const container = document.getElementById('cronsItems');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (gCronAdding) {
+    const row = document.createElement('div');
+    row.className = 'skill-item skill-item-new';
+    const sp = document.createElement('span'); sp.style.width = '13px';
+    const inp = document.createElement('input');
+    inp.type = 'text'; inp.placeholder = 'cron-name';
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter')  { e.preventDefault(); cronsCommitInlineAdd(inp.value); }
+      if (e.key === 'Escape') { e.preventDefault(); gCronAdding = false; renderCronsList(); }
+    });
+    inp.addEventListener('blur', () => {
+      setTimeout(() => { if (gCronAdding) { gCronAdding = false; renderCronsList(); } }, 150);
+    });
+    row.appendChild(sp); row.appendChild(inp);
+    container.appendChild(row);
+    inp.focus();
+  }
+
+  for (const c of gCrons) {
+    const row = document.createElement('div');
+    row.className = 'skill-item' + (gCronCurrent === c.id ? ' selected' : '');
+    row.dataset.name = c.id;
+
+    const dot = document.createElement('span');
+    dot.style.cssText = 'width:8px;height:8px;border-radius:50%;flex-shrink:0;';
+    if (c.error) dot.style.background = 'var(--red)';
+    else if (c.meta && c.meta.enabled === false) dot.style.background = 'var(--muted)';
+    else dot.style.background = 'var(--green)';
+    dot.title = c.error || (c.meta && c.meta.enabled === false ? 'disabled' : 'active');
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'skill-item-name';
+    nameSpan.textContent = (c.meta && c.meta.name) ? c.meta.name : c.id;
+
+    const cronExpr = document.createElement('span');
+    cronExpr.className = 'skill-item-size';
+    cronExpr.style.fontFamily = 'var(--mono, monospace)';
+    cronExpr.textContent = (c.meta && c.meta.cron) ? c.meta.cron : '—';
+
+    row.appendChild(dot);
+    row.appendChild(nameSpan);
+    row.appendChild(cronExpr);
+    row.addEventListener('click', () => openCron(c.id));
+    container.appendChild(row);
+  }
+}
+
+async function openCron(id) {
+  gCronCurrent = id;
+  renderCronsList();
+  const panel = document.getElementById('cronsEditorPanel');
+  const empty = document.getElementById('cronsEditorEmpty');
+  panel.style.display = 'flex';
+  empty.style.display = 'none';
+  document.getElementById('cronsEditorName').textContent = id + '.md';
+  cancelCronEdit();
+  try {
+    const data = await fetch('/api/cron/' + encodeURIComponent(id)).then(r => r.json());
+    gCronOrig = data.content || '';
+    document.getElementById('cronsView').innerHTML =
+      typeof marked !== 'undefined' ? marked.parse(gCronOrig) : ('<pre>' + esc(gCronOrig) + '</pre>');
+    const m = data.meta || {};
+    const parts = [];
+    if (m.cron) parts.push('cron: ' + m.cron);
+    if (m.on_conflict) parts.push(m.on_conflict);
+    if (m.enabled === false) parts.push('disabled');
+    if (data.error) parts.push('⚠ ' + data.error);
+    document.getElementById('cronsEditorMeta').textContent = parts.join(' · ');
+    loadCronHistory();
+  } catch (e) {
+    document.getElementById('cronsView').textContent = 'Error: ' + e.message;
+  }
+}
+
+async function loadCronHistory() {
+  try {
+    const data = await fetch('/api/cron-history?limit=50').then(r => r.json());
+    const entries = (data.history || []).filter(h => !gCronCurrent || h.id === gCronCurrent).slice(-12).reverse();
+    const list = document.getElementById('cronsHistoryList');
+    if (!list) return;
+    if (!entries.length) { list.innerHTML = '<span style="color:var(--muted)">(none yet)</span>'; return; }
+    list.innerHTML = entries.map(h => {
+      const t = new Date(h.ts).toLocaleString();
+      const color = h.event === 'launched' ? 'var(--green)'
+                  : h.event === 'skipped'  ? 'var(--yellow)'
+                  : h.event === 'manual'   ? 'var(--blue)'
+                  : h.event === 'dropped'  ? 'var(--red)'
+                  : 'var(--muted)';
+      const extra = h.error ? ' — ' + esc(h.error) : (h.reason ? ' — ' + esc(h.reason) : '');
+      return '<div><span style="color:' + color + '">' + esc(h.event) + '</span> · '
+           + '<span style="color:var(--muted)">' + esc(t) + '</span> · ' + esc(h.id || '') + extra + '</div>';
+    }).join('');
+  } catch {}
+}
+
+function enterCronEdit() {
+  document.getElementById('cronsView').style.display = 'none';
+  document.getElementById('cronsEdit').style.display = '';
+  document.getElementById('cronsEditBtn').style.display = 'none';
+  document.getElementById('cronsSaveBtn').style.display = '';
+  document.getElementById('cronsCancelBtn').style.display = '';
+  document.getElementById('cronsEdit').value = gCronOrig;
+  document.getElementById('cronsEdit').focus();
+}
+
+function cancelCronEdit() {
+  document.getElementById('cronsView').style.display = '';
+  document.getElementById('cronsEdit').style.display = 'none';
+  document.getElementById('cronsEditBtn').style.display = '';
+  document.getElementById('cronsSaveBtn').style.display = 'none';
+  document.getElementById('cronsCancelBtn').style.display = 'none';
+}
+
+async function saveCron() {
+  if (!gCronCurrent) return;
+  const content = document.getElementById('cronsEdit').value;
+  try {
+    const res  = await fetch('/api/cron/' + encodeURIComponent(gCronCurrent), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      gCronOrig = content;
+      cancelCronEdit();
+      if (data.error) toast('⚠ Saved with warning: ' + data.error);
+      else toast('✓ Cron saved: ' + gCronCurrent);
+      await loadCrons();
+      await openCron(gCronCurrent);
+    } else {
+      toast('✗ Save failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ ' + e.message); }
+}
+
+async function deleteCron() {
+  if (!gCronCurrent) return;
+  if (!confirm('Delete cron "' + gCronCurrent + '"?')) return;
+  try {
+    const res = await fetch('/api/cron/' + encodeURIComponent(gCronCurrent), { method: 'DELETE' });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      gCronCurrent = null;
+      document.getElementById('cronsEditorPanel').style.display = 'none';
+      document.getElementById('cronsEditorEmpty').style.display = '';
+      toast('Cron deleted');
+      loadCrons();
+    } else {
+      toast('✗ Delete failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ ' + e.message); }
+}
+
+async function runCronNow() {
+  if (!gCronCurrent) return;
+  try {
+    const res  = await fetch('/api/cron/' + encodeURIComponent(gCronCurrent) + '/run', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      toast(data.queued ? 'Queued (agent busy)' : '▶ Launched');
+      loadCronHistory();
+    } else {
+      toast('✗ ' + (data.error || 'failed'));
+    }
+  } catch (e) { toast('✗ ' + e.message); }
+}
+
+function cronsNewPrompt() {
+  gCronAdding = true;
+  renderCronsList();
+}
+
+async function cronsCommitInlineAdd(raw) {
+  gCronAdding = false;
+  const safe = (raw || '').trim().replace(/[^a-zA-Z0-9_\-]/g, '_');
+  if (!safe) { renderCronsList(); return; }
+  const tpl = uiT('cron.default_content', { name: safe });
+  try {
+    const res  = await fetch('/api/cron/' + encodeURIComponent(safe), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: tpl }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      await loadCrons();
+      await openCron(safe);
+      enterCronEdit();
+      toast('✓ Cron created: ' + safe);
+    } else {
+      renderCronsList();
+      toast('✗ Create failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { renderCronsList(); toast('✗ ' + e.message); }
 }
 
 // ── ADVISOR.md ────────────────────────────────────────────────────────────
@@ -3694,6 +3978,14 @@ async function promptAddDirTab() {
 }
 
 function updateFilesTabsFromState(fileTabs) {
+  // Skip rebuild when fileTabs hasn't actually changed — otherwise every
+  // broadcast tears down dir-tab DOM and force-switches the center tab.
+  const sig = JSON.stringify(fileTabs || null);
+  const firstRun = !gFileTabsInit;
+  if (!firstRun && sig === gFileTabsSig) return;
+  gFileTabsSig = sig;
+  gFileTabsInit = true;
+
   // If currently on a dir tab, switch away before removing its DOM
   if (gCenterTab.startsWith('dir-')) setCenterTab('files');
 
@@ -3742,9 +4034,12 @@ function updateFilesTabsFromState(fileTabs) {
     if (activePath && tab.path === activePath) activeId = id;
   });
 
-  // Restore active tab: match dir tab by path, or switch to Run Files if saved active was 'run'
-  if (activeId) setCenterTab(activeId);
-  else if (fileTabs.active === 'run') setCenterTab('files');
+  // Restore saved active tab only on initial load — never force-switch on
+  // subsequent updates, since the user may have manually picked another tab.
+  if (firstRun) {
+    if (activeId) setCenterTab(activeId);
+    else if (fileTabs.active === 'run') setCenterTab('files');
+  }
 }
 
 // ── Mobile panel toggles ──────────────────────────────────────────────────

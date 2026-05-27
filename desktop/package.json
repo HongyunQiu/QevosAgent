@@ -16,6 +16,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "node-cron": "^3.0.3",
     "ws": "^8.18.0"
   },
   "devDependencies": {

@@ -357,6 +357,9 @@ const HOST       = process.env.DASHBOARD_HOST || '127.0.0.1';
 const RUNS_DIR        = path.resolve(process.env.RUNS_DIR        || path.join(__dirname, '..', 'runs'));
 const AGENT_DIR       = path.resolve(process.env.AGENT_DIR       || path.join(__dirname, '..'));
 const SKILLS_DIR      = path.resolve(process.env.SKILLS_DIR      || path.join(AGENT_DIR, 'SKILLS'));
+const CRONS_DIR       = path.resolve(process.env.CRONS_DIR       || path.join(AGENT_DIR, 'crons'));
+const CRONS_HISTORY   = path.join(CRONS_DIR, '.history.jsonl');
+const CRONS_PENDING   = path.join(CRONS_DIR, '.pending.json');
 const MEMORY_CONCEPT  = path.resolve(process.env.AGENT_CONCEPT   || path.join(AGENT_DIR, 'memory_macro.md'));
 const MEMORY_EPISODIC = path.resolve(process.env.AGENT_EPISODIC  || path.join(AGENT_DIR, 'memory_episodic.jsonl'));
 const PUBLIC     = path.join(__dirname, 'public');
@@ -949,6 +952,8 @@ function launchAgent(goal, nostop = false, skills = []) {
     isLaunching = false;
     agentProc   = null;
     poll(); // detects agentPid/launching changed → sets dirty → broadcasts
+    // Drain any cron triggers that piled up while we were busy.
+    setImmediate(cronsProcessPending);
   });
 
   state.agentPid = agentProc.pid || null;
@@ -966,6 +971,258 @@ function killAgent() {
   }, 3000);
   return { ok: true };
 }
+
+// ── Cron tasks ─────────────────────────────────────────────────────────────
+// Each cron is a single MD file in CRONS_DIR with YAML frontmatter:
+//   ---
+//   name: 每天早报
+//   cron: "0 9 * * *"          # 5-field cron (minute hour day month weekday)
+//   enabled: true
+//   on_conflict: skip          # skip | queue
+//   skills: [s1, s2]
+//   # timezone: Asia/Shanghai  # optional
+//   ---
+//   <goal / prompt body in markdown>
+//
+// Behaviour:
+//  - Trigger fires → append a pending entry (regardless of agent state).
+//  - On IDLE (agent process closed AND not launching), drain pending in order:
+//      - on_conflict=queue → launch
+//      - on_conflict=skip  AND agent was busy at trigger time → mark skipped
+//      - otherwise (idle at trigger) → launch
+//  - Missed triggers while dashboard offline are NOT caught up.
+//  - History is appended to CRONS_HISTORY (jsonl) for the UI to read.
+
+let cronLib = null;
+try { cronLib = require('node-cron'); } catch { /* optional dependency missing */ }
+
+/** id → { task: node-cron task, meta: parsed frontmatter, body, mtime } */
+const cronJobs = new Map();
+
+/** Array<{ id, triggeredAt, on_conflict, wasBusy }> */
+let cronPending = [];
+
+function cronsEnsureDir() {
+  try { fs.mkdirSync(CRONS_DIR, { recursive: true }); } catch {}
+}
+
+/** Very small YAML-frontmatter parser. Supports the limited fields we use. */
+function parseCronFile(content) {
+  const meta = { name: '', cron: '', enabled: true, on_conflict: 'skip', skills: [], timezone: '' };
+  let body = content;
+  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (m) {
+    body = m[2] || '';
+    for (const rawLine of m[1].split(/\r?\n/)) {
+      const line = rawLine.replace(/#.*$/, '').trim();
+      if (!line) continue;
+      const eq = line.indexOf(':');
+      if (eq < 1) continue;
+      const key = line.slice(0, eq).trim();
+      let val = line.slice(eq + 1).trim();
+      if (val.length >= 2 && ((val[0] === '"' && val.endsWith('"')) || (val[0] === "'" && val.endsWith("'")))) {
+        val = val.slice(1, -1);
+      }
+      if (key === 'enabled')      meta.enabled = !/^(false|no|0|off)$/i.test(val);
+      else if (key === 'skills') {
+        if (val.startsWith('[') && val.endsWith(']')) {
+          meta.skills = val.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+        } else if (val) {
+          meta.skills = val.split(',').map(s => s.trim()).filter(Boolean);
+        }
+      } else if (key in meta) {
+        meta[key] = val;
+      }
+    }
+  }
+  if (!['skip', 'queue'].includes(meta.on_conflict)) meta.on_conflict = 'skip';
+  return { meta, body: body.replace(/^\s+/, '') };
+}
+
+function cronsAppendHistory(entry) {
+  try {
+    cronsEnsureDir();
+    fs.appendFileSync(CRONS_HISTORY, JSON.stringify({ ...entry, ts: entry.ts || Date.now() }) + '\n', 'utf8');
+  } catch (e) { /* ignore */ }
+}
+
+function cronsSavePending() {
+  try {
+    cronsEnsureDir();
+    fs.writeFileSync(CRONS_PENDING, JSON.stringify(cronPending), 'utf8');
+  } catch {}
+}
+
+function cronsLoadPending() {
+  try {
+    const raw = fs.readFileSync(CRONS_PENDING, 'utf8');
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) cronPending = arr;
+  } catch { cronPending = []; }
+}
+
+function cronsList() {
+  cronsEnsureDir();
+  let files = [];
+  try {
+    files = fs.readdirSync(CRONS_DIR).filter(f => f.endsWith('.md'));
+  } catch { return []; }
+  return files.sort().map(f => {
+    const fp = path.join(CRONS_DIR, f);
+    const id = f.replace(/\.md$/, '');
+    const job = cronJobs.get(id);
+    const stat = (() => { try { return fs.statSync(fp); } catch { return null; } })();
+    return {
+      id,
+      filename: f,
+      size: stat ? stat.size : 0,
+      meta: job ? job.meta : null,
+      valid: job ? !!job.task : false,
+      error: job ? (job.error || null) : null,
+    };
+  });
+}
+
+function cronsUnregister(id) {
+  const job = cronJobs.get(id);
+  if (job && job.task) {
+    try { job.task.stop(); } catch {}
+  }
+  cronJobs.delete(id);
+}
+
+/** Read + register a single cron file. Returns the registered record. */
+function cronsRegister(id) {
+  cronsUnregister(id);
+  const fp = path.join(CRONS_DIR, id + '.md');
+  if (!fs.existsSync(fp)) return null;
+  const content = readText(fp) || '';
+  const { meta, body } = parseCronFile(content);
+  const rec = { id, meta, body, task: null, error: null };
+
+  if (!meta.enabled) {
+    cronJobs.set(id, rec);
+    return rec;
+  }
+  if (!meta.cron) { rec.error = 'cron expression missing'; cronJobs.set(id, rec); return rec; }
+  if (!cronLib)   { rec.error = 'node-cron not installed';  cronJobs.set(id, rec); return rec; }
+  if (!cronLib.validate(meta.cron)) { rec.error = 'invalid cron expression: ' + meta.cron; cronJobs.set(id, rec); return rec; }
+
+  try {
+    const opts = meta.timezone ? { timezone: meta.timezone } : {};
+    rec.task = cronLib.schedule(meta.cron, () => cronsOnTrigger(id), opts);
+  } catch (e) {
+    rec.error = String(e && e.message || e);
+  }
+  cronJobs.set(id, rec);
+  return rec;
+}
+
+function cronsRegisterAll() {
+  for (const id of Array.from(cronJobs.keys())) cronsUnregister(id);
+  cronsEnsureDir();
+  let files = [];
+  try { files = fs.readdirSync(CRONS_DIR).filter(f => f.endsWith('.md')); } catch {}
+  for (const f of files) cronsRegister(f.replace(/\.md$/, ''));
+}
+
+function cronsBroadcast() {
+  const msg = JSON.stringify({ type: 'crons', list: cronsList(), pending: cronPending });
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  }
+}
+
+/** Called by node-cron when a schedule fires. */
+function cronsOnTrigger(id) {
+  const job = cronJobs.get(id);
+  if (!job) return;
+  const wasBusy = isAgentRunning() || isLaunching;
+  const entry = {
+    id,
+    triggeredAt: Date.now(),
+    on_conflict: job.meta.on_conflict,
+    wasBusy,
+  };
+  cronPending.push(entry);
+  cronsSavePending();
+  cronsAppendHistory({ event: 'triggered', id, wasBusy, on_conflict: job.meta.on_conflict });
+  broadcastConsole('system', `⏰ Cron triggered: ${id} (${wasBusy ? 'busy → pending' : 'idle → will launch'})`);
+  cronsBroadcast();
+  cronsProcessPending();
+}
+
+/** Drain pending entries when the agent is idle. */
+function cronsProcessPending() {
+  if (isAgentRunning() || isLaunching) return;
+  if (!cronPending.length) return;
+  const entry = cronPending[0];
+  cronPending.shift();
+  cronsSavePending();
+
+  const job = cronJobs.get(entry.id);
+  if (!job) {
+    cronsAppendHistory({ event: 'dropped', id: entry.id, reason: 'cron file no longer exists' });
+    cronsBroadcast();
+    return setImmediate(cronsProcessPending);
+  }
+
+  // skip policy: if it was busy at trigger time, drop it now
+  if (entry.on_conflict === 'skip' && entry.wasBusy) {
+    cronsAppendHistory({ event: 'skipped', id: entry.id, triggeredAt: entry.triggeredAt });
+    broadcastConsole('system', `⏭ Cron skipped (busy at trigger): ${entry.id}`);
+    cronsBroadcast();
+    return setImmediate(cronsProcessPending);
+  }
+
+  const goal = (job.body || '').trim();
+  if (!goal) {
+    cronsAppendHistory({ event: 'dropped', id: entry.id, reason: 'empty goal' });
+    cronsBroadcast();
+    return setImmediate(cronsProcessPending);
+  }
+
+  const result = launchAgent(goal, false, job.meta.skills || []);
+  if (result.ok) {
+    cronsAppendHistory({ event: 'launched', id: entry.id, pid: result.pid, triggeredAt: entry.triggeredAt });
+    broadcastConsole('system', `▶ Cron launched: ${entry.id}`);
+  } else {
+    // Lost the race — put it back at the head for retry on next idle
+    cronPending.unshift(entry);
+    cronsSavePending();
+    cronsAppendHistory({ event: 'retry', id: entry.id, error: result.error });
+  }
+  cronsBroadcast();
+}
+
+/** Run a cron now (bypass schedule), respecting current busy state via the same pending path. */
+function cronsRunNow(id) {
+  const job = cronJobs.get(id);
+  if (!job) return { ok: false, error: 'cron not found' };
+  // Force queue semantics for explicit "run now" so it's never silently skipped.
+  const wasBusy = isAgentRunning() || isLaunching;
+  const entry = { id, triggeredAt: Date.now(), on_conflict: 'queue', wasBusy };
+  cronPending.push(entry);
+  cronsSavePending();
+  cronsAppendHistory({ event: 'manual', id, wasBusy });
+  cronsBroadcast();
+  cronsProcessPending();
+  return { ok: true, queued: wasBusy };
+}
+
+function cronsReadHistory(limit) {
+  try {
+    const raw = fs.readFileSync(CRONS_HISTORY, 'utf8');
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const tail = limit > 0 ? lines.slice(-limit) : lines;
+    return tail.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
+
+cronsLoadPending();
+cronsRegisterAll();
+// In case the server restarted with pending entries and the agent is already idle.
+setImmediate(cronsProcessPending);
 
 // ── Load a historical run ──────────────────────────────────────────────────
 
@@ -1269,6 +1526,80 @@ const server = http.createServer(async (req, res) => {
       if (!fs.existsSync(fp)) { json(404, { error: 'skill not found' }); return; }
       fs.unlinkSync(fp);
       json(200, { ok: true, name });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/crons  — list all cron files (incl. parsed meta) ─────────────
+  if (req.method === 'GET' && req.url === '/api/crons') {
+    try { json(200, { crons: cronsList(), pending: cronPending, cronAvailable: !!cronLib }); }
+    catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/cron-history?limit=N  ────────────────────────────────────────
+  if (req.method === 'GET' && req.url.startsWith('/api/cron-history')) {
+    const m = req.url.match(/limit=(\d+)/);
+    const limit = m ? parseInt(m[1], 10) : 100;
+    json(200, { history: cronsReadHistory(limit) });
+    return;
+  }
+
+  // ── GET /api/cron/:name  — read a cron file ───────────────────────────────
+  const cronGetMatch = req.url.match(/^\/api\/cron\/([^/?]+)$/);
+  if (req.method === 'GET' && cronGetMatch) {
+    const id = decodeURIComponent(cronGetMatch[1]).replace(/\.md$/, '');
+    const fp = path.join(CRONS_DIR, id + '.md');
+    if (!fs.existsSync(fp)) { json(404, { error: 'cron not found' }); return; }
+    const content = readText(fp) || '';
+    const job     = cronJobs.get(id);
+    json(200, { id, content, meta: job ? job.meta : null, error: job ? job.error : null });
+    return;
+  }
+
+  // ── POST /api/cron/:name  — create / update a cron file (re-register) ────
+  const cronPostMatch = req.url.match(/^\/api\/cron\/([^/?]+)$/);
+  if (req.method === 'POST' && cronPostMatch) {
+    try {
+      const id = decodeURIComponent(cronPostMatch[1]).replace(/\.md$/, '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+      if (!id) { json(400, { error: 'invalid id' }); return; }
+      const { content } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      cronsEnsureDir();
+      fs.writeFileSync(path.join(CRONS_DIR, id + '.md'), content, 'utf8');
+      const rec = cronsRegister(id);
+      cronsBroadcast();
+      json(200, { ok: true, id, error: rec ? rec.error : null });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── DELETE /api/cron/:name  ────────────────────────────────────────────────
+  const cronDelMatch = req.url.match(/^\/api\/cron\/([^/?]+)$/);
+  if (req.method === 'DELETE' && cronDelMatch) {
+    try {
+      const id = decodeURIComponent(cronDelMatch[1]).replace(/\.md$/, '');
+      const fp = path.join(CRONS_DIR, id + '.md');
+      if (!fs.existsSync(fp)) { json(404, { error: 'cron not found' }); return; }
+      cronsUnregister(id);
+      fs.unlinkSync(fp);
+      // Also purge any pending entries for this id
+      const before = cronPending.length;
+      cronPending = cronPending.filter(p => p.id !== id);
+      if (cronPending.length !== before) cronsSavePending();
+      cronsBroadcast();
+      json(200, { ok: true, id });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── POST /api/cron/:name/run  — run immediately (queue semantics) ────────
+  const cronRunMatch = req.url.match(/^\/api\/cron\/([^/?]+)\/run$/);
+  if (req.method === 'POST' && cronRunMatch) {
+    try {
+      const id = decodeURIComponent(cronRunMatch[1]).replace(/\.md$/, '');
+      const r  = cronsRunNow(id);
+      json(r.ok ? 200 : 404, r);
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }
