@@ -587,8 +587,11 @@ function parseLine(raw, lineIdx) {
     if (text.startsWith('[用户干预注入]') || text.startsWith('[User Injection]') || text.startsWith('[Web看板]')) {
       return { ...base, type: 'injected', text: text.replace(/^\[[^\]]+\]\s*\n?/, '').trim() };
     }
-    if (text.startsWith('[用户补充信息]') || text.startsWith('[User Info]')) {
-      return { ...base, type: 'user_answer', text: text.replace(/^\[(?:用户补充信息|User Info)\]\s*\n?/, '').trim() };
+    if (text.startsWith('[用户补充信息]') || text.startsWith('[User input]')) {
+      // Marker written by run_goal.py via t("marker.user_info") — covers both CLI
+      // ask_user answers AND /inject messages absorbed by run_goal.py:505 polling
+      // loop when agent is paused on ask_user.
+      return { ...base, type: 'user_answer', text: text.replace(/^\[(?:用户补充信息|User input)\]\s*\n?/, '').trim() };
     }
     if (lineIdx === 0) {
       const goalMarker = text.match(/(?:请完成以下目标：|Please complete the following goal:)\s*\n?([\s\S]*)/);
@@ -611,9 +614,13 @@ function updateShortTerm(runDir) {
   for (let i = 0; i < newLines.length; i++) {
     const ev = parseLine(newLines[i], _linesProcessed + i);
     if (!ev) continue;
-    if (ev.type === 'injected') {
-      // Real injected line landed — drop the optimistic placeholder from /api/inject.
-      const k = state.events.findIndex(e => e && e.optimistic && e.type === 'injected');
+    if (ev.type === 'injected' || ev.type === 'user_answer') {
+      // Real /inject landed — drop the matching optimistic placeholder. Two paths:
+      //   normal: agent writes [用户干预注入]\n{arg}        → type 'injected'
+      //   ask_user pause: run_goal.py:511 absorbs /inject  → [User input]\n{arg} → 'user_answer'
+      // Image-inject's real text appends a [系统提示] block, so fall back to startsWith.
+      let k = state.events.findIndex(e => e && e.optimistic && e.type === 'injected' && e.text === ev.text);
+      if (k === -1) k = state.events.findIndex(e => e && e.optimistic && e.type === 'injected' && ev.text.startsWith(e.text));
       if (k !== -1) state.events.splice(k, 1);
     }
     if (ev.type === 'tool_call' || ev.type === 'done' || ev.type === 'error') iter++;
