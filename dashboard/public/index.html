@@ -1314,12 +1314,13 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
         </div>
         <div class="skills-editor">
           <div id="cronsEditorEmpty" class="skills-empty-hint">Select a cron to view or edit</div>
-          <div id="cronsEditorPanel" style="display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden">
+          <div id="cronsEditorPanel" style="display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden;position:relative">
             <div class="skills-editor-header">
               <span class="skills-editor-name" id="cronsEditorName"></span>
               <span id="cronsEditorMeta" style="font-size:11px;color:var(--muted);margin-left:8px"></span>
               <div class="bar-gap"></div>
               <button class="icon-btn" id="cronsRunBtn" onclick="runCronNow()" title="Run now">▶ Run now</button>
+              <button class="icon-btn" id="cronsPickerBtn" onclick="openCronPicker()" title="时间助手">🕐 时间</button>
               <button class="icon-btn" id="cronsEditBtn" onclick="enterCronEdit()">✎ Edit</button>
               <button class="icon-btn" id="cronsSaveBtn" style="display:none" onclick="saveCron()">✓ Save</button>
               <button class="icon-btn" id="cronsCancelBtn" style="display:none" onclick="cancelCronEdit()">✕ Cancel</button>
@@ -1328,6 +1329,26 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
             <div class="agents-body">
               <div class="md-render agents-view" id="cronsView"></div>
               <textarea class="agents-edit" id="cronsEdit" style="display:none" spellcheck="false"></textarea>
+            </div>
+            <div id="cronsPickerPopover" style="display:none;position:absolute;z-index:50;top:42px;right:12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,0.4);min-width:300px;font-size:12px">
+              <div style="display:flex;gap:10px;margin-bottom:8px">
+                <label><input type="radio" name="cpMode" value="daily" checked onchange="renderCronPicker()"> 每天</label>
+                <label><input type="radio" name="cpMode" value="weekly" onchange="renderCronPicker()"> 每周</label>
+                <label><input type="radio" name="cpMode" value="monthly" onchange="renderCronPicker()"> 每月</label>
+              </div>
+              <div id="cpModeBody" style="margin-bottom:8px"></div>
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                <span style="color:var(--muted)">时间</span>
+                <input type="time" id="cpTime" value="03:00" onchange="renderCronPicker()" style="background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;padding:2px 4px">
+              </div>
+              <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:6px">
+                <div style="font-family:var(--mono,monospace);color:var(--cyan)" id="cpExpr">— — — — —</div>
+                <div style="color:var(--muted);font-size:11px;margin-top:2px" id="cpHuman">　</div>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:8px">
+                <button class="icon-btn" onclick="closeCronPicker()">取消</button>
+                <button class="icon-btn" style="color:var(--green)" onclick="applyCronPicker()">插入</button>
+              </div>
             </div>
             <div id="cronsHistoryPanel" style="border-top:1px solid var(--border);max-height:160px;overflow:auto;padding:6px 10px;font-size:11px;color:var(--muted);background:var(--bg2)">
               <div style="font-weight:600;color:var(--cyan);margin-bottom:4px">Recent triggers</div>
@@ -3229,6 +3250,102 @@ async function cronsCommitInlineAdd(raw) {
       toast('✗ Create failed: ' + (data.error || 'unknown'));
     }
   } catch (e) { renderCronsList(); toast('✗ ' + e.message); }
+}
+
+// ── Cron picker (time helper) ─────────────────────────────────────────────
+const CP_WEEKDAYS_ZH = ['日','一','二','三','四','五','六'];
+
+function openCronPicker() {
+  const pop = document.getElementById('cronsPickerPopover');
+  if (!pop) return;
+  // Auto-enter edit mode so 插入 has somewhere to write
+  if (document.getElementById('cronsEdit').style.display === 'none') enterCronEdit();
+  pop.style.display = 'block';
+  renderCronPicker();
+}
+
+function closeCronPicker() {
+  const pop = document.getElementById('cronsPickerPopover');
+  if (pop) pop.style.display = 'none';
+}
+
+function cronPickerMode() {
+  const r = document.querySelector('input[name="cpMode"]:checked');
+  return r ? r.value : 'daily';
+}
+
+function renderCronPicker() {
+  const mode = cronPickerMode();
+  const body = document.getElementById('cpModeBody');
+  if (mode === 'daily') {
+    body.innerHTML = '<span style="color:var(--muted)">每天触发一次</span>';
+  } else if (mode === 'weekly') {
+    let html = '<div style="display:flex;align-items:center;gap:6px"><span style="color:var(--muted)">星期</span><div id="cpDays" style="display:flex;gap:3px"></div></div>';
+    body.innerHTML = html;
+    const days = document.getElementById('cpDays');
+    if (!window.__cpDayState) window.__cpDayState = new Set([1]); // default Mon
+    for (let i = 0; i < 7; i++) {
+      const btn = document.createElement('span');
+      btn.textContent = CP_WEEKDAYS_ZH[i];
+      const on = window.__cpDayState.has(i);
+      btn.style.cssText = 'cursor:pointer;user-select:none;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px;border:1px solid var(--border);'
+        + (on ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : 'color:var(--fg)');
+      btn.addEventListener('click', () => {
+        if (window.__cpDayState.has(i)) window.__cpDayState.delete(i);
+        else window.__cpDayState.add(i);
+        renderCronPicker();
+      });
+      days.appendChild(btn);
+    }
+  } else if (mode === 'monthly') {
+    body.innerHTML = '<div style="display:flex;align-items:center;gap:6px"><span style="color:var(--muted)">每月</span>'
+      + '<input type="number" id="cpDom" min="1" max="31" value="' + (window.__cpDom || 1) + '" onchange="window.__cpDom=parseInt(this.value)||1;renderCronPicker()" style="width:54px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:3px;padding:2px 4px">'
+      + '<span style="color:var(--muted)">号</span></div>';
+  }
+
+  // Build the cron expression
+  const t = (document.getElementById('cpTime').value || '03:00').split(':');
+  const hh = parseInt(t[0]) || 0;
+  const mm = parseInt(t[1]) || 0;
+  let expr = '';
+  let human = '';
+  if (mode === 'daily') {
+    expr = mm + ' ' + hh + ' * * *';
+    human = `每天 ${pad2(hh)}:${pad2(mm)}`;
+  } else if (mode === 'weekly') {
+    const days = Array.from(window.__cpDayState || []).sort((a,b)=>a-b);
+    if (!days.length) { expr = '(请至少选一天)'; human = ''; }
+    else {
+      expr = mm + ' ' + hh + ' * * ' + days.join(',');
+      human = `每周 ${days.map(d => '周' + CP_WEEKDAYS_ZH[d]).join('、')} ${pad2(hh)}:${pad2(mm)}`;
+    }
+  } else if (mode === 'monthly') {
+    const d = window.__cpDom || 1;
+    expr = mm + ' ' + hh + ' ' + d + ' * *';
+    human = `每月 ${d} 号 ${pad2(hh)}:${pad2(mm)}`;
+  }
+  document.getElementById('cpExpr').textContent  = expr;
+  document.getElementById('cpHuman').textContent = human || '　';
+}
+
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+function applyCronPicker() {
+  const expr = document.getElementById('cpExpr').textContent.trim();
+  if (!expr || expr.startsWith('(')) { toast('表达式不完整'); return; }
+  const ta = document.getElementById('cronsEdit');
+  let txt = ta.value;
+  const line = 'cron: "' + expr + '"';
+  if (/^cron:\s*.*$/m.test(txt)) {
+    txt = txt.replace(/^cron:\s*.*$/m, line);
+  } else if (/^---\r?\n/.test(txt)) {
+    txt = txt.replace(/^---\r?\n/, '---\n' + line + '\n');
+  } else {
+    txt = '---\n' + line + '\n---\n' + txt;
+  }
+  ta.value = txt;
+  closeCronPicker();
+  toast('已插入：' + expr);
 }
 
 // ── ADVISOR.md ────────────────────────────────────────────────────────────
