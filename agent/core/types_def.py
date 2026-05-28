@@ -104,3 +104,6 @@ class AgentHooks:
     on_advisor:         Optional[Callable[[str, str], None]] = None
     # 运行时补丁（事件类型、error_type、规则文字）
     on_patch:           Optional[Callable[[str, str, str], None]] = None
+    # LLM 调用退避重试（尝试次数 1-based、本次等待秒数、错误简短分类）
+    # 用于向 UI 展示"模型繁忙，等待中…"这类非红色提示，避免把瞬时故障渲染为错误。
+    on_llm_retry:       Optional[Callable[[int, float, str], None]] = None

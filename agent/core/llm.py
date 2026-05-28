@@ -5,10 +5,11 @@ LLM 接口层
 """
 
 import json
+import os
 import re
 from abc import ABC, abstractmethod
 from urllib.parse import urlparse
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Callable
 
 from .types_def import Action, ActionType, AgentState, ToolSpec
 from ..i18n import t
@@ -179,8 +180,30 @@ class OpenAIBackend(LLMBackend):
         """
         import openai
         import os
+        import httpx
         # openai>=1.x uses `base_url` for OpenAI-compatible endpoints.
-        self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
+        #
+        # Explicit timeout + max_retries=0:
+        # - read timeout 默认 900s，足以覆盖 vLLM 长上下文 + 排队场景下的整个 prefill+decode，
+        #   避免被 SDK 默认的 600s 截断成 APITimeoutError。
+        # - max_retries=0 关闭 SDK 内置的快速重试（亚秒级、间隔短、无可见状态），
+        #   由 _create_with_retry 统一执行带退避和 on_retry 通知的重试策略。
+        _read_timeout = float(os.environ.get("LLM_READ_TIMEOUT", "900"))
+        _connect_timeout = float(os.environ.get("LLM_CONNECT_TIMEOUT", "15"))
+        self.client = openai.OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=httpx.Timeout(
+                connect=_connect_timeout,
+                read=_read_timeout,
+                write=30.0,
+                pool=10.0,
+            ),
+            max_retries=0,
+        )
+        # 可选退避通知回调，签名 (attempt_1_based, wait_seconds, reason)。
+        # 由 loop.py 在 run() 入口处用 hooks.on_llm_retry 注入。
+        self.on_retry: Optional[Callable[[int, float, str], None]] = None
         self.model = model
         self.base_url = base_url
         self._is_official_openai = self._detect_official_openai_endpoint(base_url)
@@ -363,8 +386,80 @@ class OpenAIBackend(LLMBackend):
             result.append({**msg, "content": new_blocks})
         return result
 
-    def _create_with_retry(self, kwargs: dict, is_stream: bool = False):
-        """Call chat.completions.create and auto-strip rejected parameters.
+    @staticmethod
+    def _is_retryable_error(exc: Exception) -> bool:
+        """Return True for transient errors worth retrying with backoff.
+
+        Covers: 5xx server errors, 429 rate limit, request timeouts,
+        connection errors.  400-class param errors are intentionally NOT
+        retryable here — those are handled inline by _try_create_with_param_strip.
+        """
+        try:
+            import openai as _openai
+            if isinstance(exc, (_openai.APITimeoutError, _openai.APIConnectionError)):
+                return True
+            if isinstance(exc, _openai.RateLimitError):
+                return True
+            if isinstance(exc, _openai.APIStatusError):
+                code = getattr(exc, "status_code", None)
+                if code is None:
+                    code = getattr(getattr(exc, "response", None), "status_code", None)
+                try:
+                    code_int = int(code) if code is not None else None
+                except Exception:
+                    code_int = None
+                if code_int is not None and 500 <= code_int < 600:
+                    return True
+                if code_int == 429:
+                    return True
+                return False
+        except Exception:
+            pass
+        # Fallback: message-level heuristic for cases where SDK wraps unusually.
+        es = str(exc).lower()
+        return any(k in es for k in (
+            " 503", " 502", " 504", " 500", " 429",
+            "timeout", "timed out", "connection error",
+            "service unavailable", "gateway", "temporarily",
+        ))
+
+    @staticmethod
+    def _classify_error(exc: Exception) -> str:
+        """Short human-readable classification for the retry-notification UI."""
+        try:
+            import openai as _openai
+            if isinstance(exc, _openai.APITimeoutError):
+                return "请求超时"
+            if isinstance(exc, _openai.APIConnectionError):
+                return "连接错误"
+            if isinstance(exc, _openai.RateLimitError):
+                return "429 限流"
+            if isinstance(exc, _openai.APIStatusError):
+                code = getattr(exc, "status_code", None) or getattr(
+                    getattr(exc, "response", None), "status_code", None
+                )
+                if code is not None:
+                    return f"{code} 服务异常"
+        except Exception:
+            pass
+        es = str(exc)
+        for code, label in (
+            ("503", "503 服务不可用"),
+            ("504", "504 网关超时"),
+            ("502", "502 网关错误"),
+            ("500", "500 服务异常"),
+            ("429", "429 限流"),
+        ):
+            if code in es:
+                return label
+        if "timeout" in es.lower() or "timed out" in es.lower():
+            return "请求超时"
+        if "connection" in es.lower():
+            return "连接错误"
+        return type(exc).__name__
+
+    def _try_create_with_param_strip(self, kwargs: dict):
+        """Single attempt that auto-strips provider-rejected params (400-class).
 
         Handles two categories of provider incompatibility:
         - "Unsupported parameter: temperature" → clear self.temperature, pop from kwargs
@@ -372,8 +467,8 @@ class OpenAIBackend(LLMBackend):
           pop X from kwargs if present; otherwise record in self._suppressed_params so
           the caller can avoid re-sending it (SDK-injected params cannot be popped here)
 
-        Retries once after stripping the offending parameter.  If the retry also
-        fails, the exception propagates normally.
+        Retries once after stripping the offending parameter within this attempt.
+        Non-param errors propagate to the outer backoff loop.
         """
         try:
             return self.client.chat.completions.create(**kwargs)
@@ -388,7 +483,6 @@ class OpenAIBackend(LLMBackend):
             if not is_param_error:
                 raise
 
-            # Extract the offending parameter name from the error message.
             param = re.search(
                 r"[Uu]n(?:known|supported)\s+parameter[:\s]+['\"]?(\w+)['\"]?", es
             )
@@ -402,12 +496,76 @@ class OpenAIBackend(LLMBackend):
             if bad in kwargs:
                 kwargs.pop(bad)
             else:
-                # SDK-injected — record so callers can pass explicit None next time.
                 suppressed = getattr(self, "_suppressed_params", set())
                 suppressed.add(bad)
                 self._suppressed_params = suppressed
 
             return self.client.chat.completions.create(**kwargs)
+
+    def _create_with_retry(self, kwargs: dict, is_stream: bool = False):
+        """Call chat.completions.create with two layers of retry:
+
+        1. Outer (this method): exponential backoff retry on transient errors
+           (5xx / 429 / timeout / connection).  Up to LLM_RETRY_MAX_ATTEMPTS
+           attempts (default 5).  Between attempts, notifies ``self.on_retry``
+           so the UI can render a non-error "等待中" status instead of a red
+           error bar.  Only after all attempts exhaust does the exception
+           propagate to loop.py.
+
+        2. Inner (_try_create_with_param_strip): 400-class param-rejection
+           handling — strips the offending param and retries once within the
+           same attempt.  Successful strips are cached so subsequent calls
+           skip the bad param entirely.
+
+        Env vars:
+            LLM_RETRY_MAX_ATTEMPTS  - total attempts (default 5, min 1)
+            LLM_RETRY_BACKOFF       - comma-separated seconds list
+                                      (default "3,10,30,60,120")
+        """
+        import time
+        import random
+
+        try:
+            max_attempts = int(os.environ.get("LLM_RETRY_MAX_ATTEMPTS", "5"))
+        except Exception:
+            max_attempts = 5
+        max_attempts = max(1, max_attempts)
+
+        try:
+            backoff_base = [
+                float(x) for x in os.environ.get(
+                    "LLM_RETRY_BACKOFF", "3,10,30,60,120"
+                ).split(",")
+                if x.strip()
+            ]
+        except Exception:
+            backoff_base = [3.0, 10.0, 30.0, 60.0, 120.0]
+        if not backoff_base:
+            backoff_base = [3.0, 10.0, 30.0, 60.0, 120.0]
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_attempts):
+            try:
+                return self._try_create_with_param_strip(kwargs)
+            except Exception as e:
+                last_exc = e
+                # 最后一次或不可重试 → 直接上抛
+                if attempt == max_attempts - 1 or not self._is_retryable_error(e):
+                    raise
+                base = backoff_base[min(attempt, len(backoff_base) - 1)]
+                jitter = base * 0.2 * (2 * random.random() - 1)
+                wait = max(0.5, base + jitter)
+                reason = self._classify_error(e)
+                if self.on_retry is not None:
+                    try:
+                        self.on_retry(attempt + 1, wait, reason)
+                    except Exception:
+                        pass  # 通知失败不影响重试本身
+                time.sleep(wait)
+        # 理论上不可达；保留以满足类型检查器。
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("LLM retry loop exited without result")
 
     def _call_api(
         self,

@@ -416,6 +416,11 @@ def console_hooks() -> AgentHooks:
 
     PURPLE = "\033[35m"
 
+    def on_llm_retry(attempt: int, wait_seconds: float, reason: str):
+        # 非错误事件——黄色"等待"提示，dashboard 看到的是普通 stdout 一行，
+        # 不会触发任何"出错"渲染。让用户感受到"在排队"而不是"出错了"。
+        print(f"{YELLOW}{t('loop.llm_retry', attempt=attempt, wait=f'{wait_seconds:.1f}', reason=reason)}{RESET}")
+
     def on_advisor(reason: str, advice: str):
         bar = "─" * 60
         preview = advice[:200].replace("\n", " ")
@@ -437,6 +442,7 @@ def console_hooks() -> AgentHooks:
         on_rebuild=on_rebuild,
         on_advisor=on_advisor,
         on_patch=on_patch,
+        on_llm_retry=on_llm_retry,
     )
 
 
@@ -471,6 +477,14 @@ def run(
     """
     if hooks is None:
         hooks = AgentHooks()  # 静默模式（无输出）
+
+    # 将 LLM 退避重试通知接到 hooks.on_llm_retry，让 UI 可以渲染"等待中"。
+    # 仅对支持 on_retry 属性的后端生效（OpenAIBackend）；AnthropicBackend 等忽略。
+    if hooks.on_llm_retry is not None and hasattr(llm, "on_retry"):
+        try:
+            llm.on_retry = hooks.on_llm_retry  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
     # 初始化/恢复状态
     if state is None:
@@ -715,6 +729,9 @@ def run(
 
             try:
                 raw_response = llm.complete(messages, system)
+                # 成功一轮，清零连续异常计数器（与下方的熔断逻辑配套）。
+                if state.meta.get("_consec_llm_errors"):
+                    state.meta["_consec_llm_errors"] = 0
             except Exception as e:
                 error_msg = f"LLM 调用失败: {e}"
                 if hooks.on_error:
@@ -756,7 +773,17 @@ def run(
                     },
                 )
                 _checkpoint_state(state)
-                state.iteration += 1
+                # LLM 调用异常不应消耗用户的"思考预算"——这是网络/服务端故障，
+                # 不是模型完成了一轮推理。仅在连续失败次数超过熔断阈值后才扣预算，
+                # 以避免永久性故障（如鉴权错误）导致死循环。
+                _consec = int(state.meta.get("_consec_llm_errors", 0)) + 1
+                state.meta["_consec_llm_errors"] = _consec
+                try:
+                    _max_consec = int(os.environ.get("LLM_CONSEC_ERROR_BUDGET", "10"))
+                except Exception:
+                    _max_consec = 10
+                if _consec >= max(1, _max_consec):
+                    state.iteration += 1
                 continue
 
             if os.environ.get("DEBUG_LLM_IO", "0") == "1":
