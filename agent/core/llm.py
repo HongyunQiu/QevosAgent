@@ -1018,11 +1018,15 @@ def parse_response(raw: str) -> Action:
                         error_type="null_response",
                     )
                 # Pure text output — model forgot the JSON protocol entirely.
-                # Treat as an implicit done: the text itself is the final answer.
+                # Return ERROR (not DONE): auto-wrapping plain text as DONE triggers
+                # the acceptance gate (要求 submit_completion_report), which surfaces
+                # as misleading "[验收失败] 缺少完成报告" feedback for what is actually
+                # a format error. Falling into the ERROR branch instead injects the
+                # explicit "[系统] 输出格式错误" reminder so the model can self-correct.
                 return Action(
-                    type=ActionType.DONE,
-                    thought="(auto-wrapped plain text as final answer)",
-                    final_answer=stripped_raw,
+                    type=ActionType.ERROR,
+                    thought=t("parse.prose_no_json"),
+                    error_type="prose_no_json",
                 )
             return Action(type=ActionType.ERROR, thought=t("parse.prose_no_json"), error_type="prose_no_json")
         else:
