@@ -1120,6 +1120,13 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     border-right: none; border-bottom: 1px solid var(--border);
   }
 
+  /* Skills & Crons: stack list above editor instead of side-by-side */
+  .skills-body { flex-direction: column; }
+  .skills-list {
+    width: 100%; height: 180px; flex-shrink: 0;
+    border-right: none; border-bottom: 1px solid var(--border);
+  }
+
   /* Large-font mode: disable scale transform on mobile */
   body.large-font .app {
     transform: none;
