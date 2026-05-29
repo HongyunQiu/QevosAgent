@@ -63,3 +63,4 @@ reports/
 # Local release scripts (private build tooling)
 release.ps1
 release.sh
+mobile/install.ps1
