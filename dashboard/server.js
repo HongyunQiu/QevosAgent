@@ -2015,6 +2015,7 @@ findFreePort(PORT).then(port => {
     console.log(`  Runs     : ${RUNS_DIR}`);
     console.log(`  Agent    : ${AGENT_DIR}`);
     console.log(`  Python   : ${PYTHON_CMD}`);
+    console.log(`  Team API : port ${process.env.TEAM_PORT || '9100'} (TEAM_PORT，端口占用时由 Agent 自动改用空闲端口)`);
     console.log(`  Poll     : every ${POLL_MS}ms`);
     console.log(`  Language : ${LANG}`);
     console.log('');
