@@ -875,9 +875,11 @@ function isAgentRunning() {
  * @param {string}   goal    - Natural language goal for the agent.
  * @param {boolean}  nostop  - If true, pass --nostop flag (continuous conversation mode).
  * @param {string[]} skills  - List of skill names to activate (passed via --skills).
+ * @param {string}   agentsProfile  - Optional profile name; selects AGENTS_<name>.md to override AGENTS.md (--agents-profile).
+ * @param {string}   advisorProfile - Optional profile name; selects ADVISOR_<name>.md to override ADVISOR.md (--advisor-profile).
  * Returns { ok, error? }.
  */
-function launchAgent(goal, nostop = false, skills = []) {
+function launchAgent(goal, nostop = false, skills = [], agentsProfile = '', advisorProfile = '') {
   if (isAgentRunning()) {
     return { ok: false, error: 'An agent process is already running.' };
   }
@@ -889,9 +891,11 @@ function launchAgent(goal, nostop = false, skills = []) {
   state.launching = true;
   broadcast();
 
-  const nostopLabel  = nostop ? ' --nostop' : '';
-  const skillsLabel  = skills.length ? ` --skills ${skills.join(',')}` : '';
-  broadcastConsole('system', `▶ Launching: ${PYTHON_CMD} run_goal.py${nostopLabel}${skillsLabel} "${goal.slice(0, 80)}${goal.length > 80 ? '…' : ''}"`);
+  const nostopLabel    = nostop ? ' --nostop' : '';
+  const skillsLabel    = skills.length ? ` --skills ${skills.join(',')}` : '';
+  const agentsPLabel   = agentsProfile  ? ` --agents-profile ${agentsProfile}`   : '';
+  const advisorPLabel  = advisorProfile ? ` --advisor-profile ${advisorProfile}` : '';
+  broadcastConsole('system', `▶ Launching: ${PYTHON_CMD} run_goal.py${nostopLabel}${skillsLabel}${agentsPLabel}${advisorPLabel} "${goal.slice(0, 80)}${goal.length > 80 ? '…' : ''}"`);
   broadcastConsole('system', `  Working dir: ${AGENT_DIR}`);
 
   // On Windows, PYTHON_CMD may be a multi-word string like "conda run -n myenv python",
@@ -902,6 +906,8 @@ function launchAgent(goal, nostop = false, skills = []) {
   const cmdArgs  = [...parts.slice(1), 'run_goal.py'];
   if (nostop) cmdArgs.push('--nostop');
   if (skills.length) { cmdArgs.push('--skills'); cmdArgs.push(skills.join(',')); }
+  if (agentsProfile)  { cmdArgs.push('--agents-profile');  cmdArgs.push(agentsProfile); }
+  if (advisorProfile) { cmdArgs.push('--advisor-profile'); cmdArgs.push(advisorProfile); }
   cmdArgs.push(goal);
 
   agentProc = spawn(cmd, cmdArgs, {
@@ -1200,7 +1206,7 @@ function cronsProcessPending() {
     return setImmediate(cronsProcessPending);
   }
 
-  const result = launchAgent(goal, false, job.meta.skills || []);
+  const result = launchAgent(goal, false, job.meta.skills || [], job.meta.agentsProfile || '', job.meta.advisorProfile || '');
   if (result.ok) {
     cronsAppendHistory({ event: 'launched', id: entry.id, pid: result.pid, triggeredAt: entry.triggeredAt });
     broadcastConsole('system', `▶ Cron launched: ${entry.id}`);
@@ -1328,10 +1334,12 @@ const server = http.createServer(async (req, res) => {
   // ── POST /api/launch  ─────────────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/api/launch') {
     try {
-      const { goal, nostop, skills } = JSON.parse(await readBody(req));
+      const { goal, nostop, skills, agentsProfile, advisorProfile } = JSON.parse(await readBody(req));
       if (!goal || !goal.trim()) { json(400, { error: 'goal is required' }); return; }
       const skillList = Array.isArray(skills) ? skills.filter(Boolean) : [];
-      const result = launchAgent(goal.trim(), !!nostop, skillList);
+      const ap = (typeof agentsProfile  === 'string') ? agentsProfile.trim()  : '';
+      const vp = (typeof advisorProfile === 'string') ? advisorProfile.trim() : '';
+      const result = launchAgent(goal.trim(), !!nostop, skillList, ap, vp);
       json(result.ok ? 200 : 409, result);
     } catch (e) { json(500, { error: String(e) }); }
     return;
@@ -1490,6 +1498,24 @@ const server = http.createServer(async (req, res) => {
       if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
       fs.writeFileSync(path.join(AGENT_DIR, 'ADVISOR.md'), content, 'utf8');
       json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/profiles — list AGENTS.md / AGENTS_*.md / ADVISOR.md / ADVISOR_*.md
+  // in the repo root. Used by the dashboard to populate the profile dropdowns.
+  if (req.method === 'GET' && req.url === '/api/profiles') {
+    try {
+      const all = fs.existsSync(AGENT_DIR) ? fs.readdirSync(AGENT_DIR) : [];
+      const pick = (base) => all
+        .filter(f => f === `${base}.md` || (f.startsWith(`${base}_`) && f.endsWith('.md')))
+        .sort((a, b) => {
+          // base file always first, then alpha
+          if (a === `${base}.md`) return -1;
+          if (b === `${base}.md`) return 1;
+          return a.localeCompare(b);
+        });
+      json(200, { agents: pick('AGENTS'), advisor: pick('ADVISOR') });
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }

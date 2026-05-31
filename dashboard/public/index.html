@@ -617,6 +617,60 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 .cmd-send.awaiting:hover { background: linear-gradient(135deg, #b88a00, #f0c040); }
 
+/* ── Profile selector button + popover ───────────────────────────────── */
+.profile-btn {
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--muted); font-size: 12px; font-weight: 600;
+  padding: 8px 10px; border-radius: 7px; cursor: pointer;
+  flex-shrink: 0; transition: border-color 0.15s, color 0.15s;
+  position: relative;
+}
+.profile-btn:hover { border-color: var(--blue); color: var(--blue); }
+.profile-btn.has-override { border-color: var(--cyan); color: var(--cyan); }
+.profile-btn .pb-dot {
+  position: absolute; top: 4px; right: 4px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cyan); display: none;
+}
+.profile-btn.has-override .pb-dot { display: block; }
+.profile-btn .pb-label-full { display: inline; }
+.profile-btn .pb-label-icon { display: none; }
+
+.profile-popover {
+  position: fixed; z-index: 200;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+  padding: 12px 14px; min-width: 260px; max-width: calc(100vw - 24px);
+  display: none;
+}
+.profile-popover.open { display: block; }
+.profile-popover h4 {
+  margin: 0 0 10px; font-size: 11px; font-weight: 700;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.profile-row { margin-bottom: 10px; }
+.profile-row:last-of-type { margin-bottom: 4px; }
+.profile-row label {
+  display: block; font-size: 11px; color: var(--muted);
+  margin-bottom: 4px; font-weight: 600;
+}
+.profile-row select {
+  width: 100%; background: var(--bg3); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 9px; font-size: 12.5px; font-family: var(--mono);
+  cursor: pointer;
+}
+.profile-row select:focus { border-color: var(--blue); outline: none; }
+.profile-popover .pp-hint {
+  font-size: 10.5px; color: var(--muted); line-height: 1.5;
+  margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border);
+}
+.profile-overlay {
+  position: fixed; inset: 0; z-index: 199; background: transparent;
+  display: none;
+}
+.profile-overlay.open { display: block; }
+
 /* ── Nostop toggle button ────────────────────────────────────────────── */
 .nostop-btn {
   background: var(--bg3); border: 1px solid var(--border);
@@ -1112,6 +1166,16 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
      Narrower than desktop so the input keeps more room on small screens. */
   .cmd-input { padding: 10px 13px; }
   .cmd-send, .nostop-btn { padding: 10px 0; width: 60px; }
+  /* Profile button: icon-only on narrow screens to save horizontal space */
+  .profile-btn { padding: 10px 0; width: 42px; text-align: center; }
+  .profile-btn .pb-label-full { display: none; }
+  .profile-btn .pb-label-icon { display: inline; font-size: 15px; }
+  /* Popover fills most of the screen and pins above the cmdbar */
+  .profile-popover {
+    left: 8px !important; right: 8px !important;
+    top: auto !important; bottom: 64px !important;
+    min-width: 0; max-width: none; width: auto;
+  }
 
   /* Run Files: stack tree above content instead of side-by-side */
   .files-body { flex-direction: column; }
@@ -1496,7 +1560,27 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
            onkeydown="onCmdKey(event)">
     <button class="cmd-send" id="cmdSendBtn" onclick="sendCmd()">Send</button>
     <button class="nostop-btn" id="nostopBtn" onclick="toggleNostop()">nostop</button>
+    <button class="profile-btn" id="profileBtn" onclick="toggleProfilePopover(event)" title="Choose AGENTS / ADVISOR profile files">
+      <span class="pb-dot"></span>
+      <span class="pb-label-full">profile</span>
+      <span class="pb-label-icon">⚙</span>
+    </button>
   </div>
+</div>
+
+<!-- Profile selector popover (anchored to profileBtn on desktop, full-width on mobile) -->
+<div class="profile-overlay" id="profileOverlay" onclick="closeProfilePopover()"></div>
+<div class="profile-popover" id="profilePopover" role="dialog" aria-label="Profile selector">
+  <h4>Conventions / Advisor profiles</h4>
+  <div class="profile-row">
+    <label for="profileAgentsSel">AGENTS file (overrides AGENTS.md)</label>
+    <select id="profileAgentsSel" onchange="onProfileChange('agents', this.value)"></select>
+  </div>
+  <div class="profile-row">
+    <label for="profileAdvisorSel">ADVISOR file (overrides ADVISOR.md)</label>
+    <select id="profileAdvisorSel" onchange="onProfileChange('advisor', this.value)"></select>
+  </div>
+  <div class="pp-hint">Selection applies to the next agent launch. "Default" uses the base AGENTS.md / ADVISOR.md.</div>
 </div>
 
 <!-- Mobile overlay backdrop (closes drawers on tap) -->
@@ -1525,6 +1609,13 @@ let gSysPromptExpanded = false;   // persist System-Prompt expand state across r
 let gGoalExpanded      = false;   // persist Goal "show more" (full assembled goal) across re-renders
 const gJobPollers  = {};          // { jobId: intervalId } — polling timers for running jobs
 let gNostop        = false;       // whether to launch agent in --nostop (continuous) mode
+let gAgentsProfile = '';          // full filename of AGENTS_*.md override (empty = default AGENTS.md)
+let gAdvisorProfile= '';          // full filename of ADVISOR_*.md override (empty = default ADVISOR.md)
+let gProfileLists  = { agents: [], advisor: [] };  // populated from /api/profiles
+try {
+  gAgentsProfile  = localStorage.getItem('qa.agentsProfile')  || '';
+  gAdvisorProfile = localStorage.getItem('qa.advisorProfile') || '';
+} catch {}
 let gElapsedTimer  = null;        // setInterval handle for the elapsed-time counter
 let gElapsedStart  = null;        // Date when current run started (parsed from run ID)
 
@@ -1758,6 +1849,87 @@ function toggleNostop() {
   const btn = document.getElementById('nostopBtn');
   if (btn) btn.className = 'nostop-btn' + (gNostop ? ' on' : '');
   toast(gNostop ? '⟳ Nostop mode ON — agent will persist between tasks' : '⟳ Nostop mode OFF');
+}
+
+// ── Profile selector (AGENTS_*.md / ADVISOR_*.md override) ───────────────
+async function loadProfiles() {
+  try {
+    const r = await fetch('/api/profiles');
+    if (!r.ok) return;
+    const data = await r.json();
+    gProfileLists.agents  = Array.isArray(data.agents)  ? data.agents  : [];
+    gProfileLists.advisor = Array.isArray(data.advisor) ? data.advisor : [];
+    // If a previously saved selection no longer exists on disk, fall back to default.
+    if (gAgentsProfile && !gProfileLists.agents.includes(gAgentsProfile))   gAgentsProfile  = '';
+    if (gAdvisorProfile && !gProfileLists.advisor.includes(gAdvisorProfile)) gAdvisorProfile = '';
+    renderProfileSelects();
+    renderProfileBtn();
+  } catch {}
+}
+
+function renderProfileSelects() {
+  const fill = (sel, list, base, current) => {
+    if (!sel) return;
+    const opts = [];
+    // "Default" maps to empty string → server falls back to base file.
+    opts.push(`<option value="">— Default (${base}) —</option>`);
+    for (const f of list) {
+      if (f === base) continue;  // base shown only via the "Default" entry
+      opts.push(`<option value="${f}">${f}</option>`);
+    }
+    sel.innerHTML = opts.join('');
+    sel.value = current || '';
+  };
+  fill(document.getElementById('profileAgentsSel'),  gProfileLists.agents,  'AGENTS.md',  gAgentsProfile);
+  fill(document.getElementById('profileAdvisorSel'), gProfileLists.advisor, 'ADVISOR.md', gAdvisorProfile);
+}
+
+function renderProfileBtn() {
+  const btn = document.getElementById('profileBtn');
+  if (!btn) return;
+  const hasOverride = !!(gAgentsProfile || gAdvisorProfile);
+  btn.classList.toggle('has-override', hasOverride);
+  // Tooltip reflects current choices so user sees state without opening popover.
+  const a = gAgentsProfile  || 'AGENTS.md (default)';
+  const v = gAdvisorProfile || 'ADVISOR.md (default)';
+  btn.title = `AGENTS: ${a}\nADVISOR: ${v}\n(click to change)`;
+}
+
+function onProfileChange(kind, value) {
+  if (kind === 'agents') {
+    gAgentsProfile = value || '';
+    try { localStorage.setItem('qa.agentsProfile', gAgentsProfile); } catch {}
+  } else if (kind === 'advisor') {
+    gAdvisorProfile = value || '';
+    try { localStorage.setItem('qa.advisorProfile', gAdvisorProfile); } catch {}
+  }
+  renderProfileBtn();
+}
+
+function toggleProfilePopover(ev) {
+  if (ev) ev.stopPropagation();
+  const pop = document.getElementById('profilePopover');
+  const ov  = document.getElementById('profileOverlay');
+  if (!pop || !ov) return;
+  if (pop.classList.contains('open')) { closeProfilePopover(); return; }
+  // Refresh listing each time it opens so newly added files show up.
+  loadProfiles();
+  // Desktop: anchor above the button. Mobile CSS overrides these inline values.
+  const btn = document.getElementById('profileBtn');
+  if (btn) {
+    const r = btn.getBoundingClientRect();
+    pop.style.left   = '';
+    pop.style.right  = (window.innerWidth - r.right) + 'px';
+    pop.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+    pop.style.top    = '';
+  }
+  ov.classList.add('open');
+  pop.classList.add('open');
+}
+
+function closeProfilePopover() {
+  document.getElementById('profilePopover')?.classList.remove('open');
+  document.getElementById('profileOverlay')?.classList.remove('open');
 }
 
 function renderTopBar(data, rid) {
@@ -2448,7 +2620,13 @@ async function launchAgent(goal) {
     const res  = await fetch('/api/launch', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ goal: goal.trim(), nostop: gNostop, skills: [...gActiveSkills] }),
+      body:    JSON.stringify({
+        goal:           goal.trim(),
+        nostop:         gNostop,
+        skills:         [...gActiveSkills],
+        agentsProfile:  gAgentsProfile,
+        advisorProfile: gAdvisorProfile,
+      }),
     });
     const data = await res.json();
     if (res.ok && data.ok) {
@@ -4238,6 +4416,12 @@ function toggleTheme() {
 document.getElementById('wsPort').textContent = wsPortLabel();
 document.getElementById('nostopBtn').title = uiT('nostop.title');
 setupKillHold();
+renderProfileBtn();
+loadProfiles();
+// Close popover on Escape (touch users tap the overlay, handled by overlay click).
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeProfilePopover();
+});
 
 // ── ws-pill hover info cycle ──────────────────────────────────────────────
 (function () {

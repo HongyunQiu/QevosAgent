@@ -172,6 +172,14 @@ def main():
         "--skills", default="",
         help="Comma-separated skill names (e.g. coding,data_analysis), or 'all' to load all skills",
     )
+    _parser.add_argument(
+        "--agents-profile", default="", dest="agents_profile", metavar="AGENTS_*.md",
+        help="Full filename of the conventions file to use, e.g. AGENTS_WIN_EN.md. Must live in the repo root and match AGENTS.md or AGENTS_*.md. Overrides (not appends to) AGENTS.md. Falls back to AGENTS.md if missing.",
+    )
+    _parser.add_argument(
+        "--advisor-profile", default="", dest="advisor_profile", metavar="ADVISOR_*.md",
+        help="Full filename of the advisor file to use, e.g. ADVISOR_CRITIC.md. Must live in the repo root and match ADVISOR.md or ADVISOR_*.md. Overrides ADVISOR.md. Falls back to ADVISOR.md if missing.",
+    )
     _pargs = _parser.parse_args()
     goal   = " ".join(_pargs.goal).strip()
     nostop = _pargs.nostop
@@ -179,6 +187,34 @@ def main():
     _skills_arg = _pargs.skills.strip() or os.environ.get("AGENT_SKILLS", "").strip()
     if _skills_arg:
         os.environ["AGENT_SKILLS"] = _skills_arg
+    # CLI 优先于环境变量
+    _agents_profile  = _pargs.agents_profile.strip()  or os.environ.get("AGENTS_PROFILE",  "").strip()
+    _advisor_profile = _pargs.advisor_profile.strip() or os.environ.get("ADVISOR_PROFILE", "").strip()
+    if _agents_profile:
+        os.environ["AGENTS_PROFILE"] = _agents_profile
+    if _advisor_profile:
+        os.environ["ADVISOR_PROFILE"] = _advisor_profile
+
+    def _validate_profile_filename(name: str, base: str) -> bool:
+        """Allow only '<BASE>.md' or '<BASE>_<suffix>.md' as a bare filename
+        (no path separators, no parent refs). Returns True if valid.
+        """
+        if not name:
+            return True
+        if "/" in name or "\\" in name or ".." in name:
+            return False
+        if name == f"{base}.md":
+            return True
+        if name.startswith(f"{base}_") and name.endswith(".md") and len(name) > len(base) + 4:
+            return True
+        return False
+
+    if _agents_profile and not _validate_profile_filename(_agents_profile, "AGENTS"):
+        print(f"[run_goal] conventions: WARNING --agents-profile '{_agents_profile}' is not a valid AGENTS.md / AGENTS_*.md filename, ignoring")
+        _agents_profile = ""
+    if _advisor_profile and not _validate_profile_filename(_advisor_profile, "ADVISOR"):
+        print(f"[run_goal] advisor: WARNING --advisor-profile '{_advisor_profile}' is not a valid ADVISOR.md / ADVISOR_*.md filename, ignoring")
+        _advisor_profile = ""
     # Expose the raw user goal (without injected prefixes) for scratchpad seeding.
     os.environ["USER_GOAL"] = goal
     if not goal:
@@ -248,16 +284,28 @@ def main():
     initial_meta["_user_goal"]     = goal    # raw user input, used for run summary display
 
     # ── (4) 预加载高级指导员系统提示词 ────────────────────────────────────────
+    # Override 语义：--advisor-profile <name> 选中 ADVISOR_<name>.md 替换 ADVISOR.md；
+    # profile 文件不存在则 fallback 到 ADVISOR.md。
     advisor_system = ""
-    advisor_path = Path("./ADVISOR.md")
-    if advisor_path.exists():
+    _adv_chosen_path: Path | None = None
+    if _advisor_profile:
+        _cand = Path(f"./{_advisor_profile}")
+        if _cand.exists():
+            _adv_chosen_path = _cand
+        else:
+            print(f"[run_goal] advisor: WARNING {_advisor_profile} not found, falling back to ADVISOR.md")
+    if _adv_chosen_path is None:
+        _base_adv = Path("./ADVISOR.md")
+        if _base_adv.exists():
+            _adv_chosen_path = _base_adv
+    if _adv_chosen_path is not None:
         try:
-            advisor_system = advisor_path.read_text(encoding="utf-8").strip()
-            print(f"[run_goal] advisor: ADVISOR.md loaded ({len(advisor_system)} chars)")
+            advisor_system = _adv_chosen_path.read_text(encoding="utf-8").strip()
+            print(f"[run_goal] advisor: {_adv_chosen_path.name} loaded ({len(advisor_system)} chars)")
         except Exception as _ae:
-            print(f"[run_goal] advisor: failed to load ADVISOR.md: {_ae}")
-    else:
-        print("[run_goal] advisor: no ADVISOR.md found, senior advisor disabled")
+            print(f"[run_goal] advisor: failed to load {_adv_chosen_path.name}: {_ae}")
+    if not advisor_system:
+        print("[run_goal] advisor: no advisor content loaded, senior advisor disabled")
     initial_meta["_advisor_system"]   = advisor_system
     initial_meta["_advisor_log_path"] = str(run_dir / "advisor_log.jsonl")
     initial_meta["_patch_log_path"]   = str(run_dir / "patch_log.jsonl")
@@ -269,13 +317,33 @@ def main():
 
     # Load repo conventions (OpenClaw-style) if present.
     # Keep it short; it's a hard constraint but should not bloat prompts.
+    # 基础 AGENTS.md + （可选）按 --profile 追加 AGENTS_<name>.md
+    # Override 语义：--agents-profile <name> 选中 AGENTS_<name>.md 替换 AGENTS.md；
+    # profile 文件不存在则 fallback 到 AGENTS.md。两者都不存在则 warn。
     conventions = ""
-    try:
-        p = Path("./AGENTS.md")
-        if p.exists():
-            conventions = p.read_text(encoding="utf-8").strip()
-    except Exception:
-        conventions = ""
+    _conv_chosen_path: Path | None = None
+    if _agents_profile:
+        _cand = Path(f"./{_agents_profile}")
+        if _cand.exists():
+            _conv_chosen_path = _cand
+        else:
+            print(f"[run_goal] conventions: WARNING {_agents_profile} not found, falling back to AGENTS.md")
+    if _conv_chosen_path is None:
+        _base_conv_path = Path("./AGENTS.md")
+        if _base_conv_path.exists():
+            _conv_chosen_path = _base_conv_path
+    if _conv_chosen_path is not None:
+        try:
+            conventions = _conv_chosen_path.read_text(encoding="utf-8").strip()
+            if conventions:
+                print(f"[run_goal] conventions: {_conv_chosen_path.name} loaded ({len(conventions)} chars)")
+            else:
+                print(f"[run_goal] conventions: WARNING {_conv_chosen_path.name} exists but is empty")
+        except Exception as _ce:
+            print(f"[run_goal] conventions: WARNING failed to read {_conv_chosen_path.name}: {_ce}")
+    if not conventions:
+        # AGENTS.md 内含 agent 通用运行规则，缺失会显著影响行为。
+        print("[run_goal] conventions: WARNING no AGENTS.md or AGENTS_<profile>.md loaded — agent will run WITHOUT any repo conventions, runtime behavior may degrade")
 
     if conventions:
         prefix = (
