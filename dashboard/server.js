@@ -1520,6 +1520,47 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── Profile-file CRUD (AGENTS.md / AGENTS_*.md / ADVISOR.md / ADVISOR_*.md) ─
+  // Used by the AGENTS.md / ADVISOR.md tabs to manage profile variants in-place.
+  // Filename must match /^(AGENTS|ADVISOR)(_[A-Za-z0-9._-]+)?\.md$/ — strict so
+  // no path traversal and no accidental writes outside the profile family.
+  const profileFileMatch = req.url.match(/^\/api\/profile-file\/([^/?]+)$/);
+  if (profileFileMatch) {
+    const raw = decodeURIComponent(profileFileMatch[1]);
+    if (!/^(AGENTS|ADVISOR)(_[A-Za-z0-9._-]+)?\.md$/.test(raw) || raw.includes('..')) {
+      json(400, { error: 'invalid profile filename: ' + raw });
+      return;
+    }
+    const fp = path.join(AGENT_DIR, raw);
+    if (req.method === 'GET') {
+      if (!fs.existsSync(fp)) { json(404, { error: 'file not found' }); return; }
+      json(200, { filename: raw, content: readText(fp) || '' });
+      return;
+    }
+    if (req.method === 'POST') {
+      try {
+        const { content } = JSON.parse(await readBody(req));
+        if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+        fs.writeFileSync(fp, content, 'utf8');
+        json(200, { ok: true, filename: raw });
+      } catch (e) { json(500, { error: String(e) }); }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      // Refuse to delete the base files — they're the fallback when no profile is active.
+      if (raw === 'AGENTS.md' || raw === 'ADVISOR.md') {
+        json(400, { error: 'cannot delete base file ' + raw });
+        return;
+      }
+      try {
+        if (!fs.existsSync(fp)) { json(404, { error: 'file not found' }); return; }
+        fs.unlinkSync(fp);
+        json(200, { ok: true, filename: raw });
+      } catch (e) { json(500, { error: String(e) }); }
+      return;
+    }
+  }
+
   // ── GET /api/skills  — list all skill files ───────────────────────────────
   if (req.method === 'GET' && req.url === '/api/skills') {
     try {

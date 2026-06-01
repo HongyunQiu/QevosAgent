@@ -617,59 +617,8 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 .cmd-send.awaiting:hover { background: linear-gradient(135deg, #b88a00, #f0c040); }
 
-/* ── Profile selector button + popover ───────────────────────────────── */
-.profile-btn {
-  background: var(--bg3); border: 1px solid var(--border);
-  color: var(--muted); font-size: 12px; font-weight: 600;
-  padding: 8px 10px; border-radius: 7px; cursor: pointer;
-  flex-shrink: 0; transition: border-color 0.15s, color 0.15s;
-  position: relative;
-}
-.profile-btn:hover { border-color: var(--blue); color: var(--blue); }
-.profile-btn.has-override { border-color: var(--cyan); color: var(--cyan); }
-.profile-btn .pb-dot {
-  position: absolute; top: 4px; right: 4px;
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--cyan); display: none;
-}
-.profile-btn.has-override .pb-dot { display: block; }
-.profile-btn .pb-label-full { display: inline; }
-.profile-btn .pb-label-icon { display: none; }
-
-.profile-popover {
-  position: fixed; z-index: 200;
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
-  box-shadow: 0 8px 28px rgba(0,0,0,0.45);
-  padding: 12px 14px; min-width: 260px; max-width: calc(100vw - 24px);
-  display: none;
-}
-.profile-popover.open { display: block; }
-.profile-popover h4 {
-  margin: 0 0 10px; font-size: 11px; font-weight: 700;
-  color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
-}
-.profile-row { margin-bottom: 10px; }
-.profile-row:last-of-type { margin-bottom: 4px; }
-.profile-row label {
-  display: block; font-size: 11px; color: var(--muted);
-  margin-bottom: 4px; font-weight: 600;
-}
-.profile-row select {
-  width: 100%; background: var(--bg3); color: var(--text);
-  border: 1px solid var(--border); border-radius: 6px;
-  padding: 7px 9px; font-size: 12.5px; font-family: var(--mono);
-  cursor: pointer;
-}
-.profile-row select:focus { border-color: var(--blue); outline: none; }
-.profile-popover .pp-hint {
-  font-size: 10.5px; color: var(--muted); line-height: 1.5;
-  margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--border);
-}
-.profile-overlay {
-  position: fixed; inset: 0; z-index: 199; background: transparent;
-  display: none;
-}
-.profile-overlay.open { display: block; }
+/* Profile selector (legacy button + popover) — replaced by per-tab radio
+   list inside AGENTS.md / ADVISOR.md tabs. Styles removed. */
 
 /* ── Nostop toggle button ────────────────────────────────────────────── */
 .nostop-btn {
@@ -1166,17 +1115,6 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
      Narrower than desktop so the input keeps more room on small screens. */
   .cmd-input { padding: 10px 13px; }
   .cmd-send, .nostop-btn { padding: 10px 0; width: 60px; }
-  /* Profile button: icon-only on narrow screens to save horizontal space */
-  .profile-btn { padding: 10px 0; width: 42px; text-align: center; }
-  .profile-btn .pb-label-full { display: none; }
-  .profile-btn .pb-label-icon { display: inline; font-size: 15px; }
-  /* Popover fills most of the screen and pins above the cmdbar */
-  .profile-popover {
-    left: 8px !important; right: 8px !important;
-    top: auto !important; bottom: 64px !important;
-    min-width: 0; max-width: none; width: auto;
-  }
-
   /* Run Files: stack tree above content instead of side-by-side */
   .files-body { flex-direction: column; }
   .files-tree {
@@ -1312,16 +1250,39 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     <!-- AGENTS.md pane -->
     <div class="center-pane" id="cpane-agentsmd">
       <div class="agents-toolbar">
-        <span class="agents-title">AGENTS.md</span>
-        <span class="agents-hint" id="agentsMdHint"></span>
+        <span class="agents-title">AGENTS profiles</span>
+        <span class="agents-hint" id="agentsProfileHint"></span>
         <div class="bar-gap"></div>
-        <button class="icon-btn" id="agentsMdEditBtn" onclick="enterAgentsMdEdit()">✎ Edit</button>
-        <button class="icon-btn" id="agentsMdSaveBtn" style="display:none" onclick="saveAgentsMd()">✓ Save</button>
-        <button class="icon-btn" id="agentsMdCancelBtn" style="display:none" onclick="cancelAgentsMdEdit()">✕ Cancel</button>
+        <button class="icon-btn" onclick="loadProfileTab('agents')">↺ Refresh</button>
+        <button class="icon-btn" onclick="profileNewPrompt('agents')">＋ New</button>
       </div>
-      <div class="agents-body">
-        <div class="md-render agents-view" id="agentsMdView"></div>
-        <textarea class="agents-edit" id="agentsMdEdit" style="display:none" spellcheck="false"></textarea>
+      <div class="skills-body">
+        <div class="skills-list" id="agentsProfileList">
+          <div class="skills-list-header">
+            <span>Available</span>
+            <span id="agentsProfileActive" style="color:var(--cyan);font-size:9px;font-weight:600"></span>
+          </div>
+          <div id="agentsProfileItems"></div>
+          <button class="skills-add-btn" onclick="profileNewPrompt('agents')">＋ New profile…</button>
+        </div>
+        <div class="skills-editor">
+          <div id="agentsProfileEditorEmpty" class="skills-empty-hint">Select a profile to view or edit</div>
+          <div id="agentsProfileEditorPanel" style="display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden">
+            <div class="skills-editor-header">
+              <span class="skills-editor-name" id="agentsProfileEditorName"></span>
+              <span class="agents-hint" id="agentsProfileEditorHint"></span>
+              <div class="bar-gap"></div>
+              <button class="icon-btn" id="agentsProfileEditBtn" onclick="enterProfileEdit('agents')">✎ Edit</button>
+              <button class="icon-btn" id="agentsProfileSaveBtn" style="display:none" onclick="saveProfileFile('agents')">✓ Save</button>
+              <button class="icon-btn" id="agentsProfileCancelBtn" style="display:none" onclick="cancelProfileEdit('agents')">✕ Cancel</button>
+              <button class="icon-btn" id="agentsProfileDeleteBtn" style="color:var(--red)" onclick="deleteProfileFile('agents')">🗑</button>
+            </div>
+            <div class="agents-body">
+              <div class="md-render agents-view" id="agentsProfileView"></div>
+              <textarea class="agents-edit" id="agentsProfileEdit" style="display:none" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1433,16 +1394,39 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     <!-- ADVISOR.md pane -->
     <div class="center-pane" id="cpane-advisormd">
       <div class="agents-toolbar">
-        <span class="agents-title">ADVISOR.md</span>
-        <span class="agents-hint" id="advisorMdHint"></span>
+        <span class="agents-title">ADVISOR profiles</span>
+        <span class="agents-hint" id="advisorProfileHint"></span>
         <div class="bar-gap"></div>
-        <button class="icon-btn" id="advisorMdEditBtn" onclick="enterAdvisorMdEdit()">✎ Edit</button>
-        <button class="icon-btn" id="advisorMdSaveBtn" style="display:none" onclick="saveAdvisorMd()">✓ Save</button>
-        <button class="icon-btn" id="advisorMdCancelBtn" style="display:none" onclick="cancelAdvisorMdEdit()">✕ Cancel</button>
+        <button class="icon-btn" onclick="loadProfileTab('advisor')">↺ Refresh</button>
+        <button class="icon-btn" onclick="profileNewPrompt('advisor')">＋ New</button>
       </div>
-      <div class="agents-body">
-        <div class="md-render agents-view" id="advisorMdView"></div>
-        <textarea class="agents-edit" id="advisorMdEdit" style="display:none" spellcheck="false"></textarea>
+      <div class="skills-body">
+        <div class="skills-list" id="advisorProfileList">
+          <div class="skills-list-header">
+            <span>Available</span>
+            <span id="advisorProfileActive" style="color:var(--cyan);font-size:9px;font-weight:600"></span>
+          </div>
+          <div id="advisorProfileItems"></div>
+          <button class="skills-add-btn" onclick="profileNewPrompt('advisor')">＋ New profile…</button>
+        </div>
+        <div class="skills-editor">
+          <div id="advisorProfileEditorEmpty" class="skills-empty-hint">Select a profile to view or edit</div>
+          <div id="advisorProfileEditorPanel" style="display:none;flex:1;min-height:0;flex-direction:column;overflow:hidden">
+            <div class="skills-editor-header">
+              <span class="skills-editor-name" id="advisorProfileEditorName"></span>
+              <span class="agents-hint" id="advisorProfileEditorHint"></span>
+              <div class="bar-gap"></div>
+              <button class="icon-btn" id="advisorProfileEditBtn" onclick="enterProfileEdit('advisor')">✎ Edit</button>
+              <button class="icon-btn" id="advisorProfileSaveBtn" style="display:none" onclick="saveProfileFile('advisor')">✓ Save</button>
+              <button class="icon-btn" id="advisorProfileCancelBtn" style="display:none" onclick="cancelProfileEdit('advisor')">✕ Cancel</button>
+              <button class="icon-btn" id="advisorProfileDeleteBtn" style="color:var(--red)" onclick="deleteProfileFile('advisor')">🗑</button>
+            </div>
+            <div class="agents-body">
+              <div class="md-render agents-view" id="advisorProfileView"></div>
+              <textarea class="agents-edit" id="advisorProfileEdit" style="display:none" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1560,27 +1544,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
            onkeydown="onCmdKey(event)">
     <button class="cmd-send" id="cmdSendBtn" onclick="sendCmd()">Send</button>
     <button class="nostop-btn" id="nostopBtn" onclick="toggleNostop()">nostop</button>
-    <button class="profile-btn" id="profileBtn" onclick="toggleProfilePopover(event)" title="Choose AGENTS / ADVISOR profile files">
-      <span class="pb-dot"></span>
-      <span class="pb-label-full">profile</span>
-      <span class="pb-label-icon">⚙</span>
-    </button>
   </div>
-</div>
-
-<!-- Profile selector popover (anchored to profileBtn on desktop, full-width on mobile) -->
-<div class="profile-overlay" id="profileOverlay" onclick="closeProfilePopover()"></div>
-<div class="profile-popover" id="profilePopover" role="dialog" aria-label="Profile selector">
-  <h4>Conventions / Advisor profiles</h4>
-  <div class="profile-row">
-    <label for="profileAgentsSel">AGENTS file (overrides AGENTS.md)</label>
-    <select id="profileAgentsSel" onchange="onProfileChange('agents', this.value)"></select>
-  </div>
-  <div class="profile-row">
-    <label for="profileAdvisorSel">ADVISOR file (overrides ADVISOR.md)</label>
-    <select id="profileAdvisorSel" onchange="onProfileChange('advisor', this.value)"></select>
-  </div>
-  <div class="pp-hint">Selection applies to the next agent launch. "Default" uses the base AGENTS.md / ADVISOR.md.</div>
 </div>
 
 <!-- Mobile overlay backdrop (closes drawers on tap) -->
@@ -1852,6 +1816,8 @@ function toggleNostop() {
 }
 
 // ── Profile selector (AGENTS_*.md / ADVISOR_*.md override) ───────────────
+// Refreshes the profile lists from the server. Used both at boot and whenever
+// the AGENTS/ADVISOR tab is opened so newly added files show up.
 async function loadProfiles() {
   try {
     const r = await fetch('/api/profiles');
@@ -1862,39 +1828,10 @@ async function loadProfiles() {
     // If a previously saved selection no longer exists on disk, fall back to default.
     if (gAgentsProfile && !gProfileLists.agents.includes(gAgentsProfile))   gAgentsProfile  = '';
     if (gAdvisorProfile && !gProfileLists.advisor.includes(gAdvisorProfile)) gAdvisorProfile = '';
-    renderProfileSelects();
-    renderProfileBtn();
   } catch {}
 }
 
-function renderProfileSelects() {
-  const fill = (sel, list, base, current) => {
-    if (!sel) return;
-    const opts = [];
-    // "Default" maps to empty string → server falls back to base file.
-    opts.push(`<option value="">— Default (${base}) —</option>`);
-    for (const f of list) {
-      if (f === base) continue;  // base shown only via the "Default" entry
-      opts.push(`<option value="${f}">${f}</option>`);
-    }
-    sel.innerHTML = opts.join('');
-    sel.value = current || '';
-  };
-  fill(document.getElementById('profileAgentsSel'),  gProfileLists.agents,  'AGENTS.md',  gAgentsProfile);
-  fill(document.getElementById('profileAdvisorSel'), gProfileLists.advisor, 'ADVISOR.md', gAdvisorProfile);
-}
-
-function renderProfileBtn() {
-  const btn = document.getElementById('profileBtn');
-  if (!btn) return;
-  const hasOverride = !!(gAgentsProfile || gAdvisorProfile);
-  btn.classList.toggle('has-override', hasOverride);
-  // Tooltip reflects current choices so user sees state without opening popover.
-  const a = gAgentsProfile  || 'AGENTS.md (default)';
-  const v = gAdvisorProfile || 'ADVISOR.md (default)';
-  btn.title = `AGENTS: ${a}\nADVISOR: ${v}\n(click to change)`;
-}
-
+// Active profile applies to the next agent launch (empty string = base file).
 function onProfileChange(kind, value) {
   if (kind === 'agents') {
     gAgentsProfile = value || '';
@@ -1903,33 +1840,253 @@ function onProfileChange(kind, value) {
     gAdvisorProfile = value || '';
     try { localStorage.setItem('qa.advisorProfile', gAdvisorProfile); } catch {}
   }
-  renderProfileBtn();
+  renderProfileList(kind);
 }
 
-function toggleProfilePopover(ev) {
-  if (ev) ev.stopPropagation();
-  const pop = document.getElementById('profilePopover');
-  const ov  = document.getElementById('profileOverlay');
-  if (!pop || !ov) return;
-  if (pop.classList.contains('open')) { closeProfilePopover(); return; }
-  // Refresh listing each time it opens so newly added files show up.
-  loadProfiles();
-  // Desktop: anchor above the button. Mobile CSS overrides these inline values.
-  const btn = document.getElementById('profileBtn');
-  if (btn) {
-    const r = btn.getBoundingClientRect();
-    pop.style.left   = '';
-    pop.style.right  = (window.innerWidth - r.right) + 'px';
-    pop.style.bottom = (window.innerHeight - r.top + 8) + 'px';
-    pop.style.top    = '';
+// ── Profile tabs (AGENTS profiles / ADVISOR profiles) ────────────────────
+// Each tab shows a list of base.md + base_*.md files with a radio button
+// (single-select for active override) and a right-side editor — mirrors the
+// Skills tab's UX but uses a radio instead of a multi-select checkbox.
+const PROFILE_CFG = {
+  agents:  { base: 'AGENTS.md',  storage: 'qa.agentsProfile' },
+  advisor: { base: 'ADVISOR.md', storage: 'qa.advisorProfile' },
+};
+const gProfileState = {
+  agents:  { current: null, orig: '', adding: false },
+  advisor: { current: null, orig: '', adding: false },
+};
+
+async function loadProfileTab(kind) {
+  await loadProfiles();
+  const hint = document.getElementById(kind + 'ProfileHint');
+  const list = gProfileLists[kind] || [];
+  if (hint) hint.textContent = list.length + ' file' + (list.length !== 1 ? 's' : '');
+  renderProfileList(kind);
+  // If the currently shown file is gone from disk, clear the editor.
+  const st = gProfileState[kind];
+  if (st.current && !list.includes(st.current)) {
+    st.current = null;
+    document.getElementById(kind + 'ProfileEditorPanel').style.display = 'none';
+    document.getElementById(kind + 'ProfileEditorEmpty').style.display = '';
   }
-  ov.classList.add('open');
-  pop.classList.add('open');
 }
 
-function closeProfilePopover() {
-  document.getElementById('profilePopover')?.classList.remove('open');
-  document.getElementById('profileOverlay')?.classList.remove('open');
+function renderProfileList(kind) {
+  const cfg = PROFILE_CFG[kind];
+  const st  = gProfileState[kind];
+  const active = (kind === 'agents') ? gAgentsProfile : gAdvisorProfile;
+  // The base file is always implicitly "active" when override is empty.
+  const activeFile = active || cfg.base;
+  const list = gProfileLists[kind] || [];
+
+  const container = document.getElementById(kind + 'ProfileItems');
+  if (!container) return;
+  container.innerHTML = '';
+
+  // Inline "new" row
+  if (st.adding) {
+    const row = document.createElement('div');
+    row.className = 'skill-item skill-item-new';
+    const ph = document.createElement('input');
+    ph.type = 'radio'; ph.disabled = true;
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.placeholder = (cfg.base.replace('.md','')) + '_variant';
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter')  { e.preventDefault(); profileCommitInlineAdd(kind, inp.value); }
+      if (e.key === 'Escape') { e.preventDefault(); st.adding = false; renderProfileList(kind); }
+    });
+    inp.addEventListener('blur', () => {
+      setTimeout(() => { if (st.adding) { st.adding = false; renderProfileList(kind); } }, 150);
+    });
+    row.appendChild(ph);
+    row.appendChild(inp);
+    container.appendChild(row);
+    inp.focus();
+  }
+
+  // Ensure the base file always appears (even if /api/profiles missed it).
+  const seen = new Set();
+  const ordered = [];
+  if (!list.includes(cfg.base)) ordered.push(cfg.base);
+  for (const f of list) if (!seen.has(f)) { seen.add(f); ordered.push(f); }
+
+  for (const fname of ordered) {
+    const row = document.createElement('div');
+    row.className = 'skill-item' + (st.current === fname ? ' selected' : '');
+    row.dataset.name = fname;
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = kind + 'ProfileActive';
+    radio.checked = (fname === activeFile);
+    radio.title = (fname === cfg.base)
+      ? 'Use base file (no override)'
+      : 'Use this profile as override for next launch';
+    radio.addEventListener('click', e => e.stopPropagation());
+    radio.addEventListener('change', () => {
+      // Selecting the base file = clear the override.
+      const v = (fname === cfg.base) ? '' : fname;
+      onProfileChange(kind, v);
+      toast('Active ' + kind + ' profile: ' + fname);
+    });
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'skill-item-name';
+    nameSpan.textContent = fname;
+    if (fname === cfg.base) {
+      const badge = document.createElement('span');
+      badge.className = 'skill-active-badge';
+      badge.textContent = 'BASE';
+      nameSpan.appendChild(document.createTextNode(' '));
+      nameSpan.appendChild(badge);
+    }
+
+    row.appendChild(radio);
+    row.appendChild(nameSpan);
+    row.addEventListener('click', () => openProfileFile(kind, fname));
+    container.appendChild(row);
+  }
+
+  // Top-right "Active: …" indicator in the list header
+  const act = document.getElementById(kind + 'ProfileActive');
+  if (act) act.textContent = 'ACTIVE: ' + activeFile;
+}
+
+async function openProfileFile(kind, fname) {
+  const cfg = PROFILE_CFG[kind];
+  const st  = gProfileState[kind];
+  st.current = fname;
+  renderProfileList(kind);
+
+  const panel = document.getElementById(kind + 'ProfileEditorPanel');
+  const empty = document.getElementById(kind + 'ProfileEditorEmpty');
+  panel.style.display = 'flex';
+  empty.style.display = 'none';
+  document.getElementById(kind + 'ProfileEditorName').textContent = fname;
+  cancelProfileEdit(kind);
+
+  // Hide the delete button for the base file — that file is the safety fallback.
+  const delBtn = document.getElementById(kind + 'ProfileDeleteBtn');
+  if (delBtn) delBtn.style.display = (fname === cfg.base) ? 'none' : '';
+
+  try {
+    const data = await fetch('/api/profile-file/' + encodeURIComponent(fname)).then(r => r.json());
+    st.orig = data.content || '';
+    document.getElementById(kind + 'ProfileView').innerHTML =
+      typeof marked !== 'undefined' ? marked.parse(st.orig) : `<pre>${st.orig}</pre>`;
+    const hint = document.getElementById(kind + 'ProfileEditorHint');
+    if (hint) hint.textContent = (st.orig.length / 1024).toFixed(1) + ' KB';
+  } catch (e) {
+    document.getElementById(kind + 'ProfileView').textContent = 'Error: ' + e.message;
+  }
+}
+
+function enterProfileEdit(kind) {
+  const st = gProfileState[kind];
+  document.getElementById(kind + 'ProfileView').style.display  = 'none';
+  document.getElementById(kind + 'ProfileEdit').style.display  = '';
+  document.getElementById(kind + 'ProfileEditBtn').style.display    = 'none';
+  document.getElementById(kind + 'ProfileSaveBtn').style.display    = '';
+  document.getElementById(kind + 'ProfileCancelBtn').style.display  = '';
+  document.getElementById(kind + 'ProfileEdit').value = st.orig;
+  document.getElementById(kind + 'ProfileEdit').focus();
+}
+
+function cancelProfileEdit(kind) {
+  document.getElementById(kind + 'ProfileView').style.display  = '';
+  document.getElementById(kind + 'ProfileEdit').style.display  = 'none';
+  document.getElementById(kind + 'ProfileEditBtn').style.display    = '';
+  document.getElementById(kind + 'ProfileSaveBtn').style.display    = 'none';
+  document.getElementById(kind + 'ProfileCancelBtn').style.display  = 'none';
+}
+
+async function saveProfileFile(kind) {
+  const st = gProfileState[kind];
+  if (!st.current) return;
+  const content = document.getElementById(kind + 'ProfileEdit').value;
+  try {
+    const res  = await fetch('/api/profile-file/' + encodeURIComponent(st.current), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      st.orig = content;
+      document.getElementById(kind + 'ProfileView').innerHTML =
+        typeof marked !== 'undefined' ? marked.parse(content) : `<pre>${content}</pre>`;
+      const hint = document.getElementById(kind + 'ProfileEditorHint');
+      if (hint) hint.textContent = (content.length / 1024).toFixed(1) + ' KB';
+      cancelProfileEdit(kind);
+      toast('✓ Saved: ' + st.current);
+    } else {
+      toast('✗ Save failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ ' + e.message); }
+}
+
+async function deleteProfileFile(kind) {
+  const cfg = PROFILE_CFG[kind];
+  const st  = gProfileState[kind];
+  if (!st.current || st.current === cfg.base) return;
+  if (!confirm(`Delete profile "${st.current}"?`)) return;
+  try {
+    const res = await fetch('/api/profile-file/' + encodeURIComponent(st.current), { method: 'DELETE' });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      // If we just deleted the active override, fall back to base.
+      const active = (kind === 'agents') ? gAgentsProfile : gAdvisorProfile;
+      if (active === st.current) onProfileChange(kind, '');
+      st.current = null;
+      document.getElementById(kind + 'ProfileEditorPanel').style.display = 'none';
+      document.getElementById(kind + 'ProfileEditorEmpty').style.display = '';
+      toast('Deleted');
+      loadProfileTab(kind);
+    } else {
+      toast('✗ Delete failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { toast('✗ ' + e.message); }
+}
+
+function profileNewPrompt(kind) {
+  gProfileState[kind].adding = true;
+  renderProfileList(kind);
+}
+
+async function profileCommitInlineAdd(kind, raw) {
+  const cfg = PROFILE_CFG[kind];
+  const st  = gProfileState[kind];
+  st.adding = false;
+  let variant = (raw || '').trim().replace(/^_+/, '').replace(/[^a-zA-Z0-9._\-]/g, '_');
+  // Accept "FOO" or "AGENTS_FOO" or "AGENTS_FOO.md" — normalise to "AGENTS_FOO.md".
+  if (!variant) { renderProfileList(kind); return; }
+  let fname;
+  const baseStem = cfg.base.replace(/\.md$/, '');  // "AGENTS" / "ADVISOR"
+  if (variant.endsWith('.md')) variant = variant.slice(0, -3);
+  if (variant === baseStem) { toast('✗ Use a variant name, not the base'); renderProfileList(kind); return; }
+  if (variant.startsWith(baseStem + '_')) fname = variant + '.md';
+  else                                    fname = baseStem + '_' + variant + '.md';
+  if (!/^(AGENTS|ADVISOR)(_[A-Za-z0-9._-]+)?\.md$/.test(fname)) {
+    toast('✗ Invalid filename: ' + fname); renderProfileList(kind); return;
+  }
+  // Seed new files with a header line so the editor isn't blank.
+  const seed = `# ${fname.replace(/\.md$/, '')}\n\n<!-- ${kind} profile: edit me; tick the radio to activate for next launch -->\n`;
+  try {
+    const res  = await fetch('/api/profile-file/' + encodeURIComponent(fname), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: seed }),
+    });
+    const data = await res.json();
+    if (res.ok && data.ok) {
+      await loadProfileTab(kind);
+      await openProfileFile(kind, fname);
+      enterProfileEdit(kind);
+      toast('✓ Created: ' + fname);
+    } else {
+      renderProfileList(kind);
+      toast('✗ Create failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { renderProfileList(kind); toast('✗ ' + e.message); }
 }
 
 function renderTopBar(data, rid) {
@@ -2921,8 +3078,6 @@ function showOpenViewPrompt(label, url, displayId) {
 
 // ── Center tabs ───────────────────────────────────────────────────────────
 let gCenterTab     = 'events';
-let gAgentsMdOrig  = '';
-let gAdvisorMdOrig = '';
 let gSelectedFile  = null;
 let gFileTabsSig   = '';     // last applied fileTabs serialization — skip rebuild if unchanged
 let gFileTabsInit  = false;  // restore saved active tab only on first state push
@@ -2936,65 +3091,17 @@ function setCenterTab(name) {
     pane.classList.toggle('active', pane.id === 'cpane-' + name);
   });
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
-  if (name === 'agentsmd')       loadAgentsMd();
+  if (name === 'agentsmd')       loadProfileTab('agents');
   if (name === 'skills')         loadSkills();
   if (name === 'crons')          loadCrons();
-  if (name === 'advisormd')      loadAdvisorMd();
+  if (name === 'advisormd')      loadProfileTab('advisor');
   if (name === 'files')          loadRunFiles();
   if (name === 'memory')         loadMemory();
   if (name.startsWith('dir-'))   reloadDirTab(name);
 }
 
-// ── AGENTS.md ─────────────────────────────────────────────────────────────
-async function loadAgentsMd() {
-  try {
-    const data = await fetch('/api/agents-md').then(r => r.json());
-    gAgentsMdOrig = data.content || '';
-    document.getElementById('agentsMdView').innerHTML = typeof marked !== 'undefined' ? marked.parse(gAgentsMdOrig) : `<pre>${gAgentsMdOrig}</pre>`;
-    document.getElementById('agentsMdHint').textContent = (gAgentsMdOrig.length / 1024).toFixed(1) + ' KB';
-  } catch (e) {
-    document.getElementById('agentsMdView').textContent = 'Error loading AGENTS.md: ' + e.message;
-  }
-}
-
-function enterAgentsMdEdit() {
-  const edit = document.getElementById('agentsMdEdit');
-  edit.value = gAgentsMdOrig;
-  document.getElementById('agentsMdView').style.display    = 'none';
-  edit.style.display                                        = '';
-  document.getElementById('agentsMdEditBtn').style.display   = 'none';
-  document.getElementById('agentsMdSaveBtn').style.display   = '';
-  document.getElementById('agentsMdCancelBtn').style.display = '';
-  edit.focus();
-}
-
-function cancelAgentsMdEdit() {
-  document.getElementById('agentsMdView').style.display    = '';
-  document.getElementById('agentsMdEdit').style.display    = 'none';
-  document.getElementById('agentsMdEditBtn').style.display   = '';
-  document.getElementById('agentsMdSaveBtn').style.display   = 'none';
-  document.getElementById('agentsMdCancelBtn').style.display = 'none';
-}
-
-async function saveAgentsMd() {
-  const content = document.getElementById('agentsMdEdit').value;
-  try {
-    const res  = await fetch('/api/agents-md', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    });
-    const data = await res.json();
-    if (res.ok && data.ok) {
-      gAgentsMdOrig = content;
-      document.getElementById('agentsMdView').innerHTML = typeof marked !== 'undefined' ? marked.parse(content) : `<pre>${content}</pre>`;
-      document.getElementById('agentsMdHint').textContent = (content.length / 1024).toFixed(1) + ' KB';
-      cancelAgentsMdEdit();
-      toast('✓ AGENTS.md saved');
-    } else {
-      toast('✗ Save failed: ' + (data.error || 'unknown'));
-    }
-  } catch (e) { toast('✗ Network error: ' + e.message); }
-}
+// AGENTS.md / ADVISOR.md tabs are now handled by the unified profile tab logic
+// above (loadProfileTab / openProfileFile / saveProfileFile / ...).
 
 // ── Skills ────────────────────────────────────────────────────────────────
 let gSkills        = [];          // [{name, filename, size}]
@@ -3534,55 +3641,7 @@ function applyCronPicker() {
 }
 
 // ── ADVISOR.md ────────────────────────────────────────────────────────────
-async function loadAdvisorMd() {
-  try {
-    const data = await fetch('/api/advisor-md').then(r => r.json());
-    gAdvisorMdOrig = data.content || '';
-    document.getElementById('advisorMdView').innerHTML = typeof marked !== 'undefined' ? marked.parse(gAdvisorMdOrig) : `<pre>${gAdvisorMdOrig}</pre>`;
-    document.getElementById('advisorMdHint').textContent = (gAdvisorMdOrig.length / 1024).toFixed(1) + ' KB';
-  } catch (e) {
-    document.getElementById('advisorMdView').textContent = 'Error loading ADVISOR.md: ' + e.message;
-  }
-}
-
-function enterAdvisorMdEdit() {
-  const edit = document.getElementById('advisorMdEdit');
-  edit.value = gAdvisorMdOrig;
-  document.getElementById('advisorMdView').style.display     = 'none';
-  edit.style.display                                         = '';
-  document.getElementById('advisorMdEditBtn').style.display  = 'none';
-  document.getElementById('advisorMdSaveBtn').style.display  = '';
-  document.getElementById('advisorMdCancelBtn').style.display = '';
-  edit.focus();
-}
-
-function cancelAdvisorMdEdit() {
-  document.getElementById('advisorMdView').style.display     = '';
-  document.getElementById('advisorMdEdit').style.display     = 'none';
-  document.getElementById('advisorMdEditBtn').style.display  = '';
-  document.getElementById('advisorMdSaveBtn').style.display  = 'none';
-  document.getElementById('advisorMdCancelBtn').style.display = 'none';
-}
-
-async function saveAdvisorMd() {
-  const content = document.getElementById('advisorMdEdit').value;
-  try {
-    const res  = await fetch('/api/advisor-md', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    });
-    const data = await res.json();
-    if (res.ok && data.ok) {
-      gAdvisorMdOrig = content;
-      document.getElementById('advisorMdView').innerHTML = typeof marked !== 'undefined' ? marked.parse(content) : `<pre>${content}</pre>`;
-      document.getElementById('advisorMdHint').textContent = (content.length / 1024).toFixed(1) + ' KB';
-      cancelAdvisorMdEdit();
-      toast('✓ ADVISOR.md saved');
-    } else {
-      toast('✗ Save failed: ' + (data.error || 'unknown'));
-    }
-  } catch (e) { toast('✗ Network error: ' + e.message); }
-}
+// (ADVISOR.md edit logic unified into loadProfileTab('advisor'); see above.)
 
 // ── Memory (memory_concept.md + memory_episodic.jsonl) ───────────────────
 let gConceptOrig   = '';
@@ -4416,12 +4475,7 @@ function toggleTheme() {
 document.getElementById('wsPort').textContent = wsPortLabel();
 document.getElementById('nostopBtn').title = uiT('nostop.title');
 setupKillHold();
-renderProfileBtn();
 loadProfiles();
-// Close popover on Escape (touch users tap the overlay, handled by overlay click).
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeProfilePopover();
-});
 
 // ── ws-pill hover info cycle ──────────────────────────────────────────────
 (function () {
