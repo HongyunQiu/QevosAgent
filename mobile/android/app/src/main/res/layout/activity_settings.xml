@@ -6,11 +6,16 @@
     android:orientation="vertical"
     android:fitsSystemWindows="true">
 
+    <!-- Dark theme overlay so the title, overflow (⋮) icon, and any other
+         toolbar widgets render in white on the blue background. Without it
+         the overflow icon defaults to dark grey and is invisible against
+         colorPrimary. -->
     <androidx.appcompat.widget.Toolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="?attr/colorPrimary" />
+        android:background="?attr/colorPrimary"
+        android:theme="@style/ThemeOverlay.MaterialComponents.Dark.ActionBar" />
 
     <ScrollView
         android:layout_width="match_parent"
