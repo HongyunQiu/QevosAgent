@@ -44,6 +44,18 @@ jobs:
           cache: 'npm'
           cache-dependency-path: desktop/package-lock.json
 
+      # Sync desktop/package.json version to the pushed tag so electron-builder
+      # stamps the right version into the EXE/PKG/AppImage AND so the dashboard
+      # server (which reads it via app.getVersion()) prints the matching number.
+      # Without this, the repo's checked-in version is shown forever.
+      - name: Sync package.json version to tag
+        working-directory: desktop
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          node -e "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p));j.version='${VER}';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');"
+          echo "package.json version → ${VER}"
+
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm install

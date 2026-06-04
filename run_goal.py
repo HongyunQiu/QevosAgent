@@ -345,6 +345,22 @@ def main():
         # AGENTS.md 内含 agent 通用运行规则，缺失会显著影响行为。
         print("[run_goal] conventions: WARNING no AGENTS.md or AGENTS_<profile>.md loaded — agent will run WITHOUT any repo conventions, runtime behavior may degrade")
 
+    # ── 将 AGENTS.md 注入 advisor system（cacheable）──────────────────────────
+    # advisor 现在能看到项目规范，给出的具体指导不会与 AGENTS.md 冲突。
+    # 拼到 advisor_system 末尾、不进 user 段，整段在一次 run 内不变 → 可缓存。
+    if conventions and initial_meta.get("_advisor_system"):
+        try:
+            _adv_base = initial_meta["_advisor_system"]
+            _conv_header = t("advisor.sys.conv_header")
+            _read_rules  = t("advisor.sys.read_rules")
+            initial_meta["_advisor_system"] = (
+                _adv_base.rstrip() + _conv_header + conventions.strip() + _read_rules
+            )
+            print(f"[run_goal] advisor: AGENTS.md merged into advisor_system "
+                  f"({len(initial_meta['_advisor_system'])} chars total)")
+        except Exception as _ae:
+            print(f"[run_goal] advisor: failed to merge AGENTS.md: {_ae}")
+
     if conventions:
         prefix = (
             prefix

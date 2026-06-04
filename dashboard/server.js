@@ -417,6 +417,12 @@ let state = {
   fileTabs:     null,   // { tabs: [...], active: string } loaded from file_tabs.json
   networkInfo:  NETWORK_INFO,
   teamNodeId:   null,
+  // Advisor observability:
+  //   advisorLast    = run_dir/advisor_last.json (latest snapshot, full system+context+advice)
+  //   advisorHistory = compact summary of every entry in advisor_log.jsonl
+  // The full per-entry payload is available via GET /api/run/:runId/advisor/:idx
+  advisorLast:    null,
+  advisorHistory: [],
   instanceName: process.env.INSTANCE_NAME || '',  // display-only label shown as "name:port"
 };
 
@@ -425,6 +431,7 @@ let _mtimes                = {};
 let _iterCounter           = 0;
 let _webChatLinesProcessed = 0;
 let _patchLinesProcessed   = 0;
+let _advisorLinesProcessed = 0;
 
 // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -669,6 +676,61 @@ function updatePatchEvents(runDir) {
   return added;
 }
 
+// ── Advisor observability ──────────────────────────────────────────────────
+// Surfaces what advisor sees and says so the user can directly observe:
+//   - advisor_last.json    : full snapshot of latest call (system + context + advice)
+//   - advisor_log.jsonl    : every call's metadata, summarised for the history list
+// Both files are written by agent/core/advisor.py.
+
+function updateAdvisor(runDir) {
+  let changedAny = false;
+
+  // ── advisor_last.json: full snapshot of most recent call ──────────────────
+  const lastFp = path.join(runDir, 'advisor_last.json');
+  if (changed(lastFp)) {
+    const snap = readJSON(lastFp);
+    if (snap) {
+      state.advisorLast = snap;
+      changedAny = true;
+    }
+  }
+
+  // ── advisor_log.jsonl: append-only history, send compact summaries ────────
+  const logFp = path.join(runDir, 'advisor_log.jsonl');
+  if (changed(logFp)) {
+    const raw = readText(logFp);
+    if (raw) {
+      const allLines = raw.split('\n').filter(l => l.trim());
+      const newLines = allLines.slice(_advisorLinesProcessed);
+      for (const line of newLines) {
+        let rec;
+        try { rec = JSON.parse(line); } catch { continue; }
+        const advice = (typeof rec.advice === 'string') ? rec.advice : '';
+        const ctx    = (typeof rec.context === 'string') ? rec.context : '';
+        state.advisorHistory.push({
+          ts:           rec.ts || '',
+          iteration:    rec.iteration || 0,
+          trigger:      rec.trigger || '',
+          status:       rec.status || '',
+          hasAdvice:    !!advice,
+          advicePreview: advice ? advice.slice(0, 200) : '',
+          contextLen:   ctx.length,
+          systemLen:    (typeof rec.system === 'string') ? rec.system.length : 0,
+        });
+      }
+      _advisorLinesProcessed = allLines.length;
+      // Cap history broadcast at last 200 entries to keep WS payload small.
+      // Full history is always available via GET /api/run/:runId/advisor.
+      if (state.advisorHistory.length > 200) {
+        state.advisorHistory = state.advisorHistory.slice(-200);
+      }
+      if (newLines.length) changedAny = true;
+    }
+  }
+
+  return changedAny;
+}
+
 // ── Poll loop ──────────────────────────────────────────────────────────────
 
 function poll() {
@@ -705,6 +767,9 @@ function poll() {
     _mtimes                = {};
     _webChatLinesProcessed = 0;
     _patchLinesProcessed   = 0;
+    _advisorLinesProcessed = 0;
+    state.advisorLast     = null;
+    state.advisorHistory  = [];
     dirty = true;
     // Once a new run directory appears, launching phase is over
     if (isLaunching) {
@@ -738,6 +803,7 @@ function poll() {
     if (updateShortTerm(dir)) dirty = true;
     // After short_term so the fallback anchor (_linesProcessed) is current.
     if (updatePatchEvents(dir)) dirty = true;
+    if (updateAdvisor(dir)) dirty = true;
 
     // ── web_display_*.json ───────────────────────────────────────────────────
     let dispFiles;
@@ -1267,7 +1333,28 @@ function loadRun(runId) {
     ev.iter = iter;
     events.push(ev);
   }
-  return { runId, status, scratchpad, meta, events };
+  // Advisor observability for historical run view
+  const advisorLast = readJSON(path.join(dir, 'advisor_last.json')) || null;
+  const advisorHistory = [];
+  const advLogRaw = readText(path.join(dir, 'advisor_log.jsonl')) || '';
+  for (const line of advLogRaw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const rec = JSON.parse(line);
+      const advice = (typeof rec.advice === 'string') ? rec.advice : '';
+      advisorHistory.push({
+        ts:            rec.ts || '',
+        iteration:     rec.iteration || 0,
+        trigger:       rec.trigger || '',
+        status:        rec.status || '',
+        hasAdvice:     !!advice,
+        advicePreview: advice ? advice.slice(0, 200) : '',
+        contextLen:    (typeof rec.context === 'string') ? rec.context.length : 0,
+        systemLen:     (typeof rec.system === 'string')  ? rec.system.length  : 0,
+      });
+    } catch {}
+  }
+  return { runId, status, scratchpad, meta, events, advisorLast, advisorHistory };
 }
 
 // ── HTTP server ────────────────────────────────────────────────────────────
@@ -1421,6 +1508,32 @@ const server = http.createServer(async (req, res) => {
     const data = loadRun(runMatch[1]);
     if (!data) { res.writeHead(404); res.end('{}'); return; }
     json(200, { type: 'historical', ...data });
+    return;
+  }
+
+  // ── GET /api/run/:runId/advisor[/:idx] ───────────────────────────────────
+  // Returns either the full advisor_log.jsonl (parsed as array), or a single
+  // entry by 0-based index. Used by the Advisor tab to inspect any past call.
+  const advisorRunMatch = req.url.match(/^\/api\/run\/([^/?]+)\/advisor(?:\/(\d+))?$/);
+  if (req.method === 'GET' && advisorRunMatch) {
+    const rid = advisorRunMatch[1];
+    const idx = advisorRunMatch[2] !== undefined ? parseInt(advisorRunMatch[2], 10) : null;
+    const fp = path.join(RUNS_DIR, rid, 'advisor_log.jsonl');
+    if (!fs.existsSync(fp)) { json(404, { error: 'advisor_log.jsonl not found' }); return; }
+    const raw = readText(fp) || '';
+    const lines = raw.split('\n').filter(l => l.trim());
+    if (idx !== null) {
+      if (idx < 0 || idx >= lines.length) { json(404, { error: 'index out of range' }); return; }
+      try { json(200, JSON.parse(lines[idx])); }
+      catch (e) { json(500, { error: 'parse failure: ' + e.message }); }
+      return;
+    }
+    // Whole log
+    const parsed = [];
+    for (const line of lines) {
+      try { parsed.push(JSON.parse(line)); } catch {}
+    }
+    json(200, { entries: parsed });
     return;
   }
 
@@ -2000,6 +2113,16 @@ wss.on('connection', ws => {
   ws.on('message', raw => {
     try {
       const msg = JSON.parse(raw);
+      // Heartbeat: the browser's WS layer pings every 25s and force-closes the
+      // socket if nothing comes back within 10s. With no pong reply, an idle
+      // agent would make every client self-disconnect every ~35s, triggering
+      // a fresh full-state broadcast (incl. the entire events array) on each
+      // reconnect — on mobile that loops faster than a long events log can
+      // even finish transferring, so the log "times out" and never renders.
+      if (msg.type === 'ping') {
+        try { ws.send(JSON.stringify({ type: 'pong', ts: msg.ts })); } catch {}
+        return;
+      }
       if (msg.type === 'select_run') {
         const data = loadRun(msg.runId);
         if (data) ws.send(JSON.stringify({ type: 'historical', ...data }));

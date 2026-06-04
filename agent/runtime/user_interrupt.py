@@ -375,6 +375,20 @@ class UserInterruptHandler:
                     persistence.append_short_term(state.short_term[-1])
             except Exception:
                 pass
+            # ── 单独记录到 _user_injections，供 advisor 直接读取 ───────────────
+            # advisor 上下文里会把每条用户注入作为独立分节呈现，不再被
+            # "最后 N 条原文 + 400 字截断" 的窗口淹没。
+            try:
+                from datetime import datetime, timezone
+                _inj_list = state.meta.setdefault("_user_injections", [])
+                _inj_list.append({
+                    "iter":    int(getattr(state, "iteration", 0) or 0),
+                    "ts":      datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                    "content": arg,
+                    "source":  "inject_cmd",
+                })
+            except Exception:
+                pass
             print(f"\n{BLUE}{t('interrupt.inject_done')}{RESET}", flush=True)
             return "continue"
 

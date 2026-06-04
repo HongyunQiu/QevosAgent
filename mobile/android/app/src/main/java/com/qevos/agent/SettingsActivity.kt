@@ -19,7 +19,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
     private val prefs by lazy { getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE) }
 
-    private class Row(val host: EditText, val port: EditText, val name: String)
+    private class Row(val id: String, val host: EditText, val port: EditText, val name: String)
     private val rows = mutableListOf<Pair<LinearLayout, Row>>()
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -35,10 +35,10 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         val servers = Servers.load(prefs)
-        if (servers.isEmpty()) addRow(Server("", MainActivity.DEFAULT_PORT))
+        if (servers.isEmpty()) addRow(Server(Servers.newId(), "", MainActivity.DEFAULT_PORT))
         else servers.forEach { addRow(it) }
 
-        binding.btnAdd.setOnClickListener { addRow(Server("", MainActivity.DEFAULT_PORT)) }
+        binding.btnAdd.setOnClickListener { addRow(Server(Servers.newId(), "", MainActivity.DEFAULT_PORT)) }
         binding.btnSave.setOnClickListener {
             saveAll()
             Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
@@ -96,7 +96,7 @@ class SettingsActivity : AppCompatActivity() {
 
         card.addView(top); card.addView(bottom)
 
-        val row = Row(hostEt, portEt, server.name)
+        val row = Row(server.id, hostEt, portEt, server.name)
         val pair = card to row
         rows.add(pair)
         binding.serverList.addView(card)
@@ -113,6 +113,7 @@ class SettingsActivity : AppCompatActivity() {
             prefs.edit()
                 .putString(MainActivity.KEY_HOST, host)
                 .putString(MainActivity.KEY_PORT, port)
+                .putString(MainActivity.KEY_SERVER_ID, row.id)
                 .apply()
             setResult(RESULT_OK)
             finish()
@@ -125,7 +126,7 @@ class SettingsActivity : AppCompatActivity() {
             val host = r.host.text.toString().trim()
             if (host.isBlank()) continue
             val port = r.port.text.toString().trim().ifBlank { MainActivity.DEFAULT_PORT }
-            list.add(Server(host, port, r.name))
+            list.add(Server(r.id, host, port, r.name))
         }
         return list
     }

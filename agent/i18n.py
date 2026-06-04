@@ -126,12 +126,50 @@ _STRINGS: dict[str, dict[str, str]] = {
             "---\n{context}\n---"
         ),
         "advisor.ctx.iter":       "## 当前迭代轮次\n第 {iter} 轮",
-        "advisor.ctx.goal":       "## 任务目标\n{goal}",
+        "advisor.ctx.goal":       "## 原始任务目标\n{goal}",
+        "advisor.ctx.user_inj":   "## 用户后续指令（按时间顺序，不得概括，必须优先满足）\n{items}",
+        "advisor.ctx.user_inj_empty": "## 用户后续指令\n（暂无用户中途下达的额外指令）",
         "advisor.ctx.sp":         "## 草稿本（Agent 当前工作状态）\n{sp}",
         "advisor.ctx.sp_empty":   "## 草稿本\n（草稿本为空）",
-        "advisor.ctx.history":    "## 最近执行历史（最后 {n} 条）\n{hist}",
+        "advisor.ctx.progress":   "## 工作进展日志（主 Agent 自述，来源={method}，更新于 iter={iter}；可能存在自我偏置，请结合最近原始片段交叉验证）\n{log}",
+        "advisor.ctx.tools":      "## 可用工具与能力（仅名称与简介）\n{items}",
+        "advisor.ctx.tools_empty": "## 可用工具与能力\n（无工具）",
+        "advisor.ctx.history":    "## 最近原始执行片段（最后 {n} 条，供与自述对账）\n{hist}",
         "advisor.ctx.no_history": "（暂无历史记录）",
         "advisor.ctx.truncated":  "…[截断]",
+        "advisor.sys.conv_header": "\n\n# 项目规范摘要（AGENTS.md）\n以下为本次运行的项目规范，主 Agent 必须遵守；你在给出建议时应优先与之对齐。\n",
+        "advisor.sys.read_rules": "\n\n## 阅读约定\n- 用户上下文中的「## 工作进展日志」为主 Agent 自述，可能存在自我偏置；请结合「## 最近原始执行片段」交叉验证。\n- 「## 用户后续指令」必须优先满足。发现主 Agent 未执行用户原文要求时直接指出。\n- 给出具体指导前，先检查「## 可用工具与能力」，避免建议主 Agent 自行造轮子。\n",
+
+        # ── progress_summary (主对话自压缩进展日志，由 advisor 周期触发)─────────
+        "progress.system": (
+            "你正在临时切换到「自我汇报模式」：暂停决策，只产出一份「工作进展日志」，"
+            "用于让独立的高级指导员审视当前状态。"
+            "你必须严格遵守输出要求，不得执行任何工具，不得规划下一步动作。"
+        ),
+        "progress.request": (
+            "请基于截至目前的完整执行历史，输出一份诚实的工作进展日志。"
+            "缺项或概括用户原文将被判为不合格。\n\n"
+            "硬性要求：\n"
+            "1) 用户后续指令：逐条原文引用（不要概括），并标注是否已完整执行；\n"
+            "2) 已尝试方案与结果：分『成功 / 失败 / 部分成功』列出，失败必须写原因；\n"
+            "3) 当前阻塞：明确写出，没有就写「无」；\n"
+            "4) 阶段自评：current_phase / next_milestone / open_risks 三项；\n"
+            "5) 可能的盲点：诚实写一条「我可能在哪里循环 / 偏离了用户意图」。\n\n"
+            "输出格式（严格按章节标题，不要任何额外前后缀）：\n"
+            "## 用户后续指令\n"
+            "...\n"
+            "## 已尝试方案与结果\n"
+            "...\n"
+            "## 当前阻塞\n"
+            "...\n"
+            "## 阶段自评\n"
+            "- current_phase: ...\n"
+            "- next_milestone: ...\n"
+            "- open_risks: ...\n"
+            "## 可能的盲点\n"
+            "...\n\n"
+            "不要执行任何工具，不要输出 JSON，只输出上述 5 节纯文本。"
+        ),
 
         # ── sys (build_system_prompt in llm.py) ───────────────────────────────
         "sys.preamble": "你是一个通用自主智能体。你通过循环调用工具来完成任意目标。",
@@ -609,12 +647,51 @@ Tip: just type / to pause; enter the full command then press Enter.
             "---\n{context}\n---"
         ),
         "advisor.ctx.iter":       "## Current Iteration\nIteration {iter}",
-        "advisor.ctx.goal":       "## Task Goal\n{goal}",
+        "advisor.ctx.goal":       "## Original Task Goal\n{goal}",
+        "advisor.ctx.user_inj":   "## User Follow-up Instructions (chronological, do not summarise, MUST be addressed first)\n{items}",
+        "advisor.ctx.user_inj_empty": "## User Follow-up Instructions\n(none yet)",
         "advisor.ctx.sp":         "## Scratchpad (Agent current state)\n{sp}",
         "advisor.ctx.sp_empty":   "## Scratchpad\n(empty)",
-        "advisor.ctx.history":    "## Recent Execution History (last {n})\n{hist}",
+        "advisor.ctx.progress":   "## Work Progress Log (main agent's self-account, source={method}, updated at iter={iter}; may contain self-bias — cross-check against the recent raw fragments)\n{log}",
+        "advisor.ctx.tools":      "## Available Tools & Capabilities (names + one-line summaries)\n{items}",
+        "advisor.ctx.tools_empty": "## Available Tools & Capabilities\n(none)",
+        "advisor.ctx.history":    "## Recent Raw Execution Fragments (last {n}, for cross-checking the self-account)\n{hist}",
         "advisor.ctx.no_history": "(no history yet)",
         "advisor.ctx.truncated":  "…[truncated]",
+        "advisor.sys.conv_header": "\n\n# Project Conventions (AGENTS.md)\nThe following are this run's project conventions. The main agent must obey them; align your advice with these rules.\n",
+        "advisor.sys.read_rules": "\n\n## Reading Conventions\n- The '## Work Progress Log' in the user context is the main agent's self-account and may contain self-bias; cross-check it against '## Recent Raw Execution Fragments'.\n- '## User Follow-up Instructions' MUST be addressed first. Flag any user requirement the main agent has not actually executed.\n- Before giving concrete advice, consult '## Available Tools & Capabilities' to avoid suggesting that the main agent reinvent the wheel.\n",
+
+        # ── progress_summary (main-agent self-compression, fired by advisor cycle) ─
+        "progress.system": (
+            "You are temporarily switching to 'self-report mode': pause decision-making "
+            "and produce a single 'Work Progress Log' for an independent senior advisor "
+            "to review. You MUST follow the output requirements strictly — do NOT call any "
+            "tool and do NOT plan the next step."
+        ),
+        "progress.request": (
+            "Based on the full execution history so far, produce an honest work-progress log. "
+            "Missing sections or summarising the user's original wording will be judged non-compliant.\n\n"
+            "Hard requirements:\n"
+            "1) User follow-up instructions: quote each one VERBATIM (no summarising), mark whether fully executed;\n"
+            "2) Attempts & outcomes: list under 'Succeeded / Failed / Partial', failures must include the cause;\n"
+            "3) Current blockers: state explicitly; write 'none' if none;\n"
+            "4) Stage self-assessment: current_phase / next_milestone / open_risks;\n"
+            "5) Possible blind spots: honestly write one line on 'where I might be looping or drifting from user intent'.\n\n"
+            "Output format (strictly these section headings, no extra prefix/suffix):\n"
+            "## User Follow-up Instructions\n"
+            "...\n"
+            "## Attempts & Outcomes\n"
+            "...\n"
+            "## Current Blockers\n"
+            "...\n"
+            "## Stage Self-Assessment\n"
+            "- current_phase: ...\n"
+            "- next_milestone: ...\n"
+            "- open_risks: ...\n"
+            "## Possible Blind Spots\n"
+            "...\n\n"
+            "Do NOT call any tool, do NOT output JSON — only the 5 sections above as plain text."
+        ),
 
         # ── sys (build_system_prompt in llm.py) ───────────────────────────────
         "sys.preamble": "You are a general-purpose autonomous agent. You complete any goal by repeatedly calling tools.",

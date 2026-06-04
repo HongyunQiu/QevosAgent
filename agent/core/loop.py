@@ -25,7 +25,7 @@ from .compression import (
     _rebuild_context_on_hard_block,
     _apply_runtime_patch,
 )
-from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice
+from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice, ensure_progress_log
 from agent.i18n import t
 
 
@@ -643,6 +643,13 @@ def run(
                     interval=int(os.environ.get("ADVISOR_INTERVAL", "15")),
                 )
                 if _should_advise:
+                    # 批 2：advisor 调用前先让主 agent 产出一份"工作进展日志"，
+                    # 利用主对话 KV 缓存 → 几乎零输入成本。日志写入 state.meta
+                    # 后由 _build_advisor_context 自动读取，治 advisor 短视。
+                    try:
+                        ensure_progress_log(state, llm)
+                    except Exception:
+                        pass
                     _advice = run_advisor(state, llm, _advisor_sys, trigger_reason=_advise_reason)
                     # Always record the attempt so we don't retry every subsequent iteration
                     # when run_advisor fails or returns empty (which leaves _advisor_last_iter

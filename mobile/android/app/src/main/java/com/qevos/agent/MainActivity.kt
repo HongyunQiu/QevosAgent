@@ -49,6 +49,10 @@ class MainActivity : AppCompatActivity() {
         const val PREFS_NAME = "qevos_prefs"
         const val KEY_HOST = "host"
         const val KEY_PORT = "port"
+        // Stable id of the currently-selected server row. host:port is NOT a
+        // valid identity key (port-forwarding makes collisions legitimate),
+        // so the menu picks the active row by this id.
+        const val KEY_SERVER_ID = "server_id"
         const val DEFAULT_PORT = "8765"
         const val KEY_HANDLE_Y = "handle_y"
     }
@@ -142,6 +146,10 @@ class MainActivity : AppCompatActivity() {
                 mediaPlaybackRequiresUserGesture = false
                 allowContentAccess = true
                 allowFileAccess = false
+                // Never serve a stale cached dashboard. Without this, killing
+                // the server and reopening the app would show the last good
+                // page from disk cache with no indication the agent is down.
+                cacheMode = WebSettings.LOAD_NO_CACHE
             }
 
             webViewClient = object : WebViewClient() {
@@ -161,6 +169,11 @@ class MainActivity : AppCompatActivity() {
                 ) {
                     if (request.isForMainFrame) {
                         binding.progressBar.visibility = View.GONE
+                        // Replace Chromium's default ERR_* page with a blank
+                        // canvas so our in-app overlay is what the user sees,
+                        // not the system error page peeking through.
+                        view.stopLoading()
+                        view.loadUrl("about:blank")
                         showError(true)
                     }
                 }
@@ -250,8 +263,22 @@ class MainActivity : AppCompatActivity() {
     // ── Handle action menu: server switch + refresh + settings ──────────────
     private fun showActionMenu() {
         val servers = Servers.load(prefs)
-        val curHost = prefs.getString(KEY_HOST, "") ?: ""
-        val curPort = prefs.getString(KEY_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
+        // Identify the active row by stable id. host:port match would falsely
+        // light up multiple rows when the user intentionally points different
+        // entries at the same forwarded endpoint.
+        var curId = prefs.getString(KEY_SERVER_ID, "") ?: ""
+        // Migration for users upgrading from id-less prefs: pick the FIRST row
+        // whose host:port matches what's persisted, then pin its id so future
+        // opens are unambiguous even if the user later adds a duplicate.
+        if (curId.isBlank()) {
+            val curHost = prefs.getString(KEY_HOST, "") ?: ""
+            val curPort = prefs.getString(KEY_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
+            val match = servers.firstOrNull { it.host == curHost && it.port == curPort }
+            if (match != null) {
+                curId = match.id
+                prefs.edit().putString(KEY_SERVER_ID, curId).apply()
+            }
+        }
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -265,9 +292,13 @@ class MainActivity : AppCompatActivity() {
         // Saved servers — tap to switch.
         val rowRefs = mutableListOf<Pair<Server, TextView>>()
         for (s in servers) {
-            val isCurrent = s.host == curHost && s.port == curPort
+            val isCurrent = s.id == curId
             val row = makeMenuItem((if (isCurrent) "✓  " else "      ") + s.label()) {
-                prefs.edit().putString(KEY_HOST, s.host).putString(KEY_PORT, s.port).apply()
+                prefs.edit()
+                    .putString(KEY_HOST, s.host)
+                    .putString(KEY_PORT, s.port)
+                    .putString(KEY_SERVER_ID, s.id)
+                    .apply()
                 dialog.dismiss()
                 loadDashboard()
             }
@@ -297,9 +328,9 @@ class MainActivity : AppCompatActivity() {
 
         // Fetch each server's instance nickname in the background, then update its row + cache.
         for ((s, tv) in rowRefs) {
+            val isCurrent = s.id == curId
             fetchInstanceName(s) { name ->
-                Servers.updateName(prefs, s.host, s.port, name)
-                val isCurrent = s.host == curHost && s.port == curPort
+                Servers.updateName(prefs, s.id, name)
                 runOnUiThread { tv.text = (if (isCurrent) "✓  " else "      ") + name }
             }
         }
@@ -343,17 +374,62 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    // Monotonic token: only the most-recent probe is allowed to act on its result.
+    // Without this, switching servers quickly could let a slow probe of an old
+    // host arrive after a successful new probe and flip the UI back to error.
+    private var loadToken = 0
+
     private fun loadDashboard() {
         val host = prefs.getString(KEY_HOST, null)
-        val port = prefs.getString(KEY_PORT, DEFAULT_PORT)
+        val port = prefs.getString(KEY_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
 
         if (host.isNullOrBlank()) {
             openSettingsActivity()
             return
         }
 
-        showError(false)
-        binding.webView.loadUrl("http://$host:$port")
+        val base = "http://$host:$port"
+        val myToken = ++loadToken
+
+        // Show the progress bar while probing so the user sees something is
+        // happening (otherwise a 3s probe feels like a frozen app).
+        binding.progressBar.visibility = View.VISIBLE
+        binding.progressBar.progress = 10
+
+        // Reachability probe: hit /api/version with a short timeout. Only
+        // hand the URL to the WebView once the server has actually answered —
+        // that's what prevents (a) the WebView serving a stale cached page
+        // when the server is dead, and (b) Chromium's default ERR_* page
+        // flashing before our overlay can replace it.
+        Thread {
+            val reachable = try {
+                val url = java.net.URL("$base/api/version")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 3000
+                conn.requestMethod = "GET"
+                conn.useCaches = false
+                val ok = conn.responseCode in 200..399
+                try { conn.inputStream.close() } catch (_: Exception) {}
+                conn.disconnect()
+                ok
+            } catch (_: Exception) { false }
+
+            runOnUiThread {
+                if (myToken != loadToken) return@runOnUiThread  // superseded
+                binding.progressBar.visibility = View.GONE
+                if (reachable) {
+                    showError(false)
+                    binding.webView.loadUrl(base)
+                } else {
+                    // Make sure the WebView isn't still showing the previous
+                    // server's page or a cached copy of this one.
+                    binding.webView.stopLoading()
+                    binding.webView.loadUrl("about:blank")
+                    showError(true)
+                }
+            }
+        }.start()
     }
 
     private fun showError(show: Boolean) {

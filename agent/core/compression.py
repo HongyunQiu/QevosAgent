@@ -301,6 +301,15 @@ def compress_context(
         f"，压缩方式={method}"
     )
     state.long_term.append(f"[compress_context] {msg}")
+
+    # 标记最近一次压缩的轮次与方式 —— advisor.ensure_progress_log 会优先复用
+    # "llm_full" 类型的压缩成果（scratchpad 已是权威全量摘要），实现零额外
+    # LLM 调用就喂给 advisor 一份宏观进展。
+    state.meta["_last_compression_iter"]   = int(getattr(state, "iteration", 0) or 0)
+    if method == "llm全文压缩":
+        state.meta["_last_compression_method"] = "llm_full"
+    else:
+        state.meta["_last_compression_method"] = "mechanical"
     return msg
 
 
