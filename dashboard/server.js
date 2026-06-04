@@ -368,21 +368,10 @@ const POLL_MS    = parseInt(process.env.POLL_MS || '500', 10);
 // Version resolution order:
 //   1. APP_VERSION env var (set by desktop main.js via app.getVersion(), or
 //      by the release workflow which syncs package.json to the pushed tag).
-//   2. Latest git tag (local dev: keeps the banner honest between releases
-//      without needing to bump package.json on every tag).
-//   3. desktop/package.json (last-resort fallback for tarballs / no .git).
+//   2. desktop/package.json — the single source of truth locally. The release
+//      flow is: bump this file → commit → tag vX.Y.Z → push. The workflow
+//      then re-syncs it from the tag at build time as a forget-proofing net.
 let APP_VERSION = process.env.APP_VERSION || 'dev';
-if (APP_VERSION === 'dev') {
-  try {
-    const { execSync } = require('child_process');
-    const tag = execSync('git describe --tags --abbrev=0', {
-      cwd: path.join(__dirname, '..'),
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).toString().trim();
-    // Tags are vX.Y.Z; strip the leading v for the displayed version.
-    if (tag) APP_VERSION = tag.replace(/^v/, '');
-  } catch {}
-}
 if (APP_VERSION === 'dev') {
   try {
     const pkgPath = path.join(__dirname, '..', 'desktop', 'package.json');
