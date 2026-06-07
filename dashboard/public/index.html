@@ -850,6 +850,11 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
   background:var(--bg2); flex-shrink:0;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
+#filesContentPath { display:flex; align-items:center; gap:6px; }
+#filesContentPath .files-content-path-name {
+  flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+#filesContentPath .rundir-copy { width:16px; height:16px; }
 .files-view {
   flex:1; overflow:auto; margin:0; padding:12px 16px;
   font-family:var(--mono); font-size:11.5px; line-height:1.7;
@@ -1477,7 +1482,13 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
           <div class="files-empty">Select a run from the sidebar</div>
         </div>
         <div class="files-content">
-          <div class="files-content-path" id="filesContentPath" style="display:none"></div>
+          <div class="files-content-path" id="filesContentPath" style="display:none">
+            <span class="files-content-path-name" id="filesContentPathName"></span>
+            <button class="rundir-copy" id="filesContentCopy" type="button" title="复制文件内容" onclick="copyCurrentFileContent()">
+              <svg class="ic-copy" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              <svg class="ic-check" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            </button>
+          </div>
           <pre class="files-view" id="filesView"><span class="files-placeholder">Select a file to view its contents</span></pre>
           <div class="md-render" id="filesMdView" style="display:none"></div>
           <div class="json-render" id="filesJsonView" style="display:none"></div>
@@ -4073,6 +4084,39 @@ function toggleFilesRender() {
   document.getElementById('filesRenderBtn').classList.toggle('active', gFilesPreview);
   applyPreview(gFilesContent, gFilesPath, gFilesPreview);
 }
+let _filesCopyTimer = null;
+async function copyCurrentFileContent() {
+  if (!gFilesRunId || !gFilesPath) return;
+  const btn = document.getElementById('filesContentCopy');
+  let txt = gFilesContent;
+  try {
+    if (!txt) {
+      const data = await fetch(`/api/run-file/${encodeURIComponent(gFilesRunId)}/${gFilesPath}`).then(r => r.json());
+      if (data && !data.error) txt = data.content || '';
+    }
+    if (!txt) { toast('✗ 无可复制的文件内容'); return; }
+    try {
+      await navigator.clipboard.writeText(txt);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch {}
+      document.body.removeChild(ta);
+    }
+    if (btn) {
+      btn.classList.add('copied');
+      btn.title = '已复制';
+      clearTimeout(_filesCopyTimer);
+      _filesCopyTimer = setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.title = '复制文件内容';
+      }, 1500);
+    }
+  } catch (e) {
+    toast('✗ 复制失败: ' + e.message);
+  }
+}
 function downloadCurrentFile() {
   if (!gFilesRunId || !gFilesPath) return;
   const url = `/api/download-file/${encodeURIComponent(gFilesRunId)}/${gFilesPath}`;
@@ -4088,7 +4132,7 @@ async function selectRunFile(runId, filePath, el) {
   gFilesRunId   = runId;
   document.getElementById('filesDownloadBtn').disabled = false;
   const pathEl  = document.getElementById('filesContentPath');
-  pathEl.textContent = filePath;
+  document.getElementById('filesContentPathName').textContent = filePath;
   pathEl.style.display = '';
 
   const ext = filePath.split('.').pop().toLowerCase();
