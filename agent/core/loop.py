@@ -541,6 +541,8 @@ def run(
         state.meta.pop("_loop_warn_counts", None)
         state.meta.pop("_call_sig_history", None)
         state.meta.pop("_need_user_help", None)
+        state.meta.pop("_loop_advisor_pending", None)
+        state.meta.pop("_advisor_tried_for_loop", None)
         _checkpoint_state(state)
 
     _nostop_mode = state.meta.get("nostop", False)
@@ -612,6 +614,11 @@ def run(
             # ── 后台 job 完成通知（触发式推送）────────────────────────────────────
             # 检查是否有 job 已完成，将结果注入 short_term，agent 无需主动轮询。
             _notify_completed_jobs(state, hooks)
+
+            # ── 环境观察器(Watchers)轮询 ────────────────────────────────────────
+            # 遍历已注册 watcher，按 interval 触发执行，输出注入 short_term。
+            # 单条注入硬上限 500 字符，超限自动落 artifacts/ 降级为路径。
+            _poll_watchers(state, hooks)
 
             # ── wait_for_job 轻量 yield 模式 ──────────────────────────────────────
             # agent 调用 wait_for_job 后进入此分支：跳过 LLM 调用，仅等待 job 完成，
@@ -1059,36 +1066,43 @@ def run(
                     )
                     break
 
-                # ── 循环升级：高级指导员介入 → 用户求助 ──────────────────────
-                # _build_feedback 检测到循环次数超阈值时会设置此标志。
-                # 若 advisor 可用且尚未为本次循环介入过，先让 advisor 尝试打破死局；
-                # advisor 介入后给 agent 一次机会继续执行，若仍循环则暂停求助用户。
-                need_help = state.meta.pop("_need_user_help", None)
-                if need_help:
-                    # 先折叠吸引子上下文，无论后续是 advisor 还是用户求助，
-                    # 都在干净的上下文上进行，防止重复历史继续强化循环吸引子。
+                # ── 循环升级：折叠吸引子 → 高级指导员介入 → 用户求助 ──────────
+                # _build_feedback 检测到循环时会设置 _loop_advisor_pending。
+                # 第一次触发：折叠吸引子 + advisor 介入一次，给 agent 一次机会。
+                # 仍循环（_advisor_tried_for_loop 已为 True）：再折叠一次 +
+                # 暂停求助用户。两条路径都先折叠，保证后续介入落在干净上下文上。
+                if state.meta.pop("_loop_advisor_pending", None):
                     _collapse_attractor_context(action.tool, state, hooks=hooks)
+                    if state.meta.get("_advisor_tried_for_loop"):
+                        raw_goal = (state.meta.get("_task_desc") or "").strip()
+                        goal_hint = f"\n当前目标：{raw_goal[:200]}" if raw_goal else ""
+                        scratchpad = (state.meta.get("scratchpad") or "").strip()
+                        sp_hint = f"\n\n当前草稿本摘要：\n{scratchpad[:400]}" if scratchpad else ""
+                        state.meta.pop("_advisor_tried_for_loop", None)
+                        state.meta["awaiting_input"] = (
+                            f"我在执行任务时陷入了循环：反复以相同参数调用 `{action.tool}`，"
+                            f"advisor 已介入但仍未能突破。"
+                            f"{goal_hint}{sp_hint}\n\n"
+                            f"请问您有什么建议？例如：提供新的解决思路、指出绕过方式，或告知是否可以跳过此步骤。"
+                        )
+                        state.meta["paused"] = True
+                        if hooks.on_error:
+                            hooks.on_error("[循环检测→用户求助] 自动暂停，等待用户指导")
+                        _checkpoint_state(state, status="paused")
+                        break
                     _advisor_sys = state.meta.get("_advisor_system", "")
-                    if _advisor_sys and not state.meta.get("_advisor_tried_for_loop"):
+                    if _advisor_sys:
                         _advice = run_advisor(
                             state, llm, _advisor_sys, trigger_reason="loop_detected"
                         )
                         if _advice:
                             inject_advisor_advice(state, _advice, "loop_detected")
-                            state.meta["_advisor_tried_for_loop"] = True
                             if hooks.on_advisor:
                                 hooks.on_advisor("loop_detected", _advice)
-                            _checkpoint_state(state)
-                            state.iteration += 1
-                            continue  # 给 agent 一次机会，看是否能凭建议突破循环
-                    # advisor 已尝试或不可用：暂停等待用户指导
-                    state.meta.pop("_advisor_tried_for_loop", None)
-                    state.meta["awaiting_input"] = need_help
-                    state.meta["paused"] = True
-                    if hooks.on_error:
-                        hooks.on_error(f"[循环检测→用户求助] 自动暂停，等待用户指导")
-                    _checkpoint_state(state, status="paused")
-                    break
+                    state.meta["_advisor_tried_for_loop"] = True
+                    _checkpoint_state(state)
+                    state.iteration += 1
+                    continue  # 给 agent 一次机会，看是否能凭建议突破循环
                 else:
                     # 本轮未触发循环检测，重置 advisor 介入标志
                     state.meta.pop("_advisor_tried_for_loop", None)
@@ -1125,6 +1139,52 @@ def run(
 
 
 # ── 内部辅助 ──────────────────────────────────────────────────────────────────
+
+
+def _poll_watchers(state: "AgentState", hooks: Optional["AgentHooks"] = None) -> None:
+    """轮询所有已注册的环境观察器,将到期 watcher 的输出注入 short_term。
+
+    单条注入硬上限 500 字符由 WatcherManager 强制执行,超限自动落 artifacts/。
+    用户代码异常被框架捕获,仅注入错误提示,绝不影响主循环。
+    live 模式暂未启用,本版本所有事件均走 event(写 short_term)。
+    """
+    try:
+        mgr = state.meta.get("_watcher_manager")
+        if mgr is None:
+            # 未被任何 watch_* 工具触发懒加载 → 仍然加载注册表,
+            # 让 agent 不必先调一次 watch_list 才让既有注册项生效
+            from .watcher import WatcherManager
+            from pathlib import Path as _P
+            artifacts_dir = None
+            persistence = _get_persistence(state)
+            if persistence is not None and hasattr(persistence, "run_dir"):
+                artifacts_dir = _P(persistence.run_dir) / "artifacts"
+            else:
+                rd = os.environ.get("RUN_DIR")
+                if rd:
+                    artifacts_dir = _P(rd) / "artifacts"
+            mgr = WatcherManager(artifacts_dir=artifacts_dir)
+            state.meta["_watcher_manager"] = mgr
+            if not mgr.list_entries():
+                return  # 无任何注册项,纯首次加载场景,无需扫描
+
+        events = mgr.poll(state.iteration)
+        if not events:
+            return
+
+        for ev in events:
+            content = ev.get("content", "")
+            if not content:
+                continue
+            # 双保险:再裁一次到 500 字符,即便 manager 漏了也不破
+            content = content[:500]
+            _append_short_term(state, {"role": "user", "content": content})
+            if hooks and hooks.on_error:
+                kind = ev.get("kind", "?")
+                hooks.on_error(f"[watcher] {ev.get('name')} → {kind}")
+    except Exception:
+        # watcher 子系统失败绝不影响主循环
+        pass
 
 
 def _notify_completed_jobs(state: "AgentState", hooks: Optional["AgentHooks"] = None) -> None:
@@ -1379,37 +1439,16 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                     f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
                 )
 
-            # ── C：循环警告升级（向用户求助） ───────────────────────────────────
-            # 当某工具连续触发循环警告 LOOP_HARD_BLOCK_AFTER 次仍不改变策略，
-            # 设置 _need_user_help 标志，主循环将自动暂停并向用户请求指导。
-            hard_block_after = int(os.environ.get("LOOP_HARD_BLOCK_AFTER", "3"))
+            # ── C：循环升级（折叠吸引子 + advisor 介入；仍循环则求助用户） ────────
+            # 任何一次 loop_triggered 都立即标记 _loop_advisor_pending，
+            # 主循环负责：先折叠吸引子，再决定是 advisor 介入还是暂停求助用户。
             if loop_triggered:
-                warn_counts = state.meta.setdefault("_loop_warn_counts", {})
-                warn_counts[action.tool] = warn_counts.get(action.tool, 0) + 1
-                if warn_counts[action.tool] >= hard_block_after:
-                    raw_goal = (state.meta.get("_task_desc") or "").strip()
-                    goal_hint = f"\n当前目标：{raw_goal[:200]}" if raw_goal else ""
-                    scratchpad = (state.meta.get("scratchpad") or "").strip()
-                    sp_hint = f"\n\n当前草稿本摘要：\n{scratchpad[:400]}" if scratchpad else ""
-                    state.meta["_need_user_help"] = (
-                        f"我在执行任务时陷入了循环：已连续 {warn_counts[action.tool]} 次调用 `{action.tool}` "
-                        f"（参数：{args_preview[:200]}）但未能取得进展。"
-                        f"{goal_hint}{sp_hint}\n\n"
-                        f"请问您有什么建议？例如：提供新的解决思路、指出绕过方式，或告知是否可以跳过此步骤。"
-                    )
-                    repeat_warning += (
-                        f"\n\n⛔⛔ 循环升级：你已经收到 {warn_counts[action.tool]} 次循环警告但仍重复调用 `{action.tool}`。"
-                        f"\n系统将在本次调用完成后自动暂停并向用户请求指导。"
-                    )
+                state.meta["_loop_advisor_pending"] = True
             else:
-                # 非循环调用：重置该工具的警告计数和轮询计数，清除待求助标志
-                warn_counts = state.meta.get("_loop_warn_counts", {})
-                if action.tool in warn_counts:
-                    warn_counts[action.tool] = 0
+                # 非循环调用：重置轮询计数
                 poll_counts = state.meta.get("_poll_counts", {})
                 if action.tool in poll_counts:
                     poll_counts[action.tool] = 0
-                state.meta.pop("_need_user_help", None)
 
         except Exception:
             pass

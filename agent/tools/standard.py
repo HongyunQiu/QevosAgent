@@ -1655,6 +1655,126 @@ def tool_wait_for_job(state: AgentState, job_id: str, check_interval: int = 15) 
     )
 
 
+# ── 环境观察器(Watchers)─────────────────────────────────────────────────────
+
+
+def _get_watcher_manager(state: AgentState):
+    """懒加载 WatcherManager 单例(绑定在 state.meta['_watcher_manager'])。"""
+    from pathlib import Path
+    from ..core.watcher import WatcherManager
+    mgr = state.meta.get("_watcher_manager")
+    if mgr is None:
+        # artifacts 目录:优先 RUN_DIR/artifacts,否则 cwd/artifacts
+        artifacts_dir = None
+        persistence = getattr(state, "persistence", None)
+        if persistence is not None and hasattr(persistence, "run_dir"):
+            artifacts_dir = Path(persistence.run_dir) / "artifacts"
+        else:
+            rd = os.environ.get("RUN_DIR")
+            if rd:
+                artifacts_dir = Path(rd) / "artifacts"
+        mgr = WatcherManager(artifacts_dir=artifacts_dir)
+        state.meta["_watcher_manager"] = mgr
+    return mgr
+
+
+def tool_watch_register(
+    state: AgentState,
+    name: str,
+    path: str,
+    interval: int = 10,
+    emit: str = "event",
+    params: Optional[dict] = None,
+    enabled: bool = True,
+    desc: str = "",
+) -> ToolResult:
+    """注册一个环境观察器(watcher)。
+
+    name: 唯一标识(同名会覆盖)
+    path: 代码文件的绝对路径(.py 或 .sh)
+    interval: 触发间隔秒数(下界,实际由迭代节奏决定)
+    emit: event(写 short_term 永久) | live(实时面板可刷新,暂未启用)
+    params: 注入给代码的参数(代码通过 store['params'] 读取)
+    enabled: 是否启用
+    desc: 描述
+
+    .py 文件需定义 run(prev, store, iter_n)->Optional[dict],返回:
+      None / {"type":"text","content":"..."} / {"type":"image","image_block":{...}}
+      / {"type":"path","path":"..."}
+    .sh 文件 stdout 当 text content;环境变量 WATCHER_PARAMS_JSON/WATCHER_ITER/
+      WATCHER_STORE_FILE 可读写持久状态。
+    框架强制 500 字符注入硬顶,超限自动落 artifacts/ 降级为路径。
+    """
+    if not name or not path:
+        return ToolResult(success=False, output=None, error="name 和 path 必填")
+    mgr = _get_watcher_manager(state)
+    result = mgr.register(
+        name=name, path=path, interval=int(interval), emit=emit,
+        params=params or {}, enabled=bool(enabled), desc=desc,
+    )
+    if not result.get("ok"):
+        return ToolResult(success=False, output=None, error=result.get("error"))
+    return ToolResult(success=True, output=result)
+
+
+def tool_watch_unregister(state: AgentState, name: str) -> ToolResult:
+    """注销一个 watcher(代码文件不会被删除)。"""
+    mgr = _get_watcher_manager(state)
+    result = mgr.unregister(name)
+    if not result.get("ok"):
+        return ToolResult(success=False, output=None, error=result.get("error"))
+    return ToolResult(success=True, output=result)
+
+
+def tool_watch_enable(state: AgentState, name: str) -> ToolResult:
+    """启用一个已注册的 watcher。"""
+    mgr = _get_watcher_manager(state)
+    result = mgr.set_enabled(name, True)
+    if not result.get("ok"):
+        return ToolResult(success=False, output=None, error=result.get("error"))
+    return ToolResult(success=True, output=result)
+
+
+def tool_watch_disable(state: AgentState, name: str) -> ToolResult:
+    """禁用一个 watcher(注册项保留,只是不再被调度)。"""
+    mgr = _get_watcher_manager(state)
+    result = mgr.set_enabled(name, False)
+    if not result.get("ok"):
+        return ToolResult(success=False, output=None, error=result.get("error"))
+    return ToolResult(success=True, output=result)
+
+
+def tool_watch_update(
+    state: AgentState,
+    name: str,
+    interval: Optional[int] = None,
+    emit: Optional[str] = None,
+    params: Optional[dict] = None,
+    enabled: Optional[bool] = None,
+    desc: Optional[str] = None,
+    path: Optional[str] = None,
+) -> ToolResult:
+    """更新一个 watcher 的字段(只传需要改的)。"""
+    mgr = _get_watcher_manager(state)
+    fields = {
+        "interval": interval, "emit": emit, "params": params,
+        "enabled": enabled, "desc": desc, "path": path,
+    }
+    result = mgr.update(name, **fields)
+    if not result.get("ok"):
+        return ToolResult(success=False, output=None, error=result.get("error"))
+    return ToolResult(success=True, output=result)
+
+
+def tool_watch_list(state: AgentState) -> ToolResult:
+    """列出当前所有已注册的 watcher 及其状态。"""
+    mgr = _get_watcher_manager(state)
+    entries = mgr.list_entries()
+    if not entries:
+        return ToolResult(success=True, output="(无已注册的 watcher)")
+    return ToolResult(success=True, output=entries)
+
+
 # ── 网络搜索 ────────────────────────────────────────────────────────────────
 
 
@@ -2771,6 +2891,66 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description="列出所有后台任务及其状态（running/done/failed/cancelled）",
             args_schema={},
             fn=tool_jobs_list,
+        ),
+        # ── 环境观察器(Watchers)──────────────────────────────────────────────
+        ToolSpec(
+            name="watch_register",
+            description=(
+                "【环境感知】注册一个观察器(watcher),由框架在每轮迭代开头按 interval 触发执行,"
+                "输出自动注入 LLM 上下文(单条硬上限 500 字符,超限自动落 artifacts/ 降级为路径)。\n"
+                "代码文件(.py 或 .sh,绝对路径,任意位置)是纯逻辑;interval/params/enabled 等配置由注册表管理。\n"
+                ".py 需定义 run(prev, store, iter_n)->Optional[dict],返回 None / "
+                "{'type':'text','content':...} / {'type':'image','image_block':{...}} / {'type':'path','path':...}。\n"
+                ".sh 的 stdout 当 text 内容;非零退出码视为失败(注入错误提示)。"
+            ),
+            args_schema={
+                "name":     "唯一标识(同名覆盖)",
+                "path":     "代码文件绝对路径(.py 或 .sh)",
+                "interval": "(可选)触发间隔秒数,默认 10",
+                "emit":     "(可选)event(默认,写 short_term 永久) | live(实时面板,暂未启用)",
+                "params":   "(可选)注入给代码的参数 dict;代码通过 store['params'] 读取",
+                "enabled":  "(可选)是否启用,默认 true",
+                "desc":     "(可选)描述",
+            },
+            fn=tool_watch_register,
+        ),
+        ToolSpec(
+            name="watch_unregister",
+            description="注销一个 watcher(代码文件不会被删除,如需保留可改用 watch_disable)",
+            args_schema={"name": "要注销的 watcher 名称"},
+            fn=tool_watch_unregister,
+        ),
+        ToolSpec(
+            name="watch_enable",
+            description="启用一个已注册的 watcher",
+            args_schema={"name": "watcher 名称"},
+            fn=tool_watch_enable,
+        ),
+        ToolSpec(
+            name="watch_disable",
+            description="禁用一个 watcher(注册项保留,只是不再被调度;便于复用)",
+            args_schema={"name": "watcher 名称"},
+            fn=tool_watch_disable,
+        ),
+        ToolSpec(
+            name="watch_update",
+            description="更新一个 watcher 的字段(只传需要改的)",
+            args_schema={
+                "name":     "watcher 名称",
+                "interval": "(可选)新的触发间隔秒数",
+                "emit":     "(可选)event | live",
+                "params":   "(可选)新的参数 dict",
+                "enabled":  "(可选)是否启用",
+                "desc":     "(可选)新的描述",
+                "path":     "(可选)新的代码文件绝对路径",
+            },
+            fn=tool_watch_update,
+        ),
+        ToolSpec(
+            name="watch_list",
+            description="列出当前所有已注册的 watcher 及其配置/状态",
+            args_schema={},
+            fn=tool_watch_list,
         ),
         ToolSpec(
             name="wait_for_job",
