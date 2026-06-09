@@ -2016,6 +2016,28 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return json(400, { error: String(e.message) }); }
   }
 
+  // ── GET /api/fs/roots — drives (win) / "/" (unix) + home + cwd ───────────
+  if (req.method === 'GET' && req.url === '/api/fs/roots') {
+    try {
+      const roots = [];
+      if (process.platform === 'win32') {
+        for (let c = 65; c <= 90; c++) {
+          const drive = String.fromCharCode(c) + ':\\';
+          try { fs.accessSync(drive); roots.push(drive); } catch {}
+        }
+      } else {
+        roots.push('/');
+      }
+      return json(200, {
+        roots,
+        home: os.homedir(),
+        cwd:  process.cwd(),
+        agentDir: AGENT_DIR,
+        sep:  path.sep,
+      });
+    } catch (e) { return json(400, { error: String(e.message) }); }
+  }
+
   // ── GET /api/fs/read?path=... — read any text file ───────────────────────
   if (req.method === 'GET' && req.url.startsWith('/api/fs/read')) {
     try {
