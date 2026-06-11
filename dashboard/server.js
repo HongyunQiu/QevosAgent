@@ -1502,12 +1502,18 @@ const server = http.createServer(async (req, res) => {
 
   // ── GET /api/version ─────────────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/version') {
+    // Busy = actively working on a task, not merely alive. An agent in nostop
+    // continuous mode sits alive-but-idle between tasks (nostop_idle + status
+    // 'idle'); that's "空闲", not "在执行任务" — mirror the dashboard's own
+    // isNostopIdle() so the mobile status dot agrees with the web UI.
+    const nostopIdle = !!(state.agentAlive
+      && state.meta && state.meta.nostop_idle
+      && state.status && state.status.status === 'idle');
     json(200, {
       version: APP_VERSION,
       instanceName: state.instanceName || '',
-      // Busy = an agent process is confirmed running, or is being spawned.
       // Mobile uses this to color the per-server status dot in its menu.
-      busy: !!(state.agentAlive || state.launching),
+      busy: !!(state.launching || (state.agentAlive && !nostopIdle)),
     });
     return;
   }
