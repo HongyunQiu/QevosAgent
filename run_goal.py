@@ -56,6 +56,71 @@ def ensure_env_defaults():
     os.environ.setdefault("AUTO_SAVE_SNAPSHOT_ON_EXIT", "1")
 
 
+def _should_bypass_proxy(base_url: str) -> bool:
+    """判断目标 base_url 是否应该绕过代理。
+
+    覆盖：回环、RFC1918 私有段（192.168/10/172.16-31）、链路本地（169.254/16）、
+    常见内网域名后缀（.local / .lan / .internal）、以及用户显式列在 NO_PROXY 里的 host。
+    """
+    from urllib.parse import urlparse
+    import ipaddress
+
+    host = (urlparse(base_url).hostname or "").lower()
+    if not host:
+        return True
+
+    no_proxy = (os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "")
+    for entry in [e.strip().lower() for e in no_proxy.split(",") if e.strip()]:
+        bare = entry.lstrip(".")
+        if host == bare or host.endswith("." + bare):
+            return True
+
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            return True
+    except ValueError:
+        if host == "localhost" or host.endswith(".local") or host.endswith(".lan") or host.endswith(".internal"):
+            return True
+    return False
+
+
+def _build_httpx_client(base_url: str):
+    """构造 httpx.Client，显式管理代理。
+
+    httpx 默认 trust_env=True 会读系统代理（含 GNOME dbus 的 'socks://...'，httpx 不支持），
+    这里关掉自动探测；只信任显式 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY；base_url 命中本地
+    / 内网 / NO_PROXY 时强制不走代理。
+    """
+    import httpx
+    if _should_bypass_proxy(base_url):
+        return httpx.Client(trust_env=False)
+    proxy = (
+        os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+        or os.environ.get("ALL_PROXY") or os.environ.get("all_proxy")
+    )
+    return httpx.Client(proxy=proxy, trust_env=False) if proxy else httpx.Client(trust_env=False)
+
+
+def _probe_one_endpoint(base_url: str, api_key, model: str, list_models=None):
+    """探测一个 OpenAI 兼容端点，成功返回 model id 列表，失败抛 RuntimeError。"""
+    if list_models is None:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url=base_url, http_client=_build_httpx_client(base_url))
+        list_models = client.models.list
+    try:
+        resp = list_models()
+    except Exception as e:
+        raise RuntimeError(f"无法连接 {base_url}。原始错误: {e}") from e
+    ids = []
+    for item in getattr(resp, "data", []) or []:
+        mid = getattr(item, "id", None)
+        if mid:
+            ids.append(str(mid))
+    return ids
+
+
 def probe_openai_configuration(list_models=None):
     """Verify the configured OpenAI-compatible endpoint before starting the agent.
 
@@ -63,56 +128,71 @@ def probe_openai_configuration(list_models=None):
     is missing but the server exposes exactly one model, auto-switch to it to
     reduce manual config churn.
     """
-    base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip()
-    api_key = os.environ.get("OPENAI_API_KEY")
-    model = (os.environ.get("OPENAI_MODEL") or "").strip()
+    primary_base = (os.environ.get("OPENAI_BASE_URL") or "").strip()
+    primary_key = os.environ.get("OPENAI_API_KEY")
+    primary_model = (os.environ.get("OPENAI_MODEL") or "").strip()
 
-    if not base_url:
+    if not primary_base:
         raise ValueError("LLM 服务探测失败: 缺少 OPENAI_BASE_URL。")
 
-    if list_models is None:
-        from openai import OpenAI
+    backup_base = (os.environ.get("BACKUP_OPENAI_BASE_URL") or "").strip()
+    backup_key = os.environ.get("BACKUP_OPENAI_API_KEY")
+    backup_model = (os.environ.get("BACKUP_OPENAI_MODEL") or "").strip()
+    has_backup = bool(backup_base)
 
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        list_models = client.models.list
-
+    # 1. 探主
+    role = "primary"
     try:
-        resp = list_models()
-    except Exception as e:
-        raise RuntimeError(
-            f"LLM 服务探测失败: 无法连接 {base_url}。"
-            f"请检查 OPENAI_BASE_URL / 网络 / 服务状态。原始错误: {e}"
-        ) from e
+        model_ids = _probe_one_endpoint(primary_base, primary_key, primary_model, list_models)
+        active_base, active_model = primary_base, primary_model
+    except RuntimeError as primary_err:
+        if not has_backup:
+            raise RuntimeError(
+                f"LLM 服务探测失败: {primary_err}。"
+                "请检查 OPENAI_BASE_URL / 网络 / 服务状态。"
+            ) from primary_err
+        # 2. 主失败 → 探备
+        print(f"[run_goal] probe: 主 API 探测失败 ({primary_err}); 切换到备用 API…")
+        try:
+            model_ids = _probe_one_endpoint(backup_base, backup_key, backup_model, None)
+        except RuntimeError as backup_err:
+            raise RuntimeError(
+                "LLM 服务探测失败: 主 API 与备用 API 均不可用。\n"
+                f"  主: {primary_err}\n  备: {backup_err}"
+            ) from primary_err
+        # 备用可用 → 把 env 切到备用，本 run 后续都用备用配置
+        os.environ["OPENAI_BASE_URL"] = backup_base
+        if backup_key is not None:
+            os.environ["OPENAI_API_KEY"] = backup_key
+        if backup_model:
+            os.environ["OPENAI_MODEL"] = backup_model
+        role, active_base, active_model = "backup", backup_base, backup_model
 
-    model_ids = []
-    for item in getattr(resp, "data", []) or []:
-        model_id = getattr(item, "id", None)
-        if model_id:
-            model_ids.append(str(model_id))
-
-    if model in model_ids:
+    if active_model in model_ids:
         return {
-            "base_url": base_url,
-            "configured_model": model,
-            "resolved_model": model,
+            "base_url": active_base,
+            "configured_model": active_model,
+            "resolved_model": active_model,
             "available_models": model_ids,
             "auto_selected": False,
+            "active_endpoint": role,
         }
 
     if len(model_ids) == 1:
         resolved = model_ids[0]
         os.environ["OPENAI_MODEL"] = resolved
         return {
-            "base_url": base_url,
-            "configured_model": model,
+            "base_url": active_base,
+            "configured_model": active_model,
             "resolved_model": resolved,
             "available_models": model_ids,
             "auto_selected": True,
+            "active_endpoint": role,
         }
 
     shown = ", ".join(model_ids[:5]) if model_ids else "(空列表)"
     raise ValueError(
-        f"LLM 服务探测失败: 配置的模型 `{model}` 不在 {base_url} 返回的模型列表中。"
+        f"LLM 服务探测失败: 配置的模型 `{active_model}` 不在 {active_base} 返回的模型列表中。"
         f"可用模型: {shown}"
     )
 
@@ -121,14 +201,15 @@ def format_probe_summary(probe: dict) -> str:
     base_url = probe["base_url"]
     configured = probe["configured_model"]
     resolved = probe["resolved_model"]
+    role_tag = " [使用备用 API]" if probe.get("active_endpoint") == "backup" else ""
     if probe.get("auto_selected"):
         return (
-            "[run_goal] probe: endpoint ok; "
+            f"[run_goal] probe: endpoint ok{role_tag}; "
             f"configured={configured!r}; resolved={resolved!r}; "
             f"auto-selected the only available model from {base_url}"
         )
     return (
-        "[run_goal] probe: endpoint ok; "
+        f"[run_goal] probe: endpoint ok{role_tag}; "
         f"model={resolved!r}; base_url={base_url}"
     )
 

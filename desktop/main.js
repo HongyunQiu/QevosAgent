@@ -285,6 +285,21 @@ async function startDashboard() {
     }
   }
 
+  // Same first-launch seeding for the bundled example cron files. On Windows
+  // the install dir is writable and is itself APP_ROOT, so the bundled
+  // crons/ folder is already in place.
+  if (process.platform !== 'win32') {
+    const userCrons   = path.join(userData, 'crons');
+    const bundleCrons = path.join(APP_ROOT, 'crons');
+    if (!fs.existsSync(userCrons) && fs.existsSync(bundleCrons)) {
+      fs.mkdirSync(userCrons, { recursive: true });
+      for (const f of fs.readdirSync(bundleCrons)) {
+        if (f.startsWith('.')) continue;
+        fs.copyFileSync(path.join(bundleCrons, f), path.join(userCrons, f));
+      }
+    }
+  }
+
   process.env.DASHBOARD_PORT   = String(PORT);
   process.env.PYTHONUTF8       = '1';
   process.env.PYTHONIOENCODING = 'utf-8';
@@ -577,6 +592,11 @@ function registerIPC() {
     OPENAI_MODEL:    process.env.OPENAI_MODEL     || '',
     MAX_ITERS:       process.env.MAX_ITERS        || '100',
     INSTANCE_NAME:   process.env.INSTANCE_NAME    || '',
+    HTTPS_PROXY:     process.env.HTTPS_PROXY      || '',
+    HTTP_PROXY:      process.env.HTTP_PROXY       || '',
+    BACKUP_OPENAI_BASE_URL: process.env.BACKUP_OPENAI_BASE_URL || '',
+    BACKUP_OPENAI_API_KEY:  process.env.BACKUP_OPENAI_API_KEY  || '',
+    BACKUP_OPENAI_MODEL:    process.env.BACKUP_OPENAI_MODEL    || '',
   }));
 
   ipcMain.handle('env:save', (_, data) => {

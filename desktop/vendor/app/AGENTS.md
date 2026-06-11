@@ -257,6 +257,98 @@ scratchpad_append: 已启动下载 job_abc，文件大小约 2GB，预计 10 分
 
 ---
 
+## 环境观察器（Watchers）
+
+Watcher 是**框架推送式的环境感知机制**，与后台任务（jobs）是同一抽象的两侧：
+
+- `shell_bg + 框架通知`：一次性事件（任务完成）的推送
+- `watcher`：周期性环境信号（日志变化、文件状态、屏幕快照等）的推送
+
+注册一个 watcher 后，**框架在每轮迭代开头按 interval 触发执行**，把过滤/处理后的内容自动注入上下文。agent **完全不需要主动调用工具去看**——省一整轮"调用→获得→处理"循环。
+
+### 典型使用场景
+
+- 调试时监看某软件的日志输出，关键词过滤后只看 ERROR/WARN
+- 监看某个生成中的产物文件（mtime 变了才提示）
+- 周期性跑 `docker ps` / `git status` 类健康检查
+- 监看屏幕区域（UI 自动化场景）
+
+### 工作流程
+
+```
+1. write_file 把 watcher 代码写到任意路径（建议 ./watchers/ 目录）
+2. watch_register 注册：指定 name、path、interval、params
+3. 之后每轮迭代到时框架自动调用、自动注入 → agent 自然看到
+4. 不需要时 watch_disable（保留注册以便复用），或 watch_unregister 彻底删除
+```
+
+### watcher 代码契约
+
+**.py 文件**必须定义一个 `run(prev, store, iter_n)` 函数：
+
+```python
+def run(prev, store, iter_n):
+    # prev: 上次返回值（首次为 None）
+    # store: 可读写持久化字典；store["params"] 是注册时传入的参数（只读使用）
+    # iter_n: 当前迭代号
+    # 返回值（四选一）：
+    #   None                                          → 本轮不投递（最常用，节省上下文）
+    #   {"type":"text","content":"短文本"}             → 注入 short_term
+    #   {"type":"path","path":"/abs/path/to/file"}    → 注入路径，agent 想看再 read_file
+    #   {"type":"image","image_block":{...}}          → 实时面板（暂未启用，按 text 处理）
+    return None
+```
+
+**.sh 文件**：stdout 当 text content；非零退出码视为失败（注入错误提示）。环境变量 `WATCHER_PARAMS_JSON` / `WATCHER_ITER` / `WATCHER_STORE_FILE` 可读写持久状态。
+
+### 关键约束（**框架强制，无法绕过**）
+
+1. **单条注入硬上限 500 字符**（含 `[环境]` 前缀）。超过自动落 `<RUN_DIR>/artifacts/watch_<name>_iter<n>.log`，注入降级为路径。
+2. **过滤的责任全在 watcher 代码内**：不要把整个日志返回，要在代码里 grep/截取/折叠后再返回。如果频繁溢出落盘，说明关键词过宽 → 调 `watch_update` 收紧 params。
+3. **用户代码异常自动捕获**：不会影响主循环，但会注入 `[环境] watcher xxx 执行异常: ...` 提示。
+4. **interval 是下界**：实际触发由迭代节奏决定，写 1 秒不代表每秒一定执行。
+5. **代码文件改了自动重载**（按 mtime），不用重启。
+
+### 复用模式
+
+同一个文件可被多次注册，通过 params 实例化：
+
+```
+watch_register(name="nginx-err",  path="./watchers/tail_grep.py", interval=15,
+               params={"log":"/var/log/nginx/error.log",  "pattern":"ERROR|FATAL"})
+watch_register(name="mysql-err",  path="./watchers/tail_grep.py", interval=30,
+               params={"log":"/var/log/mysql/error.log",  "pattern":"ERROR"})
+```
+
+写一份通用的"tail+grep" watcher，按需多次注册，**这是 watcher 设计的核心价值**。
+
+### 工具速查
+
+| 工具 | 用途 |
+|---|---|
+| `watch_register(name, path, interval, params, emit, enabled, desc)` | 注册 |
+| `watch_list()` | 列出全部 |
+| `watch_enable(name)` / `watch_disable(name)` | 启停（**保留注册便于复用**） |
+| `watch_update(name, ...)` | 修改字段 |
+| `watch_unregister(name)` | 彻底注销（代码文件不删） |
+
+注册表持久化在 `<cwd>/.qevos/watchers.json`，跨 run 持久。可直接用 `read_file` 查当前完整状态（含每个 watcher 的 `store` 持久状态）。
+
+### 何时该用 watcher 而非工具调用
+
+| 场景 | 推荐 |
+|---|---|
+| 一次性看一眼日志最后几行 | `shell("tail -50 log")` |
+| 周期性/长时间监看日志变化 | watcher |
+| 检查某文件是否存在 | `shell("ls path")` |
+| 持续监看某文件的变化 | watcher |
+| 启动后台任务等结果 | `shell_bg + wait_for_job` |
+| 定期跑某条命令看世界变了没 | watcher |
+
+核心判断：**只看一次 → 工具调用；周期性看 → watcher**。
+
+---
+
 ## 草稿本（scratchpad）
 - 草稿本用于"执行过程中的中间记录与分析"，不是最终答案。
 - 多步任务必须维护草稿本：

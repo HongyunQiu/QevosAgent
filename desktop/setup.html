@@ -185,6 +185,53 @@
     .btn-probe:hover:not(:disabled) { background: rgba(63,185,80,0.28); }
     .btn-probe:disabled { opacity: 0.5; cursor: not-allowed; }
 
+    /* ── Tabs ── */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid #21262d;
+    }
+    .tab {
+      background: transparent;
+      border: none;
+      color: #7d8590;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 6px 12px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color 0.15s, border-color 0.15s;
+      font-family: inherit;
+    }
+    .tab:hover { color: #cdd9e5; }
+    .tab.active {
+      color: #e6edf3;
+      border-bottom-color: #388bfd;
+    }
+    .tab .dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #3fb950;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .tab.has-value .dot { display: inline-block; }
+    .tab:not(.has-value) .dot { display: none; }
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #7d8590;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 22px 0 12px;
+      padding-top: 16px;
+      border-top: 1px solid #21262d;
+    }
+
     /* ── Messages ── */
     .msg {
       display: none;
@@ -211,15 +258,21 @@
 
     <form id="settings-form" autocomplete="off">
 
-      <!-- API 服务地址 -->
+      <!-- Tab 切换：主 / 备 -->
+      <div class="tabs">
+        <button type="button" class="tab active" data-tab="primary" id="tab-primary">主 API<span class="dot"></span></button>
+        <button type="button" class="tab" data-tab="backup" id="tab-backup">备用 API<span class="dot"></span></button>
+      </div>
+
+      <!-- API 服务地址（共享，按 tab 切值） -->
       <div class="form-group">
         <div class="label-row">
-          <label for="base-url">API 服务地址<span class="required-mark">*</span></label>
+          <label for="base-url"><span id="lbl-base">API 服务地址</span><span class="required-mark" id="mark-base">*</span></label>
           <button type="button" class="btn-probe" id="btn-test">探测</button>
         </div>
         <input type="text" id="base-url" name="OPENAI_BASE_URL"
-               placeholder="http://127.0.0.1:8080/v1" required>
-        <div class="hint">OpenAI 兼容接口的 base URL，例如本地 Ollama、LM Studio、vLLM 等</div>
+               placeholder="http://127.0.0.1:8080/v1">
+        <div class="hint" id="hint-base">OpenAI 兼容接口的 base URL，例如本地 Ollama、LM Studio、vLLM 等</div>
       </div>
 
       <!-- API 密钥 -->
@@ -235,11 +288,14 @@
 
       <!-- 模型名称 -->
       <div class="form-group">
-        <label for="model">模型名称<span class="required-mark">*</span></label>
+        <label for="model"><span id="lbl-model">模型名称</span><span class="required-mark" id="mark-model">*</span></label>
         <input type="text" id="model" name="OPENAI_MODEL"
-               placeholder="gpt-4o / qwen3-72b / deepseek-chat" required>
-        <div class="hint">与服务端返回的 model id 保持一致</div>
+               placeholder="gpt-4o / qwen3-72b / deepseek-chat">
+        <div class="hint" id="hint-model">与服务端返回的 model id 保持一致</div>
       </div>
+
+      <!-- 其他设置（不随 tab 切换） -->
+      <div class="section-label">其他设置</div>
 
       <!-- 最大迭代次数 -->
       <div class="form-group">
@@ -257,6 +313,18 @@
         <div class="hint">显示在看板右上角的「昵称:端口」，便于区分多个实例；留空则只显示端口</div>
       </div>
 
+      <!-- HTTP 代理 -->
+      <div class="form-group">
+        <label for="https-proxy">HTTP 代理</label>
+        <input type="text" id="https-proxy" name="HTTPS_PROXY"
+               placeholder="http://127.0.0.1:7897">
+        <div class="hint">
+          访问外部 LLM API（OpenAI / Anthropic 等）或需要联网的工具（如 web_search）时使用；本地 / 内网服务会自动跳过。
+          需包含 <code>http://</code> 前缀和端口号，如 <code>http://127.0.0.1:7897</code>。
+          <strong>注意：</strong>Linux 系统设置 GUI 里配的代理对本程序不生效，必须在这里显式填写。
+        </div>
+      </div>
+
       <hr class="divider">
 
       <button type="submit" class="btn-primary" id="btn-save">保存并启动</button>
@@ -272,6 +340,79 @@
     const btnSkip  = document.getElementById('btn-skip');
     const keyInput = document.getElementById('api-key');
     const togglePw = document.getElementById('toggle-key');
+    const inpBase  = document.getElementById('base-url');
+    const inpModel = document.getElementById('model');
+
+    // ── Tab state ─────────────────────────────────────────────────────────
+    // 三个字段（base / key / model）按 tab 切值；其他设置不随 tab 走。
+    const tabState = {
+      primary: { base: '', key: '', model: '' },
+      backup:  { base: '', key: '', model: '' },
+    };
+    let activeTab = 'primary';
+
+    function snapshotCurrentTab() {
+      tabState[activeTab].base  = inpBase.value;
+      tabState[activeTab].key   = keyInput.value;
+      tabState[activeTab].model = inpModel.value;
+    }
+    function loadTab(name) {
+      inpBase.value  = tabState[name].base;
+      keyInput.value = tabState[name].key;
+      inpModel.value = tabState[name].model;
+    }
+    function refreshTabIndicators() {
+      // 备用 tab：任一字段非空就显示绿点，提示用户「已配过」
+      const t = tabState.backup;
+      const tabBackup = document.getElementById('tab-backup');
+      if (t.base.trim() || t.key.trim() || t.model.trim()) {
+        tabBackup.classList.add('has-value');
+      } else {
+        tabBackup.classList.remove('has-value');
+      }
+      // 主 API 总是显绿点（必填，正常都有）
+      const p = tabState.primary;
+      const tabPrimary = document.getElementById('tab-primary');
+      if (p.base.trim() || p.model.trim()) {
+        tabPrimary.classList.add('has-value');
+      } else {
+        tabPrimary.classList.remove('has-value');
+      }
+    }
+    function refreshRequiredMarks() {
+      // 主必填，备选填
+      const isBackup = activeTab === 'backup';
+      document.getElementById('mark-base').style.display  = isBackup ? 'none' : 'inline';
+      document.getElementById('mark-model').style.display = isBackup ? 'none' : 'inline';
+      document.getElementById('hint-base').textContent = isBackup
+        ? '主 API 启动探测失败时自动切到这里。留空表示不启用备用 API。'
+        : 'OpenAI 兼容接口的 base URL，例如本地 Ollama、LM Studio、vLLM 等';
+      document.getElementById('hint-model').textContent = isBackup
+        ? '不同 endpoint 的 model id 通常不一样，必须为备用 API 单独指定'
+        : '与服务端返回的 model id 保持一致';
+    }
+    function switchTab(name) {
+      if (name === activeTab) return;
+      snapshotCurrentTab();
+      activeTab = name;
+      loadTab(name);
+      for (const el of document.querySelectorAll('.tab')) {
+        el.classList.toggle('active', el.dataset.tab === name);
+      }
+      refreshRequiredMarks();
+      refreshTabIndicators();
+      msgBox.className = 'msg'; // 清掉旧消息
+    }
+    for (const el of document.querySelectorAll('.tab')) {
+      el.addEventListener('click', () => switchTab(el.dataset.tab));
+    }
+    // 输入时实时刷新 tab 绿点
+    for (const el of [inpBase, keyInput, inpModel]) {
+      el.addEventListener('input', () => {
+        snapshotCurrentTab();
+        refreshTabIndicators();
+      });
+    }
 
     // ── Show password toggle ──────────────────────────────────────────────
     togglePw.addEventListener('click', () => {
@@ -284,13 +425,22 @@
     async function prefill() {
       try {
         const env = await window.electronAPI.readEnv();
-        if (env.OPENAI_BASE_URL) document.getElementById('base-url').value  = env.OPENAI_BASE_URL;
-        if (env.OPENAI_API_KEY)  document.getElementById('api-key').value   = env.OPENAI_API_KEY;
-        if (env.OPENAI_MODEL)    document.getElementById('model').value     = env.OPENAI_MODEL;
+        tabState.primary.base  = env.OPENAI_BASE_URL || '';
+        tabState.primary.key   = env.OPENAI_API_KEY  || '';
+        tabState.primary.model = env.OPENAI_MODEL    || '';
+        tabState.backup.base   = env.BACKUP_OPENAI_BASE_URL || '';
+        tabState.backup.key    = env.BACKUP_OPENAI_API_KEY  || '';
+        tabState.backup.model  = env.BACKUP_OPENAI_MODEL    || '';
+        loadTab(activeTab);
+        refreshTabIndicators();
+
         if (env.MAX_ITERS)       document.getElementById('max-iters').value = env.MAX_ITERS;
         if (env.INSTANCE_NAME)   document.getElementById('instance-name').value = env.INSTANCE_NAME;
+        if (env.HTTPS_PROXY)     document.getElementById('https-proxy').value   = env.HTTPS_PROXY;
+        else if (env.HTTP_PROXY) document.getElementById('https-proxy').value   = env.HTTP_PROXY;
       } catch (e) { /* first run, no .env yet */ }
     }
+    refreshRequiredMarks();
     prefill();
 
     // ── Helpers ───────────────────────────────────────────────────────────
@@ -313,20 +463,42 @@
     form.addEventListener('submit', async e => {
       e.preventDefault();
       msgBox.className = 'msg'; // hide
+      snapshotCurrentTab();
 
-      const baseUrl = document.getElementById('base-url').value.trim();
-      const model   = document.getElementById('model').value.trim();
-      if (!baseUrl) { showMsg('error', 'API 服务地址不能为空'); return; }
-      if (!model)   { showMsg('error', '模型名称不能为空'); return; }
+      const primaryBase  = tabState.primary.base.trim();
+      const primaryModel = tabState.primary.model.trim();
+      if (!primaryBase || !primaryModel) {
+        // 用户可能在备用 tab 上，但主必填项缺失 → 切回主提示
+        if (activeTab !== 'primary') switchTab('primary');
+        if (!primaryBase)  { showMsg('error', '主 API 服务地址不能为空'); return; }
+        if (!primaryModel) { showMsg('error', '主 API 模型名称不能为空'); return; }
+      }
+      // 备用三件套要么都填要么都不填
+      const bBase  = tabState.backup.base.trim();
+      const bKey   = tabState.backup.key.trim();
+      const bModel = tabState.backup.model.trim();
+      const bAny   = bBase || bKey || bModel;
+      const bAll   = bBase && bModel;  // key 可留空（本地服务）
+      if (bAny && !bAll) {
+        if (activeTab !== 'backup') switchTab('backup');
+        showMsg('error', '备用 API 需要同时填写 base URL 和模型名称（API 密钥可空）');
+        return;
+      }
 
       setLoading(true);
       try {
+        const proxy = document.getElementById('https-proxy').value.trim();
         const data = {
-          OPENAI_BASE_URL: baseUrl,
-          OPENAI_API_KEY:  document.getElementById('api-key').value.trim() || 'local',
-          OPENAI_MODEL:    model,
+          OPENAI_BASE_URL: primaryBase,
+          OPENAI_API_KEY:  tabState.primary.key.trim() || 'local',
+          OPENAI_MODEL:    primaryModel,
+          BACKUP_OPENAI_BASE_URL: bBase,
+          BACKUP_OPENAI_API_KEY:  bAny ? (bKey || 'local') : '',
+          BACKUP_OPENAI_MODEL:    bModel,
           MAX_ITERS:       document.getElementById('max-iters').value.trim() || '100',
           INSTANCE_NAME:   document.getElementById('instance-name').value.trim(),
+          HTTPS_PROXY:     proxy,
+          HTTP_PROXY:      proxy,
         };
         await window.electronAPI.saveEnv(data);
         await launchDashboard();
@@ -337,11 +509,15 @@
     });
 
     // ── Test connection ───────────────────────────────────────────────────
+    // 探测当前 tab 的 endpoint —— 主 tab 就探主，备 tab 就探备
     const btnTest = document.getElementById('btn-test');
     btnTest.addEventListener('click', async () => {
-      const baseUrl = document.getElementById('base-url').value.trim();
-      const apiKey  = document.getElementById('api-key').value.trim();
-      if (!baseUrl) { showMsg('error', '请先填写 API 服务地址'); return; }
+      const baseUrl = inpBase.value.trim();
+      const apiKey  = keyInput.value.trim();
+      if (!baseUrl) {
+        const which = activeTab === 'backup' ? '备用 API' : 'API';
+        showMsg('error', `请先填写${which}服务地址`); return;
+      }
 
       btnTest.disabled     = true;
       btnTest.textContent  = '验证中…';

@@ -190,15 +190,49 @@ class OpenAIBackend(LLMBackend):
         #   由 _create_with_retry 统一执行带退避和 on_retry 通知的重试策略。
         _read_timeout = float(os.environ.get("LLM_READ_TIMEOUT", "900"))
         _connect_timeout = float(os.environ.get("LLM_CONNECT_TIMEOUT", "15"))
+        _timeout = httpx.Timeout(
+            connect=_connect_timeout,
+            read=_read_timeout,
+            write=30.0,
+            pool=10.0,
+        )
+        # httpx 默认 trust_env=True 会读系统代理（含 GNOME dbus 的 'socks://...'，httpx 不支持），
+        # 这里关掉自动探测；只信任显式 HTTPS_PROXY/HTTP_PROXY/ALL_PROXY；base_url 命中本地回环 /
+        # RFC1918 私有段 / 链路本地 / 内网域名后缀（.local/.lan/.internal）/ NO_PROXY 时不走代理。
+        from urllib.parse import urlparse as _urlparse
+        import ipaddress as _ipaddress
+        _host = (_urlparse(base_url).hostname or "").lower() if base_url else ""
+        _bypass = not _host
+        if not _bypass:
+            for _entry in (os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "").split(","):
+                _e = _entry.strip().lower().lstrip(".")
+                if _e and (_host == _e or _host.endswith("." + _e)):
+                    _bypass = True
+                    break
+        if not _bypass:
+            try:
+                _ip = _ipaddress.ip_address(_host)
+                if _ip.is_private or _ip.is_loopback or _ip.is_link_local:
+                    _bypass = True
+            except ValueError:
+                if _host == "localhost" or _host.endswith(".local") or _host.endswith(".lan") or _host.endswith(".internal"):
+                    _bypass = True
+        _proxy = None
+        if not _bypass:
+            _proxy = (
+                os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+                or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+                or os.environ.get("ALL_PROXY") or os.environ.get("all_proxy")
+            )
+        _http_client = (
+            httpx.Client(proxy=_proxy, trust_env=False, timeout=_timeout)
+            if _proxy else httpx.Client(trust_env=False, timeout=_timeout)
+        )
         self.client = openai.OpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=httpx.Timeout(
-                connect=_connect_timeout,
-                read=_read_timeout,
-                write=30.0,
-                pool=10.0,
-            ),
+            http_client=_http_client,
+            timeout=_timeout,
             max_retries=0,
         )
         # 可选退避通知回调，签名 (attempt_1_based, wait_seconds, reason)。
