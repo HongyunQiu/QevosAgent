@@ -8,7 +8,7 @@
  *   │ ⚡ │ 看板 │ View A × │ View B × │       ⚙   │  ← tabbar.html  (TAB_H px)
  *   ├──────────────────────────────────────────────┤
  *   │                                              │
- *   │          setup.html / dashboard / view       │  ← content WebContentsView
+ *   │              dashboard / view                │  ← content WebContentsView
  *   │                                              │
  *   └──────────────────────────────────────────────┘
  *
@@ -18,18 +18,16 @@
  *     → main.js creates a new content WebContentsView and updates the tab bar.
  *   - Switching tabs hides/shows views via setBounds() — no page reloads.
  *   - "看板" tab is permanent and cannot be closed.
- *   - Settings (⚙) in the tab bar loads setup.html into the home view.
+ *   - Settings (⚙) in the tab bar opens the in-dashboard settings panel.
  *
  * IPC (content views → main, via preload.js):
- *   env:read        → return current .env values
- *   env:save        → write .env and sync process.env
- *   env:test        → connectivity check against the LLM endpoint
- *   dashboard:open  → start dashboard server + navigate home view
+ *   dialog:pickFolder → native folder picker (LLM config now lives in the
+ *                       dashboard's /api/env HTTP API, not in IPC)
  *
  * IPC (tabbar.html → main, via tabbar-preload.js):
  *   tab-activate id → switch to that view
  *   tab-close    id → destroy that view
- *   tab-settings    → load setup.html in the home view
+ *   tab-settings    → open the in-dashboard settings panel (window.openSettings)
  */
 
 const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell, nativeImage, dialog } = require('electron');
@@ -316,6 +314,9 @@ async function startDashboard() {
   process.env.AGENT_EPISODIC   = path.join(userDataDir, 'memory_episodic.jsonl');
   process.env.SKILLS_DIR       = userSkills;
   process.env.CRONS_DIR        = path.join(userDataDir, 'crons');
+  // Tell server.js where the real .env lives so its /api/env write endpoint
+  // (used by the in-dashboard settings panel) targets the same file main.js reads.
+  process.env.DOTENV_PATH      = path.join(DOT_ENV_DIR, '.env');
 
   const serverPath = path.join(APP_ROOT, 'dashboard', 'server.js');
   try {
@@ -547,19 +548,6 @@ function navigateToDashboard() {
   });
 }
 
-function showSetup() {
-  const mv = getMainView();
-  if (!mv || !mainWindow || mainWindow.isDestroyed()) return;
-  activateView(HOME_ID);
-  mv.webContents.loadFile(path.join(__dirname, 'setup.html'));
-}
-
-// ── Check if the LLM endpoint is configured ────────────────────────────────
-
-function isConfigured() {
-  return !!process.env.OPENAI_BASE_URL;
-}
-
 // ── Native menu — minimal; tabs live in tabbar.html ───────────────────────
 
 function setupNativeMenu() {
@@ -585,54 +573,9 @@ function setupNativeMenu() {
 
 function registerIPC() {
   // ── Content view IPC (preload.js) ────────────────────────────────────────
-
-  ipcMain.handle('env:read', () => ({
-    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
-    OPENAI_API_KEY:  process.env.OPENAI_API_KEY  || '',
-    OPENAI_MODEL:    process.env.OPENAI_MODEL     || '',
-    MAX_ITERS:       process.env.MAX_ITERS        || '100',
-    INSTANCE_NAME:   process.env.INSTANCE_NAME    || '',
-    HTTPS_PROXY:     process.env.HTTPS_PROXY      || '',
-    HTTP_PROXY:      process.env.HTTP_PROXY       || '',
-    BACKUP_OPENAI_BASE_URL: process.env.BACKUP_OPENAI_BASE_URL || '',
-    BACKUP_OPENAI_API_KEY:  process.env.BACKUP_OPENAI_API_KEY  || '',
-    BACKUP_OPENAI_MODEL:    process.env.BACKUP_OPENAI_MODEL    || '',
-  }));
-
-  ipcMain.handle('env:save', (_, data) => {
-    const envPath = path.join(DOT_ENV_DIR, '.env');
-    let existing = {};
-    try {
-      for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
-        const eq = line.indexOf('=');
-        if (eq > 0 && !line.trim().startsWith('#')) {
-          existing[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
-        }
-      }
-    } catch {}
-    // Form fields are authoritative for the keys they manage: a non-empty value
-    // sets the key, an empty value removes it (so clearing a field in the panel
-    // clears it in .env). Keys the form doesn't manage are preserved via `existing`.
-    const merged = { ...existing };
-    const cleared = [];
-    for (const [k, v] of Object.entries(data)) {
-      const val = (v || '').trim();
-      if (val) merged[k] = val;
-      else { delete merged[k]; cleared.push(k); }
-    }
-    const content = Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
-    fs.mkdirSync(DOT_ENV_DIR, { recursive: true });
-    fs.writeFileSync(envPath, content, 'utf8');
-    for (const [k, v] of Object.entries(merged)) process.env[k] = v;
-    for (const k of cleared) delete process.env[k];  // sync live process so cleared keys take effect without restart
-    return { ok: true };
-  });
-
-  ipcMain.handle('dashboard:open', async () => {
-    await startDashboard();
-    navigateToDashboard();
-    return { ok: true };
-  });
+  // LLM/connection config is now handled entirely by the dashboard's HTTP API
+  // (/api/env in dashboard/server.js); the native folder picker remains because
+  // it gives a better UX than the browser-mode server-side directory browser.
 
   ipcMain.handle('dialog:pickFolder', async () => {
     const res = await dialog.showOpenDialog(mainWindow, {
@@ -642,54 +585,17 @@ function registerIPC() {
     return { canceled: false, path: res.filePaths[0] };
   });
 
-  ipcMain.handle('env:test', (_, { baseUrl, apiKey }) => {
-    return new Promise(resolve => {
-      let url;
-      try {
-        const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-        url = new URL(base + '/models');
-      } catch {
-        return resolve({ ok: false, error: t('app.invalid_url') });
-      }
-      const mod = url.protocol === 'https:' ? require('https') : require('http');
-      const options = {
-        hostname: url.hostname,
-        port:     url.port || (url.protocol === 'https:' ? 443 : 80),
-        path:     url.pathname + url.search,
-        method:   'GET',
-        headers:  { Authorization: `Bearer ${apiKey || 'local'}` },
-        timeout:  8000,
-      };
-      const req = mod.request(options, res => {
-        let body = '';
-        res.setEncoding('utf8');
-        res.on('data', chunk => { body += chunk; });
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            let models = [];
-            try {
-              const json = JSON.parse(body);
-              if (Array.isArray(json.data)) {
-                models = json.data.map(m => m.id || m.name).filter(Boolean);
-              }
-            } catch { /* non-JSON response, ignore */ }
-            resolve({ ok: true, status: res.statusCode, models });
-          } else {
-            resolve({ ok: false, status: res.statusCode, error: `HTTP ${res.statusCode}` });
-          }
-        });
-      });
-      req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: t('app.timeout') }); });
-      req.on('error',   err => resolve({ ok: false, error: err.message }));
-      req.end();
-    });
-  });
-
   // ── Tab bar IPC (tabbar-preload.js) ──────────────────────────────────────
 
   ipcMain.on('tab-activate', (_, id)  => activateView(id));
   ipcMain.on('tab-close',    (_, id)  => closeView(id));
-  ipcMain.on('tab-settings', ()       => showSetup());
+  // Open the in-dashboard settings panel instead of the old setup.html page.
+  ipcMain.on('tab-settings', () => {
+    const mv = getMainView();
+    if (!mv) return;
+    activateView(HOME_ID);
+    mv.webContents.executeJavaScript('window.openSettings && window.openSettings()').catch(() => {});
+  });
 }
 
 // ── BrowserWindow + WebContentsViews ──────────────────────────────────────
@@ -761,11 +667,11 @@ function createWindow() {
   mainWindow.on('unmaximize', updateLayout);
   mainWindow.on('closed',     () => { mainWindow = null; });
 
-  if (isConfigured()) {
-    startDashboard().then(() => navigateToDashboard());
-  } else {
-    mainView.webContents.loadFile(path.join(__dirname, 'setup.html'));
-  }
+  // Always start the dashboard; first-run configuration is handled by the
+  // in-dashboard settings panel (which auto-opens when OPENAI_BASE_URL is unset).
+  // This unifies Electron and browser mode on one settings flow — setup.html is
+  // no longer used as the first-run gate.
+  startDashboard().then(() => navigateToDashboard());
 }
 
 // ── App lifecycle ──────────────────────────────────────────────────────────

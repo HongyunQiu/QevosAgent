@@ -362,6 +362,10 @@ const CRONS_HISTORY   = path.join(CRONS_DIR, '.history.jsonl');
 const CRONS_PENDING   = path.join(CRONS_DIR, '.pending.json');
 const MEMORY_CONCEPT  = path.resolve(process.env.AGENT_CONCEPT   || path.join(AGENT_DIR, 'memory_macro.md'));
 const MEMORY_EPISODIC = path.resolve(process.env.AGENT_EPISODIC  || path.join(AGENT_DIR, 'memory_episodic.jsonl'));
+// .env file managed by the in-dashboard settings panel. In Electron, main.js sets
+// DOTENV_PATH (it knows the real location — install dir on Windows, userData on
+// macOS). Standalone/browser mode falls back to the repo-root .env.
+const DOTENV_PATH = process.env.DOTENV_PATH || path.join(__dirname, '..', '.env');
 const PUBLIC     = path.join(__dirname, 'public');
 const POLL_MS    = parseInt(process.env.POLL_MS || '500', 10);
 
@@ -856,8 +860,8 @@ function poll() {
     }
   }
 
-  // Pick up live nickname edits from the settings panel (same Node process in
-  // Electron mode, so env:save updates process.env without a restart).
+  // Pick up live nickname edits from the settings panel (POST /api/env updates
+  // process.env in this same process, so it takes effect without a restart).
   const newInstanceName = process.env.INSTANCE_NAME || '';
   if (state.instanceName !== newInstanceName) {
     state.instanceName = newInstanceName;
@@ -1505,6 +1509,102 @@ const server = http.createServer(async (req, res) => {
   // ── GET /api/state  ───────────────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/state') {
     json(200, { type: 'state', ...state });
+    return;
+  }
+
+  // ── GET /api/env  ─────────────────────────────────────────────────────────
+  // Current LLM/connection settings for the in-dashboard settings panel.
+  // `configured` lets the frontend auto-open settings on first run.
+  if (req.method === 'GET' && req.url === '/api/env') {
+    json(200, {
+      OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
+      OPENAI_API_KEY:  process.env.OPENAI_API_KEY  || '',
+      OPENAI_MODEL:    process.env.OPENAI_MODEL    || '',
+      MAX_ITERS:       process.env.MAX_ITERS       || '100',
+      INSTANCE_NAME:   process.env.INSTANCE_NAME   || '',
+      HTTPS_PROXY:     process.env.HTTPS_PROXY     || '',
+      HTTP_PROXY:      process.env.HTTP_PROXY      || '',
+      BACKUP_OPENAI_BASE_URL: process.env.BACKUP_OPENAI_BASE_URL || '',
+      BACKUP_OPENAI_API_KEY:  process.env.BACKUP_OPENAI_API_KEY  || '',
+      BACKUP_OPENAI_MODEL:    process.env.BACKUP_OPENAI_MODEL    || '',
+      configured: !!process.env.OPENAI_BASE_URL,
+    });
+    return;
+  }
+
+  // ── POST /api/env  ────────────────────────────────────────────────────────
+  // Merge-write the managed keys into .env and sync the live process.env so the
+  // next agent run picks them up without a restart (spawn inherits process.env).
+  if (req.method === 'POST' && req.url === '/api/env') {
+    try {
+      const data = JSON.parse(await readBody(req));
+      const existing = {};
+      try {
+        for (const line of fs.readFileSync(DOTENV_PATH, 'utf8').split(/\r?\n/)) {
+          const eq = line.indexOf('=');
+          if (eq > 0 && !line.trim().startsWith('#')) {
+            existing[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+          }
+        }
+      } catch { /* first run, no .env yet */ }
+      // Form fields are authoritative: a non-empty value sets the key, an empty
+      // value removes it. Keys the form doesn't manage are preserved.
+      const merged = { ...existing };
+      const cleared = [];
+      for (const [k, v] of Object.entries(data)) {
+        const val = (v == null ? '' : String(v)).trim();
+        if (val) merged[k] = val;
+        else { delete merged[k]; cleared.push(k); }
+      }
+      const content = Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
+      fs.mkdirSync(path.dirname(DOTENV_PATH), { recursive: true });
+      fs.writeFileSync(DOTENV_PATH, content, 'utf8');
+      for (const [k, v] of Object.entries(merged)) process.env[k] = v;
+      for (const k of cleared) delete process.env[k];
+      json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── POST /api/env/test  ───────────────────────────────────────────────────
+  // Server-side connectivity probe against {baseUrl}/models (avoids browser CORS).
+  if (req.method === 'POST' && req.url === '/api/env/test') {
+    try {
+      const { baseUrl, apiKey } = JSON.parse(await readBody(req));
+      let url;
+      try {
+        const base = (baseUrl || '').endsWith('/') ? baseUrl.slice(0, -1) : (baseUrl || '');
+        url = new URL(base + '/models');
+      } catch { json(200, { ok: false, error: 'URL 格式无效' }); return; }
+      const mod = url.protocol === 'https:' ? require('https') : require('http');
+      const preq = mod.request({
+        hostname: url.hostname,
+        port:     url.port || (url.protocol === 'https:' ? 443 : 80),
+        path:     url.pathname + url.search,
+        method:   'GET',
+        headers:  { Authorization: `Bearer ${apiKey || 'local'}` },
+        timeout:  8000,
+      }, pres => {
+        let body = '';
+        pres.setEncoding('utf8');
+        pres.on('data', c => { body += c; });
+        pres.on('end', () => {
+          if (pres.statusCode >= 200 && pres.statusCode < 300) {
+            let models = [];
+            try {
+              const j = JSON.parse(body);
+              if (Array.isArray(j.data)) models = j.data.map(m => m.id || m.name).filter(Boolean);
+            } catch { /* non-JSON, ignore */ }
+            json(200, { ok: true, status: pres.statusCode, models });
+          } else {
+            json(200, { ok: false, status: pres.statusCode, error: `HTTP ${pres.statusCode}` });
+          }
+        });
+      });
+      preq.on('timeout', () => { preq.destroy(); json(200, { ok: false, error: '连接超时' }); });
+      preq.on('error',   err => json(200, { ok: false, error: err.message }));
+      preq.end();
+    } catch (e) { json(500, { error: String(e) }); }
     return;
   }
 

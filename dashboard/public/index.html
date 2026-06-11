@@ -593,6 +593,52 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .dp-btn-primary:hover { filter:brightness(1.1); }
 .dp-btn-primary:disabled { opacity:0.5; cursor:not-allowed; filter:none; }
 
+/* ── Settings modal ─────────────────────────────────────────────────── */
+.set-modal { position:fixed; inset:0; background:rgba(0,0,0,0.65); display:flex; align-items:flex-start; justify-content:center; z-index:9200; padding:48px 20px; overflow:auto; }
+.set-inner { background:var(--bg2); border:1px solid var(--border); border-radius:10px; width:100%; max-width:520px; display:flex; flex-direction:column; box-shadow:0 8px 32px rgba(0,0,0,0.6); }
+.set-head { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border); }
+.set-title { font-size:14px; font-weight:700; color:var(--text); }
+.set-x { background:none; border:none; color:var(--muted); font-size:16px; cursor:pointer; line-height:1; padding:2px 6px; }
+.set-x:hover { color:var(--text); }
+.set-body { padding:18px 20px; }
+.set-fg { margin-bottom:13px; }
+.set-body label { display:block; font-size:12.5px; font-weight:500; color:var(--text); margin-bottom:6px; }
+.set-req { color:#f85149; margin-left:2px; }
+/* Inline hint after a label title: smaller, dimmer, not bold. */
+.set-hint-inline { font-size:11px; font-weight:400; color:var(--muted); }
+.set-body input[type=text], .set-body input[type=password], .set-body input[type=number] {
+  width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text);
+  font-size:13px; padding:8px 12px; outline:none; font-family:inherit; }
+.set-body input:focus { border-color:var(--blue); }
+.set-inwrap { position:relative; }
+.set-inwrap input { padding-right:36px; }
+.set-eye { position:absolute; right:10px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:var(--muted); font-size:12px; }
+.set-eye:hover { color:var(--text); }
+.set-hint { margin-top:4px; font-size:11px; color:var(--muted); line-height:1.5; }
+.set-hint code { background:var(--bg3); border-radius:3px; padding:1px 4px; font-family:var(--mono); font-size:11px; color:var(--text); }
+.set-lblrow { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.set-lblrow label { margin-bottom:0; }
+.set-probe { flex-shrink:0; padding:2px 9px; background:rgba(63,185,80,0.15); color:#3fb950; font-size:10.5px; font-weight:600; border:none; border-radius:10px; cursor:pointer; }
+.set-probe:hover:not(:disabled) { background:rgba(63,185,80,0.28); }
+.set-probe:disabled { opacity:0.5; cursor:not-allowed; }
+.set-tabs { display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid var(--border); }
+.set-tab { background:none; border:none; color:var(--muted); font-size:12px; font-weight:500; padding:6px 12px; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; font-family:inherit; }
+.set-tab:hover { color:var(--text); }
+.set-tab.active { color:var(--text); border-bottom-color:var(--blue); }
+.set-dot { display:none; width:6px; height:6px; border-radius:50%; background:#3fb950; margin-left:6px; vertical-align:middle; }
+.set-tab.has-value .set-dot { display:inline-block; }
+.set-seclbl { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin:18px 0 12px; padding-top:14px; border-top:1px solid var(--border); }
+.set-msg { display:none; border-radius:6px; padding:9px 12px; font-size:12px; margin-bottom:14px; line-height:1.5; }
+.set-msg.error   { display:block; background:rgba(248,81,73,0.1); border:1px solid rgba(248,81,73,0.4); color:#f85149; }
+.set-msg.success { display:block; background:rgba(63,185,80,0.1); border:1px solid rgba(63,185,80,0.4); color:#3fb950; }
+.set-msg.info    { display:block; background:rgba(56,139,253,0.1); border:1px solid rgba(56,139,253,0.4); color:#79c0ff; }
+.set-foot { border-top:1px solid var(--border); padding:14px 20px; display:flex; justify-content:flex-end; gap:8px; }
+.set-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:8px 18px; border-radius:6px; cursor:pointer; font-size:13px; font-family:inherit; }
+.set-btn:hover:not(:disabled) { border-color:var(--blue); }
+.set-btn-primary { background:linear-gradient(135deg,#1f6feb,#3b82f6); border-color:transparent; color:#fff; }
+.set-btn-primary:hover:not(:disabled) { filter:brightness(1.1); }
+.set-btn:disabled { opacity:0.5; cursor:not-allowed; }
+
 /* ── Command bar ─────────────────────────────────────────────────────── */
 .cmdbar { grid-area:cmdbar; display:flex; align-items:center; gap:10px; padding:0 16px; background:var(--bg2); border-top:1px solid var(--border); }
 .cmd-prompt { font-family:var(--mono); font-size:15px; color:var(--green); font-weight:700; flex-shrink:0; }
@@ -1226,6 +1272,9 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
       <span class="ws-info-slot" id="wsInfoSlot"></span>
       <span id="wsLabel">Connecting…</span>
     </div>
+    <button class="theme-btn" id="settingsBtn" onclick="openSettings()" title="设置 / Settings">
+      <span>⚙</span>
+    </button>
     <button class="mobile-panel-btn" id="mobilePanelBtn" onclick="toggleMobileRightPanel()" title="Panel">⊞</button>
   </header>
 
@@ -1606,6 +1655,66 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
 <!-- Mobile overlay backdrop (closes drawers on tap) -->
 <div class="mobile-overlay" id="mobileOverlay" onclick="closeMobilePanels()"></div>
+
+<!-- ── Settings modal (LLM connection config) ─────────────────────── -->
+<div class="set-modal" id="setModal" style="display:none;">
+  <div class="set-inner">
+    <div class="set-head">
+      <div class="set-title">设置 · LLM 服务连接</div>
+      <button class="set-x" id="setClose" type="button" title="关闭">✕</button>
+    </div>
+    <div class="set-body">
+      <div id="setMsg" class="set-msg"></div>
+
+      <div class="set-tabs">
+        <button type="button" class="set-tab active" data-tab="primary" id="setTabPrimary">主 API<span class="set-dot"></span></button>
+        <button type="button" class="set-tab" data-tab="backup" id="setTabBackup">备用 API<span class="set-dot"></span></button>
+      </div>
+
+      <div class="set-fg">
+        <div class="set-lblrow">
+          <label for="setBase"><span id="setLblBase">API 服务地址</span><span class="set-req" id="setMarkBase">*</span> <span class="set-hint-inline" id="setHintBase">（OpenAI 兼容接口的 base URL）</span></label>
+          <button type="button" class="set-probe" id="setBtnTest">探测</button>
+        </div>
+        <input type="text" id="setBase" placeholder="http://127.0.0.1:8080/v1">
+      </div>
+
+      <div class="set-fg">
+        <label for="setKey">API 密钥 <span class="set-hint-inline">（本地填 local，云端填 API Key）</span></label>
+        <div class="set-inwrap">
+          <input type="password" id="setKey" placeholder="sk-… 或 local（本地服务）">
+          <button type="button" class="set-eye" id="setEye" title="显示/隐藏">👁</button>
+        </div>
+      </div>
+
+      <div class="set-fg">
+        <label for="setModel"><span id="setLblModel">模型名称</span><span class="set-req" id="setMarkModel">*</span> <span class="set-hint-inline" id="setHintModel">（与服务端返回的 model id 一致）</span></label>
+        <input type="text" id="setModel" placeholder="gpt-4o / qwen3-72b / deepseek-chat">
+      </div>
+
+      <div class="set-seclbl">其他设置</div>
+
+      <div class="set-fg">
+        <label for="setIters">最大迭代次数 <span class="set-hint-inline">（Agent 单次任务最多的执行步骤，默认 100）</span></label>
+        <input type="number" id="setIters" placeholder="100" min="1" max="500" value="100">
+      </div>
+
+      <div class="set-fg">
+        <label for="setName">实例昵称 <span class="set-hint-inline">（显示在右上角区分多个实例，可留空）</span></label>
+        <input type="text" id="setName" placeholder="（可选，如 主控机）" maxlength="24">
+      </div>
+
+      <div class="set-fg">
+        <label for="setProxy">HTTP 代理 <span class="set-hint-inline">（访问外部 API 用，需含 http:// 和端口，本地自动跳过）</span></label>
+        <input type="text" id="setProxy" placeholder="http://127.0.0.1:7897">
+      </div>
+    </div>
+    <div class="set-foot">
+      <button class="set-btn" id="setCancel" type="button">取消</button>
+      <button class="set-btn set-btn-primary" id="setSave" type="button">保存</button>
+    </div>
+  </div>
+</div>
 
 <div id="toast"></div>
 <div id="openview-prompts"></div>
@@ -4900,6 +5009,142 @@ fetch('/api/version').then(r => r.json()).then(d => {
   const el = document.getElementById('appVersion');
   if (el && d.version) el.textContent = 'v' + d.version;
 }).catch(() => {});
+
+// ── Settings modal (LLM connection config) ───────────────────────────
+(function () {
+  const modal  = document.getElementById('setModal');
+  const msg    = document.getElementById('setMsg');
+  const inBase = document.getElementById('setBase');
+  const inKey  = document.getElementById('setKey');
+  const inModel= document.getElementById('setModel');
+  // base / key / model switch with the tab; the rest don't.
+  const tabState = { primary: { base:'', key:'', model:'' }, backup: { base:'', key:'', model:'' } };
+  let activeTab = 'primary';
+
+  const snap = () => { tabState[activeTab].base = inBase.value; tabState[activeTab].key = inKey.value; tabState[activeTab].model = inModel.value; };
+  const loadTab = n => { inBase.value = tabState[n].base; inKey.value = tabState[n].key; inModel.value = tabState[n].model; };
+  function marks() {
+    const b = activeTab === 'backup';
+    document.getElementById('setMarkBase').style.display  = b ? 'none' : 'inline';
+    document.getElementById('setMarkModel').style.display = b ? 'none' : 'inline';
+    document.getElementById('setHintBase').textContent = b
+      ? '（主 API 失败时自动切换，留空不启用）'
+      : '（OpenAI 兼容接口的 base URL）';
+    document.getElementById('setHintModel').textContent = b
+      ? '（备用 endpoint 需单独指定 model id）'
+      : '（与服务端返回的 model id 一致）';
+  }
+  function dots() {
+    const bk = tabState.backup, pr = tabState.primary;
+    document.getElementById('setTabBackup').classList.toggle('has-value', !!(bk.base.trim() || bk.key.trim() || bk.model.trim()));
+    document.getElementById('setTabPrimary').classList.toggle('has-value', !!(pr.base.trim() || pr.model.trim()));
+  }
+  function switchTab(n) {
+    if (n === activeTab) return;
+    snap(); activeTab = n; loadTab(n);
+    document.querySelectorAll('.set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === n));
+    marks(); dots(); msg.className = 'set-msg';
+  }
+  document.querySelectorAll('.set-tab').forEach(e => e.addEventListener('click', () => switchTab(e.dataset.tab)));
+  [inBase, inKey, inModel].forEach(e => e.addEventListener('input', () => { snap(); dots(); }));
+
+  document.getElementById('setEye').addEventListener('click', () => {
+    const p = inKey.type === 'password';
+    inKey.type = p ? 'text' : 'password';
+    document.getElementById('setEye').textContent = p ? '🙈' : '👁';
+  });
+
+  const showMsg = (t, x) => { msg.className = 'set-msg ' + t; msg.textContent = x; };
+
+  async function openSettings() {
+    msg.className = 'set-msg';
+    try {
+      const env = await fetch('/api/env').then(r => r.json());
+      tabState.primary = { base: env.OPENAI_BASE_URL || '', key: env.OPENAI_API_KEY || '', model: env.OPENAI_MODEL || '' };
+      tabState.backup  = { base: env.BACKUP_OPENAI_BASE_URL || '', key: env.BACKUP_OPENAI_API_KEY || '', model: env.BACKUP_OPENAI_MODEL || '' };
+      activeTab = 'primary';
+      document.querySelectorAll('.set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === 'primary'));
+      loadTab('primary'); marks(); dots();
+      document.getElementById('setIters').value = env.MAX_ITERS || '100';
+      document.getElementById('setName').value  = env.INSTANCE_NAME || '';
+      document.getElementById('setProxy').value = env.HTTPS_PROXY || env.HTTP_PROXY || '';
+    } catch (e) { /* offline — open with whatever is loaded */ }
+    modal.style.display = 'flex';
+  }
+  const closeSettings = () => { modal.style.display = 'none'; };
+  window.openSettings = openSettings;
+
+  document.getElementById('setClose').addEventListener('click', closeSettings);
+  document.getElementById('setCancel').addEventListener('click', closeSettings);
+  modal.addEventListener('click', e => { if (e.target === modal) closeSettings(); });
+
+  // ── Probe current tab's endpoint ──────────────────────────────────
+  document.getElementById('setBtnTest').addEventListener('click', async () => {
+    const baseUrl = inBase.value.trim(), apiKey = inKey.value.trim();
+    if (!baseUrl) { showMsg('error', '请先填写' + (activeTab === 'backup' ? '备用 API ' : '') + '服务地址'); return; }
+    const btn = document.getElementById('setBtnTest');
+    btn.disabled = true; btn.textContent = '验证中…'; msg.className = 'set-msg';
+    try {
+      const r = await fetch('/api/env/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl, apiKey: apiKey || 'local' }),
+      }).then(x => x.json());
+      if (r.ok) {
+        if (r.models && r.models.length) showMsg('success', '连接成功 — 可用模型：' + r.models.join('、'));
+        else showMsg('success', '连接成功（HTTP ' + r.status + '）— 服务端响应正常');
+      } else {
+        const hint = r.status === 401 ? '（需要 API 密钥或密钥有误）' : '';
+        showMsg('error', '连接失败：' + (r.error || 'HTTP ' + r.status) + hint);
+      }
+    } catch (e) { showMsg('error', '探测出错：' + e.message); }
+    finally { btn.disabled = false; btn.textContent = '探测'; }
+  });
+
+  // ── Save ──────────────────────────────────────────────────────────
+  document.getElementById('setSave').addEventListener('click', async () => {
+    msg.className = 'set-msg'; snap();
+    const pB = tabState.primary.base.trim(), pM = tabState.primary.model.trim();
+    if (!pB || !pM) {
+      if (activeTab !== 'primary') switchTab('primary');
+      showMsg('error', !pB ? '主 API 服务地址不能为空' : '主 API 模型名称不能为空');
+      return;
+    }
+    const bB = tabState.backup.base.trim(), bK = tabState.backup.key.trim(), bM = tabState.backup.model.trim();
+    const bAny = bB || bK || bM, bAll = bB && bM;  // key may be empty (local service)
+    if (bAny && !bAll) {
+      if (activeTab !== 'backup') switchTab('backup');
+      showMsg('error', '备用 API 需要同时填写 base URL 和模型名称（API 密钥可空）');
+      return;
+    }
+    const proxy = document.getElementById('setProxy').value.trim();
+    const data = {
+      OPENAI_BASE_URL: pB,
+      OPENAI_API_KEY:  tabState.primary.key.trim() || 'local',
+      OPENAI_MODEL:    pM,
+      BACKUP_OPENAI_BASE_URL: bB,
+      BACKUP_OPENAI_API_KEY:  bAny ? (bK || 'local') : '',
+      BACKUP_OPENAI_MODEL:    bM,
+      MAX_ITERS:     document.getElementById('setIters').value.trim() || '100',
+      INSTANCE_NAME: document.getElementById('setName').value.trim(),
+      HTTPS_PROXY:   proxy,
+      HTTP_PROXY:    proxy,
+    };
+    const btn = document.getElementById('setSave');
+    btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      const r = await fetch('/api/env', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }).then(x => x.json());
+      if (r.ok) { showMsg('success', '已保存，新配置将在下次启动 Agent 时生效'); setTimeout(closeSettings, 1000); }
+      else showMsg('error', '保存失败：' + (r.error || '未知错误'));
+    } catch (e) { showMsg('error', '保存失败：' + e.message); }
+    finally { btn.disabled = false; btn.textContent = '保存'; }
+  });
+
+  // First run: auto-open settings when no endpoint is configured yet.
+  fetch('/api/env').then(r => r.json()).then(d => { if (d && !d.configured) openSettings(); }).catch(() => {});
+})();
 </script>
 </body>
 </html>
