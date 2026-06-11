@@ -27,7 +27,6 @@
  * IPC (tabbar.html → main, via tabbar-preload.js):
  *   tab-activate id → switch to that view
  *   tab-close    id → destroy that view
- *   tab-settings    → open the in-dashboard settings panel (window.openSettings)
  */
 
 const { app, BrowserWindow, WebContentsView, ipcMain, Menu, shell, nativeImage, dialog } = require('electron');
@@ -589,13 +588,6 @@ function registerIPC() {
 
   ipcMain.on('tab-activate', (_, id)  => activateView(id));
   ipcMain.on('tab-close',    (_, id)  => closeView(id));
-  // Open the in-dashboard settings panel instead of the old setup.html page.
-  ipcMain.on('tab-settings', () => {
-    const mv = getMainView();
-    if (!mv) return;
-    activateView(HOME_ID);
-    mv.webContents.executeJavaScript('window.openSettings && window.openSettings()').catch(() => {});
-  });
 }
 
 // ── BrowserWindow + WebContentsViews ──────────────────────────────────────

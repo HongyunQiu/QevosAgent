@@ -10,6 +10,4 @@ contextBridge.exposeInMainWorld('tabAPI', {
   activate:  id => ipcRenderer.send('tab-activate', id),
   /** Tell main.js to close a view tab (home tab is ignored in main.js). */
   close:     id => ipcRenderer.send('tab-close',    id),
-  /** Tell main.js to show the settings page. */
-  settings:  ()  => ipcRenderer.send('tab-settings'),
 });
