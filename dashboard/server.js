@@ -1609,7 +1609,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── GET /api/run/:runId  ──────────────────────────────────────────────────
-  const runMatch = req.url.match(/^\/api\/run\/([^/?]+)/);
+  // Anchored with end-of-path so it doesn't swallow nested routes like
+  // /api/run/:runId/advisor/:idx (which used to return the whole historical run
+  // blob because this regex was unanchored).
+  const runMatch = req.url.match(/^\/api\/run\/([^/?]+)(?:\?.*)?$/);
   if (req.method === 'GET' && runMatch) {
     const data = loadRun(runMatch[1]);
     if (!data) { res.writeHead(404); res.end('{}'); return; }
