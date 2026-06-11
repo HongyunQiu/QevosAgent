@@ -1502,7 +1502,13 @@ const server = http.createServer(async (req, res) => {
 
   // ── GET /api/version ─────────────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/version') {
-    json(200, { version: APP_VERSION, instanceName: state.instanceName || '' });
+    json(200, {
+      version: APP_VERSION,
+      instanceName: state.instanceName || '',
+      // Busy = an agent process is confirmed running, or is being spawned.
+      // Mobile uses this to color the per-server status dot in its menu.
+      busy: !!(state.agentAlive || state.launching),
+    });
     return;
   }
 

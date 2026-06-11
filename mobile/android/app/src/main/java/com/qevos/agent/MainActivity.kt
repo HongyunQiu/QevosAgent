@@ -3,6 +3,7 @@ package com.qevos.agent
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
+import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -289,11 +290,13 @@ class MainActivity : AppCompatActivity() {
             .setView(ScrollView(this).apply { addView(container) })
             .create()
 
-        // Saved servers — tap to switch.
-        val rowRefs = mutableListOf<Pair<Server, TextView>>()
+        // Saved servers — tap to switch. Each row carries a status dot.
+        val rowRefs = mutableListOf<Triple<Server, TextView, View>>()
         for (s in servers) {
             val isCurrent = s.id == curId
-            val row = makeMenuItem((if (isCurrent) "✓  " else "      ") + s.label()) {
+            val (row, tv, dot) = makeServerRow(
+                (if (isCurrent) "✓  " else "      ") + s.label()
+            ) {
                 prefs.edit()
                     .putString(KEY_HOST, s.host)
                     .putString(KEY_PORT, s.port)
@@ -303,7 +306,7 @@ class MainActivity : AppCompatActivity() {
                 loadDashboard()
             }
             container.addView(row)
-            rowRefs.add(s to row)
+            rowRefs.add(Triple(s, tv, dot))
         }
 
         if (servers.isNotEmpty()) {
@@ -326,14 +329,80 @@ class MainActivity : AppCompatActivity() {
 
         dialog.show()
 
-        // Fetch each server's instance nickname in the background, then update its row + cache.
-        for ((s, tv) in rowRefs) {
+        // Probe each server in the background: a single /api/version call yields
+        // reachability (success vs. exception), the instance nickname, and the
+        // busy flag — enough to color the status dot and refresh the label.
+        for ((s, tv, dot) in rowRefs) {
             val isCurrent = s.id == curId
-            fetchInstanceName(s) { name ->
-                Servers.updateName(prefs, s.id, name)
-                runOnUiThread { tv.text = (if (isCurrent) "✓  " else "      ") + name }
+            fetchStatus(s) { reachable, name, busy ->
+                if (name.isNotBlank()) Servers.updateName(prefs, s.id, name)
+                runOnUiThread {
+                    if (name.isNotBlank()) {
+                        tv.text = (if (isCurrent) "✓  " else "      ") + name
+                    }
+                    setDot(dot, when {
+                        !reachable -> DOT_OFFLINE
+                        busy       -> DOT_BUSY
+                        else       -> DOT_IDLE
+                    })
+                }
             }
         }
+    }
+
+    // Status-dot colors: probing (grey), unreachable (red), busy (green), idle (blue).
+    private val DOT_PROBING = 0xFFBDBDBD.toInt()
+    private val DOT_OFFLINE = 0xFFE53935.toInt()
+    private val DOT_BUSY    = 0xFF43A047.toInt()
+    private val DOT_IDLE    = 0xFF42A5F5.toInt()
+
+    private fun setDot(dot: View, color: Int) {
+        dot.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+        }
+    }
+
+    // A server menu row = [status dot] [label], horizontally laid out, tappable.
+    // Returns the row, its label TextView, and the dot View so the async probe
+    // can update both once it returns.
+    private fun makeServerRow(
+        label: String,
+        onClick: () -> Unit
+    ): Triple<LinearLayout, TextView, View> {
+        val dot = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(9), dp(9)).apply {
+                rightMargin = dp(10)
+                gravity = Gravity.CENTER_VERTICAL
+            }
+        }
+        setDot(dot, DOT_PROBING)
+
+        val tv = TextView(this).apply {
+            text = label
+            textSize = 15f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
+            layoutParams = LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+            )
+        }
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            isClickable = true
+            val a = TypedValue()
+            context.theme.resolveAttribute(android.R.attr.selectableItemBackground, a, true)
+            setBackgroundResource(a.resourceId)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            addView(dot)
+            addView(tv)
+            setOnClickListener { onClick() }
+        }
+        return Triple(row, tv, dot)
     }
 
     private fun makeMenuItem(label: String, onClick: () -> Unit): TextView {
@@ -353,8 +422,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // GET http://host:port/api/version → instanceName. Calls back only on non-blank name.
-    private fun fetchInstanceName(s: Server, cb: (String) -> Unit) {
+    // GET http://host:port/api/version → (reachable, instanceName, busy).
+    // Always calls back exactly once: on any failure → (false, "", false), so
+    // the status dot can flip to red instead of staying stuck on "probing".
+    private fun fetchStatus(s: Server, cb: (Boolean, String, Boolean) -> Unit) {
         Thread {
             try {
                 val url = java.net.URL("${s.url()}/api/version")
@@ -366,11 +437,17 @@ class MainActivity : AppCompatActivity() {
                 conn.requestMethod = "GET"
                 if (conn.responseCode == 200) {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    val name = org.json.JSONObject(body).optString("instanceName", "").trim()
-                    if (name.isNotBlank()) cb(name)
+                    val o = org.json.JSONObject(body)
+                    val name = o.optString("instanceName", "").trim()
+                    val busy = o.optBoolean("busy", false)
+                    cb(true, name, busy)
+                } else {
+                    cb(false, "", false)
                 }
                 conn.disconnect()
-            } catch (_: Exception) { /* unreachable / old host → keep URL label */ }
+            } catch (_: Exception) {
+                cb(false, "", false)  // unreachable → red dot, keep URL label
+            }
         }.start()
     }
 
