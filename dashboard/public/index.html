@@ -5058,8 +5058,11 @@ fetch('/api/version').then(r => r.json()).then(d => {
 
   async function openSettings() {
     msg.className = 'set-msg';
+    modal.style.display = 'flex';
     try {
-      const env = await fetch('/api/env').then(r => r.json());
+      const res = await fetch('/api/env');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const env = await res.json();
       tabState.primary = { base: env.OPENAI_BASE_URL || '', key: env.OPENAI_API_KEY || '', model: env.OPENAI_MODEL || '' };
       tabState.backup  = { base: env.BACKUP_OPENAI_BASE_URL || '', key: env.BACKUP_OPENAI_API_KEY || '', model: env.BACKUP_OPENAI_MODEL || '' };
       activeTab = 'primary';
@@ -5068,8 +5071,12 @@ fetch('/api/version').then(r => r.json()).then(d => {
       document.getElementById('setIters').value = env.MAX_ITERS || '100';
       document.getElementById('setName').value  = env.INSTANCE_NAME || '';
       document.getElementById('setProxy').value = env.HTTPS_PROXY || env.HTTP_PROXY || '';
-    } catch (e) { /* offline — open with whatever is loaded */ }
-    modal.style.display = 'flex';
+    } catch (e) {
+      // Surface the failure instead of silently showing an empty form — most
+      // commonly an old backend without /api/env (404), which used to look like
+      // "settings lost my config".
+      showMsg('error', '无法读取当前配置（' + e.message + '）。服务端可能是旧版本、缺少 /api/env 接口，请更新到最新版后重试。');
+    }
   }
   const closeSettings = () => { modal.style.display = 'none'; };
   window.openSettings = openSettings;
