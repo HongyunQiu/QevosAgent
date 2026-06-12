@@ -1632,6 +1632,30 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── DELETE /api/run/:runId  — permanently remove a run directory ──────────
+  if (req.method === 'DELETE' && runMatch) {
+    try {
+      const runId = decodeURIComponent(runMatch[1]);
+      if (!/^\d{8}-\d{6}$/.test(runId)) { json(400, { error: 'invalid run id' }); return; }
+      const runDir = path.resolve(path.join(RUNS_DIR, runId));
+      const rel    = path.relative(RUNS_DIR, runDir);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) { json(403, { error: 'forbidden' }); return; }
+      if (!fs.existsSync(runDir)) { json(404, { error: 'run not found' }); return; }
+      // Refuse to delete a run whose agent is still alive — deleting the dir it
+      // is actively writing to would corrupt the live process.
+      if (runId === state.activeRunId && state.agentAlive) {
+        json(409, { error: 'run is live; stop the agent first' });
+        return;
+      }
+      fs.rmSync(runDir, { recursive: true, force: true });
+      // Reflect immediately; the next poll reconciles the rest.
+      state.runs = state.runs.filter(r => r !== runId);
+      if (state.activeRunId === runId) state.activeRunId = state.runs[state.runs.length - 1] || null;
+      json(200, { ok: true, runId });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
   // ── GET /api/run/:runId/advisor[/:idx] ───────────────────────────────────
   // Returns either the full advisor_log.jsonl (parsed as array), or a single
   // entry by 0-based index. Used by the Advisor tab to inspect any past call.

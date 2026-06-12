@@ -320,6 +320,11 @@ body.large-font .app {
 .run-dot.active { background: var(--green); }
 .run-id { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-tag { margin-left: auto; font-size: 10px; color: var(--muted); background: var(--bg4); border-radius: 3px; padding: 1px 5px; }
+.runs-edit-btn { flex-shrink: 0; margin-left: 6px; background: transparent; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); font-size: 10px; padding: 1px 7px; cursor: pointer; text-transform: none; letter-spacing: 0; font-weight: 600; }
+.runs-edit-btn:hover { color: var(--text); border-color: var(--blue); }
+.runs-edit-btn.active { color: var(--blue); border-color: var(--blue); background: rgba(88,166,255,0.08); }
+.run-del { flex-shrink: 0; margin-left: 6px; background: transparent; border: none; color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer; padding: 2px 5px; border-radius: 3px; }
+.run-del:hover { color: #f85149; background: rgba(248,81,73,0.12); }
 mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
 
 /* ── Events panel ────────────────────────────────────────────────────── */
@@ -1312,7 +1317,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
       <div class="goal-text" id="goalText">No active goal</div>
     </div>
 
-    <div class="section-head">Runs<input class="runs-search" id="runsSearch" type="text" placeholder="Search…" oninput="onRunsSearch(this.value)"></div>
+    <div class="section-head">Runs<input class="runs-search" id="runsSearch" type="text" placeholder="Search…" oninput="onRunsSearch(this.value)"><button class="runs-edit-btn" id="runsEditBtn" type="button" onclick="toggleRunsEdit()">管理</button></div>
     <div class="runs-scroller" id="runsList"></div>
   </aside>
 
@@ -1724,6 +1729,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 let gState         = null;
 let gViewRunId     = null;
 let gRunSearch     = '';
+let gRunsEditMode  = false;
 let gAutoScroll    = true;
 let gWs            = null;
 let gReconnTimer   = null;
@@ -2387,6 +2393,33 @@ function onRunsSearch(val) {
   renderRunsList((gState && gState.runs) || [], gViewRunId);
 }
 
+function toggleRunsEdit() {
+  gRunsEditMode = !gRunsEditMode;
+  const btn = document.getElementById('runsEditBtn');
+  if (btn) btn.classList.toggle('active', gRunsEditMode);
+  renderRunsList((gState && gState.runs) || [], gViewRunId);
+}
+
+async function deleteRun(ev, runId) {
+  ev.stopPropagation();
+  // Native confirm: its OK button sits centre-screen, far from the trash icon,
+  // so two stray taps on the same spot can never delete by accident.
+  if (!confirm('删除这个 run？\n\n' + runId + '\n\n会永久删除该 run 的全部文件，无法撤销。')) return;
+  try {
+    const res  = await fetch('/api/run/' + encodeURIComponent(runId), { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { toast('删除失败：' + (data.error || res.status)); return; }
+    toast('已删除 run ' + runId);
+    if (gState && Array.isArray(gState.runs)) gState.runs = gState.runs.filter(r => r !== runId);
+    if (gViewRunId === runId) {
+      const remaining = (gState && gState.runs) || [];
+      const next = remaining[remaining.length - 1] || null;
+      if (next) selectRun(next); else gViewRunId = null;
+    }
+    renderRunsList((gState && gState.runs) || [], gViewRunId);
+  } catch (e) { toast('删除失败：' + e); }
+}
+
 let _runDirCopyTimer = null;
 async function copyRunDir() {
   const txt = document.getElementById('goalRunDir').textContent.trim();
@@ -2431,10 +2464,14 @@ function renderRunsList(runs, activeId) {
     const matched    = q && label.toLowerCase().includes(q);
     if (q && !matched) return '';
     const cls = ['run-item', isSelected ? 'selected' : '', matched ? 'search-match' : ''].filter(Boolean).join(' ');
+    const delBtn = gRunsEditMode
+      ? `<button class="run-del" type="button" title="删除此 run" onclick="deleteRun(event,'${r}')">🗑</button>`
+      : '';
     return `<div class="${cls}" onclick="selectRun('${r}')">
       <div class="run-dot ${isLive ? 'active' : ''}"></div>
       <span class="run-id" title="${summary ? timestamp + ' — ' + esc(summary) : timestamp}">${hlText(label, gRunSearch)}</span>
       ${tag}
+      ${delBtn}
     </div>`;
   }).join('');
   list.innerHTML = items || '<div style="color:var(--muted);font-size:12px;padding:12px 14px;">No matches</div>';
