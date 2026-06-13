@@ -5,9 +5,11 @@
 """
 
 import os
+import re
 import sys
 import ast
 import json
+import time
 import subprocess
 import textwrap
 import threading
@@ -2375,6 +2377,136 @@ def tool_read_skill(state: AgentState, name: str) -> ToolResult:
         return ToolResult(success=False, output=None, error=str(e))
 
 
+# ── APP 工具（用户态可执行程序，陈列在 Dashboard 的 Apps Tab）─────────────────
+# 一个 app = apps/<id>.md：YAML frontmatter（name/icon/description/runtime/enabled）
+# + 脚本正文。点击即跑、不启动 Agent。Dashboard 后端用同样的格式解析执行。
+_APPS_DIR = Path(__file__).parent.parent.parent / "apps"
+_APP_RUNTIMES = ("python", "powershell", "shell")
+
+
+def _apps_dir() -> Path:
+    return Path(os.environ.get("APPS_DIR", str(_APPS_DIR)))
+
+
+def tool_register_app(
+    state: AgentState,
+    name: str,
+    description: str,
+    runtime: str,
+    script: str,
+    icon: str = "📦",
+) -> ToolResult:
+    """
+    【产出可执行程序】把一段脚本注册成 Dashboard "Apps" Tab 里的一个可点击程序。
+
+    用于把已经收敛、确定性强的重复任务固化成"一键运行"的小程序——用户（或你自己）
+    点一下就直接执行，无需再启动 Agent / 调模型。
+
+    参数:
+      name        程序名（也用于派生文件名 id）
+      description 一句话说明用途
+      runtime     'python' | 'powershell' | 'shell'
+      script      脚本正文（纯代码，不要带 ``` 围栏）
+      icon        一个 emoji 图标，默认 📦
+    """
+    if runtime not in _APP_RUNTIMES:
+        return ToolResult(success=False, output=None,
+                          error=f"runtime 必须是 {_APP_RUNTIMES} 之一")
+    app_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", name).strip("_") or f"app_{int(time.time())}"
+    apps_dir = _apps_dir()
+    try:
+        apps_dir.mkdir(parents=True, exist_ok=True)
+
+        def _q(s: str) -> str:
+            return json.dumps(str(s), ensure_ascii=False)
+
+        front = (
+            "---\n"
+            f"name: {_q(name)}\n"
+            f"icon: {_q(icon or '📦')}\n"
+            f"description: {_q(description or '')}\n"
+            f"runtime: {runtime}\n"
+            "enabled: true\n"
+            "---\n\n"
+        )
+        (apps_dir / f"{app_id}.md").write_text(front + (script or ""), encoding="utf-8")
+        state.long_term.append(f"[程序产出] 注册了可执行程序 '{name}' (id={app_id}, runtime={runtime})")
+        return ToolResult(success=True, output={
+            "id": app_id, "name": name, "runtime": runtime,
+            "message": f"程序 '{name}' 已加入 Dashboard 的 Apps Tab，用户可一键运行。",
+        })
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+def tool_list_apps(state: AgentState) -> ToolResult:
+    """列出 Apps Tab 里所有已注册的可执行程序。"""
+    apps_dir = _apps_dir()
+    if not apps_dir.exists():
+        return ToolResult(success=True, output={"apps": [], "apps_dir": str(apps_dir)})
+    try:
+        apps = []
+        for p in sorted(apps_dir.glob("*.md")):
+            meta, _ = _parse_app_file(p.read_text(encoding="utf-8"))
+            apps.append({"id": p.stem, "name": meta.get("name") or p.stem,
+                         "runtime": meta.get("runtime"), "description": meta.get("description", "")})
+        return ToolResult(success=True, output={"apps": apps, "apps_dir": str(apps_dir)})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
+def _parse_app_file(content: str):
+    """解析 app 文件 -> (meta dict, script body)。与 dashboard/server.js:parseAppFile 对齐。"""
+    meta = {"name": "", "icon": "📦", "description": "", "runtime": "shell", "enabled": True}
+    body = content
+    m = re.match(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$", content)
+    if m:
+        body = m.group(2) or ""
+        for raw in m.group(1).splitlines():
+            line = re.sub(r"#.*$", "", raw).strip()
+            if not line or ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            k, v = k.strip(), v.strip()
+            if len(v) >= 2 and ((v[0] == '"' and v.endswith('"')) or (v[0] == "'" and v.endswith("'"))):
+                v = v[1:-1]
+            if k == "enabled":
+                meta["enabled"] = v.lower() not in ("false", "no", "0", "off")
+            elif k in meta:
+                meta[k] = v
+    fence = re.match(r"^\s*```([a-zA-Z0-9_+-]*)\r?\n([\s\S]*?)\r?\n```\s*$", body)
+    if fence:
+        body = fence.group(2)
+    if meta["runtime"] not in _APP_RUNTIMES:
+        meta["runtime"] = "shell"
+    return meta, body.lstrip()
+
+
+def tool_run_app(state: AgentState, name: str) -> ToolResult:
+    """运行一个已注册的可执行程序（按 id 或名称）。复用 run_python / shell 执行路径。"""
+    apps_dir = _apps_dir()
+    target = name[:-3] if name.endswith(".md") else name
+    fp = apps_dir / f"{target}.md"
+    if not fp.exists():
+        available = [p.stem for p in apps_dir.glob("*.md")] if apps_dir.exists() else []
+        return ToolResult(success=False, output=None,
+                          error=f"程序 '{target}' 不存在。可用: {available}")
+    meta, script = _parse_app_file(fp.read_text(encoding="utf-8"))
+    runtime = meta["runtime"]
+    if runtime == "python":
+        return tool_run_python(state, code=script)
+    if runtime == "powershell":
+        import tempfile
+        tmp = Path(tempfile.gettempdir()) / f"qevos_app_{int(time.time())}.ps1"
+        tmp.write_text(script, encoding="utf-8")
+        try:
+            return tool_shell(state, command=f'powershell -NoProfile -ExecutionPolicy Bypass -File "{tmp}"')
+        finally:
+            try: tmp.unlink()
+            except Exception: pass
+    return tool_shell(state, command=script)
+
+
 def tool_ssh_execute(state: AgentState, **kwargs) -> ToolResult:
     """通过 SSH 在远程服务器执行命令。支持密码/密钥认证、sudo 密码注入、严格 timeout 和 /stop 中断。"""
     host = kwargs.get("host", "")
@@ -3167,6 +3299,34 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             ),
             args_schema={"name": "技能名称（SKILLS/ 目录下的文件名，不含 .md 后缀，如 'coding'、'data_analysis'）"},
             fn=tool_read_skill,
+        ),
+        ToolSpec(
+            name="register_app",
+            description=(
+                "把一段脚本固化成 Dashboard 'Apps' Tab 里的一个可点击程序。"
+                "适用于已经收敛、确定性强的重复任务——固化后用户（或你自己）一键即可运行，"
+                "无需再启动 Agent/调模型，又快又省。"
+            ),
+            args_schema={
+                "name": "程序名（也用于派生文件名）",
+                "description": "一句话说明用途",
+                "runtime": "运行时：'python' | 'powershell' | 'shell'",
+                "script": "脚本正文（纯代码，不要带 ``` 围栏）",
+                "icon": "（可选）一个 emoji 图标，默认 📦",
+            },
+            fn=tool_register_app,
+        ),
+        ToolSpec(
+            name="list_apps",
+            description="列出 Apps Tab 里所有已注册的可执行程序。",
+            args_schema={},
+            fn=tool_list_apps,
+        ),
+        ToolSpec(
+            name="run_app",
+            description="运行一个已注册的可执行程序（按 id 或名称），直接执行其脚本并返回输出。",
+            args_schema={"name": "程序 id 或名称（apps/ 目录下的文件名，不含 .md 后缀）"},
+            fn=tool_run_app,
         ),
     ]
     return {s.name: s for s in specs}

@@ -358,6 +358,7 @@ const RUNS_DIR        = path.resolve(process.env.RUNS_DIR        || path.join(__
 const AGENT_DIR       = path.resolve(process.env.AGENT_DIR       || path.join(__dirname, '..'));
 const SKILLS_DIR      = path.resolve(process.env.SKILLS_DIR      || path.join(AGENT_DIR, 'SKILLS'));
 const CRONS_DIR       = path.resolve(process.env.CRONS_DIR       || path.join(AGENT_DIR, 'crons'));
+const APPS_DIR        = path.resolve(process.env.APPS_DIR        || path.join(AGENT_DIR, 'apps'));
 const CRONS_HISTORY   = path.join(CRONS_DIR, '.history.jsonl');
 const CRONS_PENDING   = path.join(CRONS_DIR, '.pending.json');
 const MEMORY_CONCEPT  = path.resolve(process.env.AGENT_CONCEPT   || path.join(AGENT_DIR, 'memory_macro.md'));
@@ -930,6 +931,15 @@ function broadcastOpenView(displayId, path, title) {
   }
 }
 
+/** Push a live app-run event (start/stdout/stderr/end) to all clients, keyed by token. */
+function broadcastAppRun(token, phase, extra = {}) {
+  if (!token) return;
+  const data = JSON.stringify({ type: 'app-run', token, phase, ...extra, ts: Date.now() });
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  }
+}
+
 /** Push a console line to all clients (stdout/stderr/system from agent process). */
 function broadcastConsole(stream, text) {
   const clean = stripAnsi(text);
@@ -1136,6 +1146,109 @@ function parseCronFile(content) {
   }
   if (!['skip', 'queue'].includes(meta.on_conflict)) meta.on_conflict = 'skip';
   return { meta, body: body.replace(/^\s+/, '') };
+}
+
+// ── Apps: parse + execute ────────────────────────────────────────────────
+const APP_RUNTIMES = ['python', 'powershell', 'shell'];
+
+/** Parse an app file: YAML-ish frontmatter + script body. */
+function parseAppFile(content) {
+  const meta = { name: '', icon: '📦', description: '', runtime: 'shell', enabled: true, timeout: 120 };
+  let body = content;
+  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (m) {
+    body = m[2] || '';
+    for (const rawLine of m[1].split(/\r?\n/)) {
+      const line = rawLine.replace(/#.*$/, '').trim();
+      if (!line) continue;
+      const eq = line.indexOf(':');
+      if (eq < 1) continue;
+      const key = line.slice(0, eq).trim();
+      let val = line.slice(eq + 1).trim();
+      if (val.length >= 2 && ((val[0] === '"' && val.endsWith('"')) || (val[0] === "'" && val.endsWith("'")))) {
+        val = val.slice(1, -1);
+      }
+      if (key === 'enabled')       meta.enabled = !/^(false|no|0|off)$/i.test(val);
+      else if (key === 'timeout')  { const n = parseInt(val, 10); if (n > 0) meta.timeout = n; }
+      else if (key in meta)        meta[key] = val;
+    }
+  }
+  // Strip a single wrapping ```lang ... ``` fence (agents often emit fenced code).
+  const fence = body.match(/^\s*```([a-zA-Z0-9_+-]*)\r?\n([\s\S]*?)\r?\n```\s*$/);
+  if (fence) {
+    body = fence[2];
+    const lang = (fence[1] || '').toLowerCase();
+    if (lang === 'python' || lang === 'py') meta.runtime = 'python';
+    else if (lang === 'powershell' || lang === 'ps1' || lang === 'ps') meta.runtime = 'powershell';
+    else if (lang === 'shell' || lang === 'sh' || lang === 'bash' || lang === 'bat' || lang === 'cmd') meta.runtime = 'shell';
+  }
+  if (!APP_RUNTIMES.includes(meta.runtime)) meta.runtime = 'shell';
+  return { meta, body: body.replace(/^\s+/, '') };
+}
+
+/**
+ * Execute an app's script in a child process.
+ * If `token` is given, streams live start/stdout/stderr/end events over WS so the
+ * dashboard can show real-time output. Always resolves with the full final result
+ * {ok,code,stdout,stderr,durationMs,timedOut} for the HTTP response.
+ */
+function runAppScript(meta, body, token = '') {
+  return new Promise((resolve) => {
+    const runtime  = APP_RUNTIMES.includes(meta.runtime) ? meta.runtime : 'shell';
+    const isWin    = process.platform === 'win32';
+    const ext      = runtime === 'python' ? '.py' : runtime === 'powershell' ? '.ps1' : (isWin ? '.bat' : '.sh');
+    const tmpFile  = path.join(os.tmpdir(), `qevos_app_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    let cmd, args;
+    // On Windows, cmd /c echoes each command of a .bat unless suppressed.
+    const fileBody = (runtime === 'shell' && isWin && !/^\s*@echo\s+off/i.test(body))
+      ? '@echo off\r\n' + body : body;
+    try {
+      fs.writeFileSync(tmpFile, fileBody, 'utf8');
+    } catch (e) { resolve({ ok: false, code: -1, stdout: '', stderr: String(e), durationMs: 0, timedOut: false }); return; }
+
+    if (runtime === 'python') {
+      const parts = parsePythonCmd(PYTHON_CMD);
+      cmd = parts[0]; args = [...parts.slice(1), tmpFile];
+    } else if (runtime === 'powershell') {
+      cmd = isWin ? 'powershell' : 'pwsh';
+      args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tmpFile];
+    } else { // shell
+      if (isWin) { cmd = 'cmd'; args = ['/c', tmpFile]; }
+      else       { cmd = 'bash'; args = [tmpFile]; }
+    }
+
+    const timeoutMs = (meta.timeout > 0 ? meta.timeout : 120) * 1000;
+    const t0 = Date.now();
+    let stdout = '', stderr = '', timedOut = false, done = false;
+    let child;
+    try {
+      child = spawn(cmd, args, {
+        cwd: AGENT_DIR,
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+        windowsHide: true,
+      });
+    } catch (e) {
+      try { fs.unlinkSync(tmpFile); } catch {}
+      broadcastAppRun(token, 'end', { ok: false, code: -1, durationMs: 0, timedOut: false });
+      resolve({ ok: false, code: -1, stdout: '', stderr: String(e), durationMs: 0, timedOut: false });
+      return;
+    }
+    broadcastAppRun(token, 'start', { name: meta.name || '', runtime });
+    const finish = (code) => {
+      if (done) return; done = true;
+      clearTimeout(timer);
+      try { fs.unlinkSync(tmpFile); } catch {}
+      const result = { ok: code === 0 && !timedOut, code, stdout, stderr, durationMs: Date.now() - t0, timedOut };
+      broadcastAppRun(token, 'end', { ok: result.ok, code: result.code, durationMs: result.durationMs, timedOut: result.timedOut });
+      resolve(result);
+    };
+    const timer = setTimeout(() => { timedOut = true; try { child.kill(); } catch {} }, timeoutMs);
+    child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    child.stdout.on('data', d => { stdout += d; if (stdout.length > 200000) stdout = stdout.slice(-200000); broadcastAppRun(token, 'stdout', { text: stripAnsi(d) }); });
+    child.stderr.on('data', d => { stderr += d; if (stderr.length > 200000) stderr = stderr.slice(-200000); broadcastAppRun(token, 'stderr', { text: stripAnsi(d) }); });
+    child.on('error', e => { stderr += String(e); finish(-1); });
+    child.on('close', code => finish(code == null ? -1 : code));
+  });
 }
 
 function cronsAppendHistory(entry) {
@@ -1817,6 +1930,90 @@ const server = http.createServer(async (req, res) => {
       } catch (e) { json(500, { error: String(e) }); }
       return;
     }
+  }
+
+  // ── Apps (user-space executable programs) ──────────────────────────────────
+  // GET    /api/apps              — list all apps (parsed meta)
+  // GET    /api/app/:id           — read raw file (for editor)
+  // POST   /api/app/:id           — create / update
+  // DELETE /api/app/:id           — delete
+  // POST   /api/app/:id/run       — execute the script directly (NO LLM/agent)
+  if (req.method === 'GET' && req.url === '/api/apps') {
+    try {
+      if (!fs.existsSync(APPS_DIR)) { json(200, { apps: [] }); return; }
+      const apps = fs.readdirSync(APPS_DIR)
+        .filter(f => f.endsWith('.md'))
+        .sort()
+        .map(f => {
+          const fp   = path.join(APPS_DIR, f);
+          const id   = f.replace(/\.md$/, '');
+          const stat = (() => { try { return fs.statSync(fp); } catch { return null; } })();
+          const { meta } = parseAppFile(readText(fp) || '');
+          return {
+            id,
+            name: meta.name || id,
+            icon: meta.icon || '📦',
+            description: meta.description || '',
+            runtime: meta.runtime,
+            enabled: meta.enabled,
+            size: stat ? stat.size : 0,
+          };
+        });
+      json(200, { apps });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // POST /api/app/:id/run  — execute (match BEFORE the bare :id routes)
+  const appRunMatch = req.url.match(/^\/api\/app\/([^/?]+)\/run$/);
+  if (req.method === 'POST' && appRunMatch) {
+    const id = decodeURIComponent(appRunMatch[1]).replace(/\.md$/, '');
+    const fp = path.join(APPS_DIR, id + '.md');
+    if (!fs.existsSync(fp)) { json(404, { error: 'app not found' }); return; }
+    let token = '';
+    try { const raw = await readBody(req); if (raw) token = (JSON.parse(raw).token) || ''; } catch {}
+    try {
+      const { meta, body } = parseAppFile(readText(fp) || '');
+      const r = await runAppScript(meta, body, token);
+      broadcastConsole('system', `▶ Run app: ${meta.name || id} → exit ${r.code}${r.timedOut ? ' (timeout)' : ''}`);
+      json(200, r);
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  const appGetMatch = req.url.match(/^\/api\/app\/([^/?]+)$/);
+  if (req.method === 'GET' && appGetMatch) {
+    const id = decodeURIComponent(appGetMatch[1]).replace(/\.md$/, '');
+    const fp = path.join(APPS_DIR, id + '.md');
+    if (!fs.existsSync(fp)) { json(404, { error: 'app not found' }); return; }
+    json(200, { id, content: readText(fp) || '' });
+    return;
+  }
+
+  const appPostMatch = req.url.match(/^\/api\/app\/([^/?]+)$/);
+  if (req.method === 'POST' && appPostMatch) {
+    try {
+      const id = decodeURIComponent(appPostMatch[1]).replace(/\.md$/, '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+      if (!id) { json(400, { error: 'invalid id' }); return; }
+      const { content } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      if (!fs.existsSync(APPS_DIR)) fs.mkdirSync(APPS_DIR, { recursive: true });
+      fs.writeFileSync(path.join(APPS_DIR, id + '.md'), content, 'utf8');
+      json(200, { ok: true, id });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  const appDelMatch = req.url.match(/^\/api\/app\/([^/?]+)$/);
+  if (req.method === 'DELETE' && appDelMatch) {
+    try {
+      const id = decodeURIComponent(appDelMatch[1]).replace(/\.md$/, '');
+      const fp = path.join(APPS_DIR, id + '.md');
+      if (!fs.existsSync(fp)) { json(404, { error: 'app not found' }); return; }
+      fs.unlinkSync(fp);
+      json(200, { ok: true, id });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
   }
 
   // ── GET /api/skills  — list all skill files ───────────────────────────────

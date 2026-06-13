@@ -898,6 +898,92 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
   padding:1px 7px; border-radius:10px; font-size:10.5px; font-weight:600;
 }
 
+/* ── Apps pane (user-space executable programs) ──────────────────────── */
+.apps-body { flex:1; overflow-y:auto; padding:18px; background:var(--bg); }
+.apps-grid {
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));
+  gap:14px; align-content:start;
+}
+.app-card {
+  position:relative; display:flex; flex-direction:column; align-items:center;
+  gap:8px; padding:16px 10px 12px; border:1px solid var(--border); border-radius:10px;
+  background:var(--bg2); cursor:pointer; user-select:none; text-align:center;
+  transition:border-color 0.12s, transform 0.06s, box-shadow 0.12s;
+}
+.app-card:hover { border-color:var(--blue); box-shadow:0 4px 14px rgba(0,0,0,0.25); }
+.app-card:active { transform:scale(0.97); }
+.app-card.running { border-color:var(--blue); opacity:0.7; cursor:progress; }
+.app-card.disabled { opacity:0.45; }
+.app-icon { font-size:34px; line-height:1; height:38px; display:flex; align-items:center; }
+.app-name {
+  font-size:12px; font-weight:600; color:var(--text); width:100%;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.app-rt { font-size:9px; font-weight:700; letter-spacing:0.3px; text-transform:uppercase; color:var(--muted); }
+.app-spin {
+  position:absolute; top:8px; right:8px; width:13px; height:13px;
+  border:2px solid var(--border); border-top-color:var(--blue); border-radius:50%;
+  animation:appspin 0.7s linear infinite; display:none;
+}
+.app-card.running .app-spin { display:block; }
+@keyframes appspin { to { transform:rotate(360deg); } }
+.app-card-actions { position:absolute; top:6px; right:6px; display:none; gap:3px; }
+.apps-body.editing .app-card-actions { display:flex; }
+.apps-body.editing .app-card { cursor:default; }
+.app-mini-btn {
+  background:var(--bg3); border:1px solid var(--border); color:var(--text);
+  border-radius:5px; font-size:11px; line-height:1; padding:3px 5px; cursor:pointer;
+}
+.app-mini-btn:hover { border-color:var(--blue); }
+.app-mini-btn.del:hover { border-color:var(--red); color:var(--red); }
+.app-new-card {
+  border-style:dashed; color:var(--muted); justify-content:center;
+}
+.app-new-card .app-icon { color:var(--muted); }
+.apps-empty { color:var(--muted); font-size:12.5px; font-style:italic; padding:8px 2px; }
+
+/* App editor + output modal (shared shell) */
+.app-modal { position:fixed; inset:0; background:rgba(0,0,0,0.65); display:flex; align-items:flex-start; justify-content:center; z-index:9300; padding:48px 20px; overflow:auto; }
+.app-modal-inner { background:var(--bg2); border:1px solid var(--border); border-radius:10px; width:100%; max-width:640px; display:flex; flex-direction:column; box-shadow:0 8px 32px rgba(0,0,0,0.6); }
+.app-modal-head { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border); }
+.app-modal-title { font-size:14px; font-weight:700; color:var(--text); }
+.app-modal-x { background:none; border:none; color:var(--muted); font-size:16px; cursor:pointer; padding:2px 6px; }
+.app-modal-x:hover { color:var(--text); }
+.app-modal-body { padding:16px 18px; }
+.app-fg { margin-bottom:12px; }
+.app-fg label { display:block; font-size:12px; font-weight:500; color:var(--text); margin-bottom:5px; }
+.app-fg input[type=text], .app-fg select {
+  width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px;
+  color:var(--text); font-size:13px; padding:7px 11px; outline:none; font-family:inherit;
+}
+.app-fg input:focus, .app-fg select:focus { border-color:var(--blue); }
+.app-fg-row { display:flex; gap:10px; }
+.app-fg-row .app-fg { flex:1; }
+.app-script-ta {
+  width:100%; min-height:200px; resize:vertical; background:var(--bg3); border:1px solid var(--border);
+  border-radius:6px; color:var(--text); font-family:var(--mono); font-size:12px; line-height:1.6;
+  padding:10px 12px; outline:none; box-sizing:border-box;
+}
+.app-script-ta:focus { border-color:var(--blue); }
+.app-modal-foot { border-top:1px solid var(--border); padding:11px 18px; display:flex; justify-content:flex-end; gap:8px; }
+.app-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:7px 15px; border-radius:6px; cursor:pointer; font-size:12.5px; }
+.app-btn:hover { border-color:var(--blue); }
+.app-btn-primary { background:linear-gradient(135deg,#1f6feb,#3b82f6); border-color:transparent; color:#fff; }
+.app-btn-primary:hover { filter:brightness(1.1); }
+.app-out-meta { font-size:11.5px; font-weight:600; margin-bottom:8px; }
+.app-out-meta.ok { color:var(--green); }
+.app-out-meta.err { color:var(--red); }
+.app-out-meta.running { color:var(--blue); display:flex; align-items:center; gap:7px; }
+.app-run-dot { width:9px; height:9px; border-radius:50%; background:var(--blue); animation:apppulse 0.9s ease-in-out infinite; }
+@keyframes apppulse { 0%,100% { opacity:0.3; transform:scale(0.8); } 50% { opacity:1; transform:scale(1.1); } }
+.app-out-pre {
+  background:var(--bg); border:1px solid var(--border); border-radius:6px;
+  padding:10px 12px; font-family:var(--mono); font-size:11.5px; line-height:1.6;
+  color:var(--text); white-space:pre-wrap; word-break:break-word; max-height:40vh; overflow:auto; margin:0 0 10px;
+}
+.app-out-pre.stderr { color:#ffb4ab; border-color:rgba(248,81,73,0.4); }
+.app-out-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--muted); margin:0 0 4px; }
+
 /* ── Run Files pane ──────────────────────────────────────────────────── */
 .files-toolbar {
   display:flex; align-items:center; gap:8px;
@@ -1330,6 +1416,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
       <div class="ctab-sep"></div>
       <button class="center-tab" id="ctab-crons" onclick="setCenterTab('crons')">Crons</button>
       <button class="center-tab" id="ctab-skills" onclick="setCenterTab('skills')">Skills</button>
+      <button class="center-tab" id="ctab-apps" onclick="setCenterTab('apps')">Apps</button>
       <button class="center-tab" id="ctab-agentsmd" onclick="setCenterTab('agentsmd')">AGENTS.md</button>
       <button class="center-tab" id="ctab-advisormd" onclick="setCenterTab('advisormd')">ADVISOR.md</button>
       <button class="center-tab" id="ctab-memory" onclick="setCenterTab('memory')">Memory</button>
@@ -1428,6 +1515,22 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Apps pane (user-space executable programs) -->
+    <div class="center-pane" id="cpane-apps">
+      <div class="agents-toolbar">
+        <span class="agents-title">Apps</span>
+        <span class="agents-hint" id="appsHint"></span>
+        <div class="bar-gap"></div>
+        <button class="icon-btn" onclick="loadApps()">↺ Refresh</button>
+        <button class="icon-btn" id="appsEditBtn" onclick="toggleAppsEdit()">管理</button>
+        <button class="icon-btn" onclick="appEditorOpen(null)">＋ New</button>
+      </div>
+      <div class="apps-body" id="appsBody">
+        <div class="apps-grid" id="appsGrid"></div>
+        <div class="apps-empty" id="appsEmpty" style="display:none">还没有可执行程序。点 ＋New 新建，或让 Agent 用 register_app 产出一个。</div>
       </div>
     </div>
 
@@ -1932,6 +2035,13 @@ function handleMsg(msg) {
   } else if (msg.type === 'console') {
     pushConsole(msg.stream, msg.text);
     if (msg.stream === 'stdout') pushStreamLine(msg.text);
+  } else if (msg.type === 'app-run') {
+    const run = gAppRuns[msg.token];
+    if (run) {
+      if (msg.phase === 'stdout')      run.appendStdout(msg.text);
+      else if (msg.phase === 'stderr') run.appendStderr(msg.text);
+      else if (msg.phase === 'end')    run.markEnd(msg);
+    }
   } else if (msg.type === 'crons') {
     if (gCenterTab === 'crons') {
       gCrons = msg.list || [];
@@ -3419,11 +3529,265 @@ function setCenterTab(name) {
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
   if (name === 'agentsmd')       loadProfileTab('agents');
   if (name === 'skills')         loadSkills();
+  if (name === 'apps')           loadApps();
   if (name === 'crons')          loadCrons();
   if (name === 'advisormd')      loadProfileTab('advisor');
   if (name === 'files')          loadRunFiles();
   if (name === 'memory')         loadMemory();
   if (name.startsWith('dir-'))   reloadDirTab(name);
+}
+
+// ── Apps (user-space executable programs) ──────────────────────────────────
+let gApps        = [];      // [{id,name,icon,description,runtime,enabled,size}]
+let gAppsEditing = false;   // manage/edit mode
+
+async function loadApps() {
+  try {
+    const data = await fetch('/api/apps').then(r => r.json());
+    gApps = data.apps || [];
+    renderAppsGrid();
+    document.getElementById('appsHint').textContent =
+      gApps.length + ' app' + (gApps.length !== 1 ? 's' : '');
+  } catch (e) {
+    document.getElementById('appsHint').textContent = 'Error: ' + e.message;
+  }
+}
+
+function toggleAppsEdit() {
+  gAppsEditing = !gAppsEditing;
+  document.getElementById('appsBody').classList.toggle('editing', gAppsEditing);
+  document.getElementById('appsEditBtn').classList.toggle('on', gAppsEditing);
+  document.getElementById('appsEditBtn').textContent = gAppsEditing ? '完成' : '管理';
+  renderAppsGrid();
+}
+
+function renderAppsGrid() {
+  const grid  = document.getElementById('appsGrid');
+  const empty = document.getElementById('appsEmpty');
+  empty.style.display = gApps.length ? 'none' : '';
+  grid.innerHTML = '';
+  for (const a of gApps) {
+    const card = document.createElement('div');
+    card.className = 'app-card' + (a.enabled === false ? ' disabled' : '');
+    card.title = a.description || a.name;
+    card.innerHTML =
+      '<div class="app-spin"></div>' +
+      '<div class="app-card-actions">' +
+        '<button class="app-mini-btn" title="编辑">✎</button>' +
+        '<button class="app-mini-btn del" title="删除">🗑</button>' +
+      '</div>' +
+      '<div class="app-icon">' + esc(a.icon || '📦') + '</div>' +
+      '<div class="app-name">' + esc(a.name || a.id) + '</div>' +
+      '<div class="app-rt">' + esc(a.runtime || 'shell') + '</div>';
+    const [editBtn, delBtn] = card.querySelectorAll('.app-card-actions .app-mini-btn');
+    editBtn.addEventListener('click', e => { e.stopPropagation(); appEditorOpen(a.id); });
+    delBtn.addEventListener('click', e => { e.stopPropagation(); appDelete(a.id, a.name); });
+    card.addEventListener('click', () => { if (!gAppsEditing) runApp(a.id, card); });
+    grid.appendChild(card);
+  }
+  if (gAppsEditing) {
+    const add = document.createElement('div');
+    add.className = 'app-card app-new-card';
+    add.innerHTML = '<div class="app-icon">＋</div><div class="app-name">新建</div>';
+    add.addEventListener('click', () => appEditorOpen(null));
+    grid.appendChild(add);
+  }
+}
+
+// Live run registry, keyed by token — fed by the WS 'app-run' handler.
+const gAppRuns = {};
+
+async function runApp(id, card) {
+  if (card.classList.contains('running')) return;
+  card.classList.add('running');
+  const token = 'apprun_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const ctl = appOpenRunModal(id, token);
+  try {
+    const r = await fetch('/api/app/' + encodeURIComponent(id) + '/run', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token }),
+    }).then(r => r.json());
+    ctl.finalize(r.error ? { ok:false, code:-1, stdout:'', stderr:r.error, durationMs:0, timedOut:false } : r);
+  } catch (e) {
+    ctl.finalize({ ok:false, code:-1, stdout:'', stderr:String(e), durationMs:0, timedOut:false });
+  } finally {
+    card.classList.remove('running');
+  }
+}
+
+async function appDelete(id, name) {
+  if (!confirm('删除程序「' + (name || id) + '」？')) return;
+  try {
+    await fetch('/api/app/' + encodeURIComponent(id), { method:'DELETE' });
+    loadApps();
+  } catch (e) { alert('删除失败: ' + e.message); }
+}
+
+// ── App editor modal ───────────────────────────────────────────────────────
+function appBuildFile(f) {
+  const fm = [
+    '---',
+    'name: ' + JSON.stringify(f.name || ''),
+    'icon: ' + JSON.stringify(f.icon || '📦'),
+    'description: ' + JSON.stringify(f.description || ''),
+    'runtime: ' + (f.runtime || 'shell'),
+    'enabled: true',
+    '---',
+    '',
+  ].join('\n');
+  return fm + (f.script || '');
+}
+
+// Parse a stored app .md back into editor fields (frontmatter + body).
+function appParseFile(content) {
+  const out = { name:'', icon:'📦', description:'', runtime:'shell', script:content };
+  const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (m) {
+    out.script = (m[2] || '').replace(/^\s+/, '');
+    for (const raw of m[1].split(/\r?\n/)) {
+      const line = raw.trim(); if (!line) continue;
+      const eq = line.indexOf(':'); if (eq < 1) continue;
+      const k = line.slice(0, eq).trim(); let v = line.slice(eq + 1).trim();
+      if (v.length >= 2 && ((v[0]==='"'&&v.endsWith('"'))||(v[0]==="'"&&v.endsWith("'")))) v = v.slice(1,-1);
+      if (k in out && k !== 'script') out[k] = v;
+    }
+  }
+  return out;
+}
+
+async function appEditorOpen(id) {
+  let f = { id:'', name:'', icon:'📦', description:'', runtime:'python', script:'' };
+  let isNew = true;
+  if (id) {
+    isNew = false;
+    try {
+      const data = await fetch('/api/app/' + encodeURIComponent(id)).then(r => r.json());
+      f = appParseFile(data.content || ''); f.id = id;
+    } catch (e) { alert('读取失败: ' + e.message); return; }
+  }
+  const back = document.createElement('div');
+  back.className = 'app-modal';
+  back.innerHTML =
+    '<div class="app-modal-inner">' +
+      '<div class="app-modal-head"><span class="app-modal-title">' + (isNew ? '新建程序' : '编辑程序') + '</span>' +
+        '<button class="app-modal-x">✕</button></div>' +
+      '<div class="app-modal-body">' +
+        '<div class="app-fg-row">' +
+          '<div class="app-fg" style="flex:0 0 70px"><label>图标</label><input type="text" id="appEdIcon" maxlength="4" value="' + esc(f.icon) + '"></div>' +
+          '<div class="app-fg"><label>名称</label><input type="text" id="appEdName" value="' + esc(f.name) + '" placeholder="清理临时文件"></div>' +
+        '</div>' +
+        '<div class="app-fg"><label>描述</label><input type="text" id="appEdDesc" value="' + esc(f.description) + '" placeholder="一句话说明这个程序做什么"></div>' +
+        '<div class="app-fg"><label>运行时</label><select id="appEdRt">' +
+          ['python','powershell','shell'].map(rt => '<option value="'+rt+'"'+(f.runtime===rt?' selected':'')+'>'+rt+'</option>').join('') +
+        '</select></div>' +
+        '<div class="app-fg"><label>脚本</label><textarea class="app-script-ta" id="appEdScript" spellcheck="false" placeholder="print(\'hi\')"></textarea></div>' +
+      '</div>' +
+      '<div class="app-modal-foot">' +
+        '<button class="app-btn" id="appEdCancel">取消</button>' +
+        '<button class="app-btn app-btn-primary" id="appEdSave">保存</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(back);
+  back.querySelector('#appEdScript').value = f.script || '';
+  const close = () => back.remove();
+  back.querySelector('.app-modal-x').addEventListener('click', close);
+  back.querySelector('#appEdCancel').addEventListener('click', close);
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+  back.querySelector('#appEdSave').addEventListener('click', async () => {
+    const name = back.querySelector('#appEdName').value.trim();
+    if (!name) { alert('请填写名称'); return; }
+    const fields = {
+      name,
+      icon: back.querySelector('#appEdIcon').value.trim() || '📦',
+      description: back.querySelector('#appEdDesc').value.trim(),
+      runtime: back.querySelector('#appEdRt').value,
+      script: back.querySelector('#appEdScript').value,
+    };
+    // New apps derive an id from the name; existing keep their id.
+    const targetId = id || (name.replace(/[^a-zA-Z0-9_\-]/g, '_') || ('app_' + Date.now()));
+    try {
+      const res = await fetch('/api/app/' + encodeURIComponent(targetId), {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ content: appBuildFile(fields) }),
+      }).then(r => r.json());
+      if (res.error) { alert('保存失败: ' + res.error); return; }
+      close();
+      loadApps();
+    } catch (e) { alert('保存失败: ' + e.message); }
+  });
+}
+
+// ── App run output modal (live-streaming) ──────────────────────────────────
+// Opens immediately in a "running" state; stdout/stderr stream in over WS
+// (handleMsg 'app-run'); finalize() locks the status from the HTTP result.
+function appOpenRunModal(id, token) {
+  const app = gApps.find(a => a.id === id);
+  const back = document.createElement('div');
+  back.className = 'app-modal';
+  back.innerHTML =
+    '<div class="app-modal-inner">' +
+      '<div class="app-modal-head"><span class="app-modal-title">' + esc((app && app.icon || '📦') + ' ' + (app && app.name || id)) + '</span>' +
+        '<button class="app-modal-x">✕</button></div>' +
+      '<div class="app-modal-body">' +
+        '<div class="app-out-meta running"><span class="app-run-dot"></span>运行中…</div>' +
+        '<div class="app-out-label app-out-lbl-out" style="display:none">stdout</div>' +
+        '<pre class="app-out-pre app-out-stdout" style="display:none"></pre>' +
+        '<div class="app-out-label app-out-lbl-err" style="display:none">stderr</div>' +
+        '<pre class="app-out-pre stderr app-out-stderr" style="display:none"></pre>' +
+        '<div class="apps-empty app-out-empty">等待输出…</div>' +
+      '</div>' +
+      '<div class="app-modal-foot"><button class="app-btn app-btn-primary" id="appOutClose">关闭</button></div>' +
+    '</div>';
+  document.body.appendChild(back);
+  const metaEl   = back.querySelector('.app-out-meta');
+  const outPre   = back.querySelector('.app-out-stdout');
+  const errPre   = back.querySelector('.app-out-stderr');
+  const outLbl   = back.querySelector('.app-out-lbl-out');
+  const errLbl   = back.querySelector('.app-out-lbl-err');
+  const emptyEl  = back.querySelector('.app-out-empty');
+
+  const close = () => { delete gAppRuns[token]; back.remove(); };
+  back.querySelector('.app-modal-x').addEventListener('click', close);
+  back.querySelector('#appOutClose').addEventListener('click', close);
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+
+  const CAP = 200000;
+  const appendTo = (pre, lbl, text) => {
+    if (!text) return;
+    emptyEl.style.display = 'none';
+    pre.style.display = ''; lbl.style.display = '';
+    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
+    let next = pre.textContent + text;
+    if (next.length > CAP) next = next.slice(-CAP);
+    pre.textContent = next;
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+  };
+
+  const ctl = {
+    ended: false,
+    appendStdout: t => appendTo(outPre, outLbl, t),
+    appendStderr: t => appendTo(errPre, errLbl, t),
+    setStatus(r) {
+      const ok = !!r.ok;
+      metaEl.className = 'app-out-meta ' + (ok ? 'ok' : 'err');
+      const txt = r.timedOut ? '超时终止' : (ok ? '运行成功' : '运行失败');
+      metaEl.textContent = txt + ' · exit ' + r.code + ' · ' + (r.durationMs || 0) + 'ms';
+      if (!outPre.textContent && !errPre.textContent) {
+        emptyEl.style.display = ''; emptyEl.textContent = '（无输出）';
+      }
+    },
+    markEnd(end) { this.ended = true; this.setStatus(end); },
+    finalize(r) {
+      // HTTP result is authoritative. If WS missed the stream, fill from it.
+      if (!this.ended) {
+        if (r.stdout && !outPre.textContent) appendTo(outPre, outLbl, r.stdout);
+        if (r.stderr && !errPre.textContent) appendTo(errPre, errLbl, r.stderr);
+        this.setStatus(r);
+        this.ended = true;
+      }
+    },
+  };
+  gAppRuns[token] = ctl;
+  return ctl;
 }
 
 // AGENTS.md / ADVISOR.md tabs are now handled by the unified profile tab logic
