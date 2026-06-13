@@ -441,6 +441,16 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
 .ev-user-msg { padding:7px 12px; background:rgba(125,133,144,0.05); border-left:3px solid var(--border); }
 .ev-user-msg .ev-body { font-size:11.5px; color:var(--muted); line-height:1.5; }
+/* 环境观察(watcher)消息 —— 粉红呼吸灯背景,从环境里"呼吸"进来的感觉 */
+.ev-env-obs { padding:7px 12px; border-left:3px solid rgba(255,105,180,0.55); animation:env-breathe 3.2s ease-in-out infinite; }
+.ev-env-obs .ev-body { font-size:11.5px; color:#ff9ec7; line-height:1.5; }
+@keyframes env-breathe {
+  0%, 100% { background:rgba(255,105,180,0.05); }
+  50%      { background:rgba(255,105,180,0.20); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ev-env-obs { animation:none; background:rgba(255,105,180,0.10); }
+}
 
 .ev-ask-user { background:rgba(227,179,65,0.06); border-left:3px solid var(--yellow); padding:8px 12px; }
 .ev-ask-user .ev-ask-label { font-size:11px; color:var(--yellow); font-weight:600; margin-bottom:4px; }
@@ -2955,6 +2965,8 @@ function renderEvent(ev, goalHead = '') {
       if (!t || t.length < 4) return '';
       return `<div class="ev ev-user-msg"><div class="ev-body">${esc(trunc(t, 300))}</div></div>`;
     }
+    case 'env_obs':
+      return `<div class="ev ev-env-obs"><div class="ev-body">🌸 ${esc(trunc(ev.text || '', 300))}</div></div>`;
     default: return '';
   }
 }

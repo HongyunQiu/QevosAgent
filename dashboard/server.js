@@ -614,6 +614,11 @@ function parseLine(raw, lineIdx) {
       // loop when agent is paused on ask_user.
       return { ...base, type: 'user_answer', text: text.replace(/^\[(?:用户补充信息|User input)\]\s*\n?/, '').trim() };
     }
+    if (text.startsWith('[环境]') || text.startsWith('[Environment]')) {
+      // Watcher output injected by the framework (see core/watcher.py). Rendered
+      // with a distinct breathing-pink style to stand out from plain user msgs.
+      return { ...base, type: 'env_obs', text: text.trim() };
+    }
     if (lineIdx === 0) {
       const goalMarker = text.match(/(?:请完成以下目标：|Please complete the following goal:)\s*\n?([\s\S]*)/);
       return { ...base, type: 'goal', text: goalMarker ? goalMarker[1].trim() : text.trim() };
