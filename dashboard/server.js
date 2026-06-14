@@ -1627,11 +1627,18 @@ const server = http.createServer(async (req, res) => {
     const nostopIdle = !!(state.agentAlive
       && state.meta && state.meta.nostop_idle
       && state.status && state.status.status === 'idle');
+    // Asking = paused mid-run waiting for an ask_user answer (mirrors the
+    // dashboard's isAwaitingInput). The mobile dot shows this as yellow and
+    // takes priority over busy.
+    const asking = !!(state.agentAlive
+      && state.status && state.status.status === 'paused'
+      && state.meta && state.meta.awaiting_input);
     json(200, {
       version: APP_VERSION,
       instanceName: state.instanceName || '',
-      // Mobile uses this to color the per-server status dot in its menu.
+      // Mobile uses these to color the per-server status dot in its menu.
       busy: !!(state.launching || (state.agentAlive && !nostopIdle)),
+      asking,
     });
     return;
   }

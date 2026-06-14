@@ -10,6 +10,8 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.http.SslError
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -98,6 +100,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        menuPollToken++          // stop any in-flight status-monitor poll loop
         unregisterNetworkCallback()
         super.onDestroy()
     }
@@ -327,34 +330,117 @@ class MainActivity : AppCompatActivity() {
             openSettingsActivity()
         })
 
-        dialog.show()
-
-        // Probe each server in the background: a single /api/version call yields
-        // reachability (success vs. exception), the instance nickname, and the
-        // busy flag — enough to color the status dot and refresh the label.
-        for ((s, tv, dot) in rowRefs) {
-            val isCurrent = s.id == curId
-            fetchStatus(s) { reachable, name, busy ->
-                if (name.isNotBlank()) Servers.updateName(prefs, s.id, name)
-                runOnUiThread {
-                    if (name.isNotBlank()) {
-                        tv.text = (if (isCurrent) "✓  " else "      ") + name
-                    }
-                    setDot(dot, when {
-                        !reachable -> DOT_OFFLINE
-                        busy       -> DOT_BUSY
-                        else       -> DOT_IDLE
-                    })
+        // The menu doubles as a live status monitor: keep polling every server
+        // while it's open so transient states (asking-user, task start/finish)
+        // show up without reopening. Polling stops the moment the dialog closes.
+        val pollToken = ++menuPollToken
+        // Paint each dot with its last-known color immediately so reopening the
+        // menu doesn't flash grey→color (and a momentary blip can't wipe a
+        // good reading).
+        for ((s, _, dot) in rowRefs) {
+            setDot(dot, statCache.getOrPut(s.id) { SrvStat() }.color)
+        }
+        val handler = Handler(Looper.getMainLooper())
+        val poll = object : Runnable {
+            override fun run() {
+                if (pollToken != menuPollToken) return  // dialog closed / superseded
+                // Stagger probes so N servers don't all hit the radio at once
+                // (a simultaneous burst on freshly-woken Wi-Fi is a top cause
+                // of false timeouts).
+                rowRefs.forEachIndexed { i, (s, tv, dot) ->
+                    handler.postDelayed({
+                        if (pollToken == menuPollToken) {
+                            probeServer(s, tv, dot, s.id == curId)
+                        }
+                    }, i * PROBE_STAGGER_MS)
                 }
+                handler.postDelayed(this, POLL_INTERVAL_MS)
+            }
+        }
+        dialog.setOnDismissListener { menuPollToken++ }  // stop the loop
+        dialog.show()
+        handler.post(poll)  // first round immediately
+    }
+
+    /**
+     * One monitor tick for a single server. Reliability layer on top of the raw
+     * probe:
+     *  - keeps a per-server last-known color (so a single timeout never flashes
+     *    red over a previously-good reading)
+     *  - only declares OFFLINE on a definitive connection-refused, or after
+     *    several consecutive uncertain (timeout/IO) results
+     *  - skips servers whose previous probe is still in flight (no pile-up)
+     */
+    private fun probeServer(s: Server, tv: TextView, dot: View, isCurrent: Boolean) {
+        val st = statCache.getOrPut(s.id) { SrvStat() }
+        if (st.inFlight) return
+        st.inFlight = true
+        fetchStatus(s) { r ->
+            st.inFlight = false
+            val newColor = when (r.kind) {
+                ProbeKind.OK -> {
+                    st.timeouts = 0
+                    when {
+                        r.asking -> DOT_ASKING
+                        r.busy   -> DOT_BUSY
+                        else     -> DOT_IDLE
+                    }
+                }
+                ProbeKind.REFUSED -> { st.timeouts = 0; DOT_OFFLINE }  // port closed → really down
+                ProbeKind.UNCERTAIN -> {
+                    st.timeouts++
+                    if (st.timeouts >= OFFLINE_AFTER_UNCERTAIN || st.color == DOT_PROBING)
+                        DOT_OFFLINE
+                    else st.color   // keep last good color through a transient blip
+                }
+            }
+            st.color = newColor
+            runOnUiThread {
+                if (r.name.isNotBlank()) {
+                    Servers.updateName(prefs, s.id, r.name)
+                    tv.text = (if (isCurrent) "✓  " else "      ") + r.name
+                }
+                setDot(dot, newColor)
             }
         }
     }
 
-    // Status-dot colors: probing (grey), unreachable (red), busy (green), idle (blue).
+    // Status-dot colors: probing (grey), unreachable (red), asking user (yellow),
+    // busy (green), idle (blue).
     private val DOT_PROBING = 0xFFBDBDBD.toInt()
     private val DOT_OFFLINE = 0xFFE53935.toInt()
+    private val DOT_ASKING  = 0xFFFBC02D.toInt()
     private val DOT_BUSY    = 0xFF43A047.toInt()
     private val DOT_IDLE    = 0xFF42A5F5.toInt()
+
+    // ── Live status monitor (while the action menu is open) ─────────────────
+    private val POLL_INTERVAL_MS = 3000L   // re-probe every server this often
+    private val PROBE_STAGGER_MS = 150L    // space out probes within a round
+    private val CONNECT_TIMEOUT_MS = 4000
+    private val READ_TIMEOUT_MS    = 4000
+    private val PROBE_RETRIES = 1          // extra attempts on timeout (not on refused)
+    private val OFFLINE_AFTER_UNCERTAIN = 2  // uncertain rounds before showing red
+
+    // Bumped every time the menu opens or closes; the poll loop stops as soon
+    // as its captured token no longer matches.
+    private var menuPollToken = 0
+    // Per-server last-known status, keyed by server id; survives menu reopens so
+    // the dots don't flash grey and a blip can't erase a good reading.
+    private val statCache = HashMap<String, SrvStat>()
+
+    private inner class SrvStat {
+        var color: Int = DOT_PROBING
+        var timeouts: Int = 0      // consecutive uncertain results
+        @Volatile var inFlight: Boolean = false
+    }
+
+    private enum class ProbeKind { OK, REFUSED, UNCERTAIN }
+    private class ProbeResult(
+        val kind: ProbeKind,
+        val name: String = "",
+        val busy: Boolean = false,
+        val asking: Boolean = false,
+    )
 
     private fun setDot(dot: View, color: Int) {
         dot.background = GradientDrawable().apply {
@@ -422,33 +508,64 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // GET http://host:port/api/version → (reachable, instanceName, busy).
-    // Always calls back exactly once: on any failure → (false, "", false), so
-    // the status dot can flip to red instead of staying stuck on "probing".
-    private fun fetchStatus(s: Server, cb: (Boolean, String, Boolean) -> Unit) {
+    // Probe http://host:port/api/version on a background thread, retrying on
+    // timeout/IO so a single dropped packet doesn't read as "offline". Calls
+    // back exactly once with a classified result:
+    //   OK        — server answered (carries name/busy/asking)
+    //   REFUSED   — connection refused (port closed → dashboard not running)
+    //   UNCERTAIN — timeout / unreachable / other IO after retries (could be a
+    //               transient blip; caller decides whether to show red yet)
+    private fun fetchStatus(s: Server, cb: (ProbeResult) -> Unit) {
         Thread {
-            try {
-                val url = java.net.URL("${s.url()}/api/version")
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                // Mobile networks need real headroom — 1.5s used to fail on
-                // freshly-associated Wi-Fi and fall back to the IP label.
-                conn.connectTimeout = 4000
-                conn.readTimeout = 4000
-                conn.requestMethod = "GET"
-                if (conn.responseCode == 200) {
-                    val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    val o = org.json.JSONObject(body)
-                    val name = o.optString("instanceName", "").trim()
-                    val busy = o.optBoolean("busy", false)
-                    cb(true, name, busy)
-                } else {
-                    cb(false, "", false)
-                }
-                conn.disconnect()
-            } catch (_: Exception) {
-                cb(false, "", false)  // unreachable → red dot, keep URL label
+            var result = probeOnce(s)
+            var tries = 0
+            // Only retry the ambiguous case; a refused port is a firm answer.
+            while (result.kind == ProbeKind.UNCERTAIN && tries < PROBE_RETRIES) {
+                tries++
+                try { Thread.sleep(300) } catch (_: InterruptedException) {}
+                result = probeOnce(s)
             }
+            cb(result)
         }.start()
+    }
+
+    private fun probeOnce(s: Server): ProbeResult {
+        var conn: java.net.HttpURLConnection? = null
+        return try {
+            val url = java.net.URL("${s.url()}/api/version")
+            conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = CONNECT_TIMEOUT_MS
+            conn.readTimeout = READ_TIMEOUT_MS
+            conn.requestMethod = "GET"
+            conn.useCaches = false
+            val code = conn.responseCode
+            if (code == 200) {
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val o = org.json.JSONObject(body)
+                ProbeResult(
+                    ProbeKind.OK,
+                    name = o.optString("instanceName", "").trim(),
+                    busy = o.optBoolean("busy", false),
+                    asking = o.optBoolean("asking", false),
+                )
+            } else {
+                // Any HTTP reply means the port is open and the dashboard is up;
+                // treat as reachable-but-idle (older servers without busy/asking
+                // land here too via 200 with the fields simply absent).
+                ProbeResult(ProbeKind.OK)
+            }
+        } catch (e: java.net.ConnectException) {
+            // "Connection refused" = port closed (server down). "Network is
+            // unreachable" = the phone's problem → ambiguous, allow retry/keep.
+            if (e.message?.contains("refused", ignoreCase = true) == true)
+                ProbeResult(ProbeKind.REFUSED)
+            else ProbeResult(ProbeKind.UNCERTAIN)
+        } catch (_: Exception) {
+            // SocketTimeout, UnknownHost, NoRouteToHost, SSL, etc. → uncertain
+            ProbeResult(ProbeKind.UNCERTAIN)
+        } finally {
+            try { conn?.disconnect() } catch (_: Exception) {}
+        }
     }
 
     // Monotonic token: only the most-recent probe is allowed to act on its result.
