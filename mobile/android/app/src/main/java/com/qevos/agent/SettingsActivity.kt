@@ -1,14 +1,18 @@
 package com.qevos.agent
 
+import android.Manifest
 import android.app.AlertDialog
+import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.text.InputType
 import android.view.Gravity
-import android.view.Menu
-import android.view.MenuItem
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
@@ -21,6 +25,7 @@ import androidx.core.content.ContextCompat
 import com.qevos.agent.databinding.ActivitySettingsBinding
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -35,17 +40,17 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    // ── SAF launchers ──────────────────────────────────────────────────────
-    // CreateDocument lets the user pick any location (internal, SD card,
-    // Documents/, even cloud providers if they have a doc-provider app
-    // installed). No storage permission needed.
-    private val exportLauncher = registerForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
-    ) { uri: Uri? -> if (uri != null) writeExport(uri) }
-
-    private val importLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? -> if (uri != null) readImport(uri) }
+    // On API ≤ 28 the public Download dir needs WRITE_EXTERNAL_STORAGE. API 29+
+    // writes via MediaStore with no permission at all. We remember which action
+    // asked for the permission so we can resume it once granted.
+    private var pendingAction: (() -> Unit)? = null
+    private val permLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val action = pendingAction; pendingAction = null
+        if (granted) action?.invoke()
+        else Toast.makeText(this, "未授予存储权限，无法读写配置文件", Toast.LENGTH_LONG).show()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,24 +67,10 @@ class SettingsActivity : AppCompatActivity() {
         else servers.forEach { addRow(it) }
 
         binding.btnAdd.setOnClickListener { addRow(Server(Servers.newId(), "", MainActivity.DEFAULT_PORT)) }
-        binding.btnSave.setOnClickListener {
-            saveAll()
-            Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
-            finish()
-        }
-    }
-
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.menu_settings, menu)
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return when (item.itemId) {
-            R.id.action_export -> { startExport(); true }
-            R.id.action_import -> { startImport(); true }
-            else -> super.onOptionsItemSelected(item)
-        }
+        // Save: persist UI edits to prefs AND write the config file, then close.
+        binding.btnSave.setOnClickListener { saveConfig(closeAfter = true) }
+        // Load: pull the whole list back from the config file (stays open).
+        binding.btnLoad.setOnClickListener { loadConfig() }
     }
 
     private fun addRow(server: Server) {
@@ -176,116 +167,150 @@ class SettingsActivity : AppCompatActivity() {
         return true
     }
 
-    // ── Export ─────────────────────────────────────────────────────────────
-    private fun startExport() {
-        // Persist what's currently in the UI so the export reflects unsaved edits.
-        saveAll()
-        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        exportLauncher.launch("qevos-servers-$stamp.json")
-    }
+    // ── One-tap save / load to a single fixed config file ───────────────────
+    // No picker, no filename, no folder choice: always Download/qevos-servers.json.
+    // Save overwrites it; load replaces the whole list from it.
 
-    private fun writeExport(uri: Uri) {
+    private fun saveConfig(closeAfter: Boolean) {
+        if (!ensureLegacyPermission { saveConfig(closeAfter) }) return
+        // Persist current UI edits first so both prefs and the file reflect
+        // what's on screen.
+        saveAll()
+        val servers = Servers.load(prefs)
+        val arr = JSONArray()
+        for (s in servers) {
+            arr.put(JSONObject().apply {
+                put("id", s.id); put("host", s.host)
+                put("port", s.port); put("name", s.name)
+            })
+        }
+        val payload = JSONObject().apply {
+            put("format", BACKUP_FORMAT)
+            put("savedAt", SimpleDateFormat(
+                "yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date()))
+            put("servers", arr)
+        }.toString(2)
+
         try {
-            val servers = Servers.load(prefs)
-            val arr = JSONArray()
-            for (s in servers) {
-                arr.put(JSONObject().apply {
-                    put("id", s.id); put("host", s.host)
-                    put("port", s.port); put("name", s.name)
-                })
-            }
-            val payload = JSONObject().apply {
-                put("format", BACKUP_FORMAT)
-                put("exportedAt", SimpleDateFormat(
-                    "yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date()))
-                put("servers", arr)
-            }
-            contentResolver.openOutputStream(uri, "wt")?.use { os ->
-                os.write(payload.toString(2).toByteArray(Charsets.UTF_8))
-            } ?: throw RuntimeException("无法打开目标文件")
-            Toast.makeText(this, "已导出 ${servers.size} 条", Toast.LENGTH_SHORT).show()
+            writeDownload(payload)
+            Toast.makeText(this, "已保存 ${servers.size} 条到 Download/$CONFIG_FILENAME",
+                Toast.LENGTH_SHORT).show()
+            if (closeAfter) finish()
         } catch (e: Exception) {
-            Toast.makeText(this, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "保存失败: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
-    // ── Import ─────────────────────────────────────────────────────────────
-    private fun startImport() {
-        // application/json is the canonical type, but some pickers/file
-        // managers expose .json files only under */* or text/*. We accept
-        // anything and validate the contents instead.
-        importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
-    }
-
-    private fun readImport(uri: Uri) {
-        val parsed: List<Server> = try {
-            val raw = contentResolver.openInputStream(uri)?.use {
-                it.readBytes().toString(Charsets.UTF_8)
-            } ?: throw RuntimeException("无法读取文件")
-            parseBackup(raw)
+    private fun loadConfig() {
+        if (!ensureLegacyPermission { loadConfig() }) return
+        val raw = try {
+            readDownload() ?: run {
+                Toast.makeText(this, "没找到配置文件 Download/$CONFIG_FILENAME",
+                    Toast.LENGTH_LONG).show()
+                return
+            }
         } catch (e: Exception) {
-            Toast.makeText(this, "导入失败: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "读取失败: ${e.message}", Toast.LENGTH_LONG).show()
+            return
+        }
+        val parsed = try { parseConfig(raw) } catch (e: Exception) {
+            Toast.makeText(this, "配置文件解析失败: ${e.message}", Toast.LENGTH_LONG).show()
             return
         }
         if (parsed.isEmpty()) {
-            Toast.makeText(this, "文件里没有可导入的服务器", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "配置文件里没有服务器", Toast.LENGTH_LONG).show()
             return
         }
-
-        val current = collect()  // UI state, not persisted state
-        val mergedCount = parsed.count { p -> current.none { it.id == p.id } } + current.size
-
-        // Three choices: replace everything, merge by id, or cancel.
-        // Merge keeps existing rows and only adds NEW ids — safe default for
-        // "I exported from another device and want to add what I'm missing."
-        AlertDialog.Builder(this)
-            .setTitle("导入 ${parsed.size} 条服务器")
-            .setMessage(
-                "当前有 ${current.size} 条。\n" +
-                "• 覆盖：清空后只保留导入的 ${parsed.size} 条\n" +
-                "• 合并：在现有列表基础上追加新条目（id 已存在的跳过），合并后约 $mergedCount 条"
-            )
-            .setPositiveButton("合并") { _, _ -> applyImport(parsed, replace = false) }
-            .setNeutralButton("覆盖") { _, _ -> applyImport(parsed, replace = true) }
-            .setNegativeButton("取消", null)
-            .show()
-    }
-
-    private fun applyImport(imported: List<Server>, replace: Boolean) {
-        val finalList: List<Server> = if (replace) {
-            imported
-        } else {
-            val current = collect()
-            val existingIds = current.mapTo(HashSet()) { it.id }
-            current + imported.filter { it.id !in existingIds }
-        }
-        Servers.save(prefs, finalList)
-
-        // Rebuild the UI from the persisted list so the user immediately sees
-        // the result. Recreating the activity is the simplest correct option
-        // (handles row removal, prevents stale Row objects pointing at
-        // detached EditTexts).
-        Toast.makeText(this, "已导入，列表已更新（${finalList.size} 条）", Toast.LENGTH_SHORT).show()
+        // Straight replace — the whole point is "load this config". Recreate the
+        // activity so the rows rebuild cleanly from the persisted list.
+        Servers.save(prefs, parsed)
+        Toast.makeText(this, "已读取 ${parsed.size} 条配置", Toast.LENGTH_SHORT).show()
         recreate()
     }
 
-    private fun parseBackup(raw: String): List<Server> {
+    // ── Fixed-file IO: MediaStore (API 29+) / legacy File (API ≤ 28) ─────────
+
+    /**
+     * API ≤ 28 needs WRITE_EXTERNAL_STORAGE to touch public Download. Returns
+     * true if we can proceed now; false if we kicked off a permission request
+     * (the granted callback re-runs [action]). API 29+ always returns true.
+     */
+    private fun ensureLegacyPermission(action: () -> Unit): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return true
+        val perm = Manifest.permission.WRITE_EXTERNAL_STORAGE
+        if (ContextCompat.checkSelfPermission(this, perm) ==
+            PackageManager.PERMISSION_GRANTED) return true
+        pendingAction = action
+        permLauncher.launch(perm)
+        return false
+    }
+
+    /** Overwrite Download/qevos-servers.json with [text]. */
+    private fun writeDownload(text: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = contentResolver
+            val uri = findDownloadUri() ?: resolver.insert(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, CONFIG_FILENAME)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                }
+            ) ?: throw RuntimeException("无法在 Download 创建文件")
+            // "wt" truncates so an existing (possibly longer) file is overwritten.
+            resolver.openOutputStream(uri, "wt")?.use {
+                it.write(text.toByteArray(Charsets.UTF_8))
+            } ?: throw RuntimeException("无法写入文件")
+        } else {
+            @Suppress("DEPRECATION")
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!dir.exists()) dir.mkdirs()
+            File(dir, CONFIG_FILENAME).writeText(text, Charsets.UTF_8)
+        }
+    }
+
+    /** Read Download/qevos-servers.json, or null if it doesn't exist. */
+    private fun readDownload(): String? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val uri = findDownloadUri() ?: return null
+            return contentResolver.openInputStream(uri)?.use {
+                it.readBytes().toString(Charsets.UTF_8)
+            }
+        }
+        @Suppress("DEPRECATION")
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val f = File(dir, CONFIG_FILENAME)
+        return if (f.exists()) f.readText(Charsets.UTF_8) else null
+    }
+
+    /** Locate the existing config file in Download via MediaStore (API 29+). */
+    private fun findDownloadUri(): Uri? {
+        val proj = arrayOf(MediaStore.MediaColumns._ID)
+        val sel = "${MediaStore.MediaColumns.DISPLAY_NAME}=? AND " +
+                  "${MediaStore.MediaColumns.RELATIVE_PATH}=?"
+        // RELATIVE_PATH comes back with a trailing slash.
+        val args = arrayOf(CONFIG_FILENAME, "${Environment.DIRECTORY_DOWNLOADS}/")
+        contentResolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI, proj, sel, args, null
+        )?.use { c ->
+            if (c.moveToFirst()) {
+                val id = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+                return android.content.ContentUris.withAppendedId(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, id)
+            }
+        }
+        return null
+    }
+
+    private fun parseConfig(raw: String): List<Server> {
         val text = raw.trim()
         if (text.isEmpty()) throw RuntimeException("文件为空")
-        // Accept either { format, servers: [...] } (our v1 format) or a bare
-        // JSON array of server objects — so users can hand-edit a list and
-        // it'll still import.
-        val arr: JSONArray = when (val first = text[0]) {
-            '{' -> {
-                val obj = JSONObject(text)
-                if (obj.has("format") &&
-                    !obj.optString("format").startsWith("qevos-agent-servers/")) {
-                    throw RuntimeException("文件格式不识别: ${obj.optString("format")}")
-                }
-                obj.optJSONArray("servers") ?: throw RuntimeException("缺少 servers 字段")
-            }
+        // Accept our { format, servers: [...] } object or a bare array.
+        val arr: JSONArray = when (text[0]) {
+            '{' -> JSONObject(text).optJSONArray("servers")
+                ?: throw RuntimeException("缺少 servers 字段")
             '[' -> JSONArray(text)
-            else -> throw RuntimeException("不是 JSON（开头是 '$first'）")
+            else -> throw RuntimeException("不是 JSON")
         }
         val out = mutableListOf<Server>()
         for (i in 0 until arr.length()) {
@@ -301,8 +326,7 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     companion object {
-        // Bump if the schema changes incompatibly. parseBackup also accepts a
-        // bare array (no format field) for hand-edited imports.
+        private const val CONFIG_FILENAME = "qevos-servers.json"
         private const val BACKUP_FORMAT = "qevos-agent-servers/v1"
     }
 }
