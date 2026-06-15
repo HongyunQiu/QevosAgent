@@ -354,6 +354,68 @@ const PORT       = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
 // 默认只绑回环地址，避免在没有鉴权时被内网其他主机直接访问。
 // 等加上密码鉴权后，再通过 DASHBOARD_HOST=0.0.0.0 显式开放局域网。
 const HOST       = process.env.DASHBOARD_HOST || '127.0.0.1';
+
+// ── Access control: IP 白名单 / 黑名单 ──────────────────────────────────────
+// DASHBOARD_HOST 只决定 socket 绑到哪个网卡（要不要暴露到局域网）；更细的
+// 「谁能访问」由下面两个变量控制，逗号/空格分隔，支持精确 IP 或 IPv4 CIDR：
+//   DASHBOARD_ALLOW=192.168.1.0/24,10.0.0.5      白名单
+//   DASHBOARD_DENY=192.168.1.66,192.168.2.0/24   黑名单
+// 每个远端 IP 的判定顺序：
+//   1. 回环地址 (127.0.0.1 / ::1) 永远放行——避免把本机/桌面端自己锁在门外。
+//   2. 命中 DENY  → 拒绝（黑名单优先于白名单）。
+//   3. ALLOW 非空且未命中 → 拒绝（白名单模式：只放行名单内的）。
+//   4. 其余放行。
+// ALLOW 为空 = 不启用白名单，行为与旧版完全一致（DASHBOARD_HOST=0.0.0.0 时
+// 局域网全网可达）。规则里可用 `*` 表示匹配所有。
+function parseIpList(raw) {
+  return (raw || '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+}
+const ALLOW_LIST = parseIpList(process.env.DASHBOARD_ALLOW);
+const DENY_LIST  = parseIpList(process.env.DASHBOARD_DENY);
+
+// 把 IPv4-mapped IPv6 (::ffff:1.2.3.4) 还原成纯 IPv4，方便规则匹配。
+function normalizeIp(ip) {
+  if (!ip) return '';
+  const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  return m ? m[1] : ip;
+}
+function ipv4ToInt(ip) {
+  const p = String(ip).split('.');
+  if (p.length !== 4) return null;
+  let n = 0;
+  for (const part of p) {
+    const b = Number(part);
+    if (!Number.isInteger(b) || b < 0 || b > 255) return null;
+    n = (n * 256) + b;
+  }
+  return n >>> 0;
+}
+// 单条规则匹配：`*` 匹配所有；`a.b.c.d` 精确；`a.b.c.d/N` CIDR；其余按精确字符串
+// 比较（覆盖 ::1 等 IPv6 字面量）。
+function ipMatchesRule(ip, rule) {
+  if (rule === '*') return true;
+  if (rule === ip) return true;
+  const slash = rule.indexOf('/');
+  if (slash > 0) {
+    const base = ipv4ToInt(rule.slice(0, slash));
+    const bits = Number(rule.slice(slash + 1));
+    const addr = ipv4ToInt(ip);
+    if (base == null || addr == null || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    return (base & mask) === (addr & mask);
+  }
+  return false;
+}
+function ipInList(ip, list) {
+  return list.some(rule => ipMatchesRule(ip, rule));
+}
+function isIpAllowed(rawIp) {
+  const ip = normalizeIp(rawIp);
+  if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return true;
+  if (DENY_LIST.length && ipInList(ip, DENY_LIST)) return false;
+  if (ALLOW_LIST.length && !ipInList(ip, ALLOW_LIST)) return false;
+  return true;
+}
 const RUNS_DIR        = path.resolve(process.env.RUNS_DIR        || path.join(__dirname, '..', 'runs'));
 const AGENT_DIR       = path.resolve(process.env.AGENT_DIR       || path.join(__dirname, '..'));
 const SKILLS_DIR      = path.resolve(process.env.SKILLS_DIR      || path.join(AGENT_DIR, 'SKILLS'));
@@ -1537,6 +1599,11 @@ function serveStatic(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
+  if (!isIpAllowed(req.socket.remoteAddress)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('403 Forbidden: 你的 IP 不在本看板的访问名单内。');
+    return;
+  }
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
@@ -2480,7 +2547,12 @@ const server = http.createServer(async (req, res) => {
 
 // ── WebSocket ──────────────────────────────────────────────────────────────
 
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({
+  server,
+  // Apply the same allow/deny gate to the WS upgrade — otherwise a blocked IP
+  // could still stream live state over the socket.
+  verifyClient: (info, done) => done(isIpAllowed(info.req.socket.remoteAddress)),
+});
 
 wss.on('connection', ws => {
   clients.add(ws);
@@ -2552,6 +2624,8 @@ findFreePort(PORT).then(port => {
     console.log(`  🦊 QevosAgent Dashboard  v${APP_VERSION}`);
     console.log('  ─────────────────────────────────────');
     console.log(`  URL      : http://localhost:${port}${lanNote}`);
+    if (ALLOW_LIST.length) console.log(`  Allow    : ${ALLOW_LIST.join(', ')} (仅放行白名单 + 本机)`);
+    if (DENY_LIST.length)  console.log(`  Deny     : ${DENY_LIST.join(', ')} (黑名单优先拒绝)`);
     console.log(`  Runs     : ${RUNS_DIR}`);
     console.log(`  Agent    : ${AGENT_DIR}`);
     console.log(`  Python   : ${PYTHON_CMD}`);
