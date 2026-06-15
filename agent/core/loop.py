@@ -632,9 +632,36 @@ def run(
                 _mgr = state.meta.get("_async_manager")
                 _yjob = _mgr and _mgr._jobs.get(_yjob_id)
                 if _yjob and _yjob.status == _JS.RUNNING:
-                    _time.sleep(_interval)
-                    state.iteration += 1
-                    continue  # 跳过 LLM，下轮再检查
+                    # 分片 sleep，期间轮询 /stop（force_stop），以便用户能随时跳出等待。
+                    # 否则等待循环不属于任何工具执行，没人读 force_stop，/stop 会失效。
+                    _ih_w = state.meta.get("_interrupt_handler")
+                    _stop_wait = False
+                    _slept = 0.0
+                    while _slept < _interval:
+                        if _ih_w is not None and getattr(_ih_w, "force_stop", False):
+                            _ih_w.force_stop = False
+                            _stop_wait = True
+                            break
+                        _step = min(0.5, _interval - _slept)
+                        _time.sleep(_step)
+                        _slept += _step
+                    if _stop_wait:
+                        # 用户 /stop：跳出等待，注入说明后本轮直接恢复 LLM
+                        # （后台任务仍在运行，不受影响）。
+                        state.meta.pop("_yield_waiting_job", None)
+                        _append_short_term(state, {
+                            "role": "user",
+                            "content": (
+                                f"[用户干预] /stop 已中断对后台任务 `{_yjob_id}` 的等待；"
+                                f"该任务仍在后台运行，可用 job_status 查看进度。"
+                            ),
+                        })
+                        _checkpoint_state(state)
+                        # 不 continue：fall through 到本轮 LLM 调用
+                    else:
+                        state.iteration += 1
+                        _checkpoint_state(state)  # 落盘，使 dashboard 迭代数随等待跳动
+                        continue  # 跳过 LLM，下轮再检查
                 else:
                     # job 已结束（或找不到），退出 yield 模式
                     state.meta.pop("_yield_waiting_job", None)
