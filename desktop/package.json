@@ -16,6 +16,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1",
     "cronstrue": "^3.14.0",
     "node-cron": "^3.0.3",
     "ws": "^8.18.0"
@@ -29,6 +30,7 @@
     "appId": "com.qevosagent.desktop",
     "productName": "QevosAgent",
     "asar": false,
+    "npmRebuild": false,
     "afterPack": "./scripts/after-pack.js",
     "win": {
       "target": [
