@@ -2545,14 +2545,121 @@ const server = http.createServer(async (req, res) => {
   serveStatic(req, res);
 });
 
-// ── WebSocket ──────────────────────────────────────────────────────────────
+// ── Terminal (PTY over WebSocket) ───────────────────────────────────────────
+//
+// node-pty is an optional native dependency. We use the prebuilt-multiarch fork
+// so no local toolchain (node-gyp / VS Build Tools) is needed. If it still fails
+// to load — unsupported ABI, missing binary — the terminal degrades gracefully:
+// the endpoint stays up and tells the client to install it, rather than crashing
+// the whole dashboard at require time.
+let pty = null;
+let ptyLoadError = null;
+try {
+  pty = require('@homebridge/node-pty-prebuilt-multiarch');
+} catch (e) {
+  ptyLoadError = e;
+  console.warn('  ⚠ 终端不可用：node-pty 加载失败 —', e.message);
+}
 
-const wss = new WebSocket.Server({
-  server,
-  // Apply the same allow/deny gate to the WS upgrade — otherwise a blocked IP
-  // could still stream live state over the socket.
-  verifyClient: (info, done) => done(isIpAllowed(info.req.socket.remoteAddress)),
+// Default shell per platform. powershell.exe is always present on Windows;
+// elsewhere honour $SHELL, falling back to bash → sh.
+function defaultShell() {
+  if (process.env.TERMINAL_SHELL) return process.env.TERMINAL_SHELL;
+  if (os.platform() === 'win32')  return 'powershell.exe';
+  return process.env.SHELL || 'bash';
+}
+
+// Protocol:
+//   client → server : JSON  {type:'start',cols,rows} | {type:'input',data} | {type:'resize',cols,rows}
+//   server → client : raw text frames = terminal output; socket closes on exit.
+function handleTerminalConnection(ws) {
+  if (!pty) {
+    try { ws.send(`\r\n\x1b[31m终端不可用：node-pty 未能加载。\x1b[0m\r\n` +
+                  `请在 dashboard/ 目录执行: npm install\r\n` +
+                  (ptyLoadError ? `(${ptyLoadError.message})\r\n` : '')); } catch {}
+    ws.close();
+    return;
+  }
+
+  let term = null;
+  const startCwd = process.env.TERMINAL_CWD || os.homedir();
+
+  const start = (cols, rows) => {
+    if (term) return;
+    const shell = defaultShell();
+    try {
+      const opts = {
+        name: 'xterm-256color',
+        cols: cols || 80,
+        rows: rows || 24,
+        cwd: startCwd,
+        env: { ...process.env, TERM: 'xterm-256color' },
+      };
+      // Windows: keep ConPTY (the default). winpty was tried as an alternative
+      // but produces NO output when the host process has no attached console —
+      // which is exactly the case for a GUI Electron app. ConPTY works fine
+      // there. Its only quirk: the console-list helper (conpty_console_list_agent)
+      // calls AttachConsole and crashes a short-lived CHILD process on each PTY
+      // kill when there's no console. That is cosmetic stderr noise — it neither
+      // crashes the server nor stops the kill — so we let it be.
+      term = pty.spawn(shell, [], opts);
+    } catch (e) {
+      try { ws.send(`\r\n\x1b[31m无法启动 shell (${shell}): ${e.message}\x1b[0m\r\n`); } catch {}
+      ws.close();
+      return;
+    }
+    term.onData(data => { try { ws.send(data); } catch {} });
+    term.onExit(({ exitCode }) => {
+      try { ws.send(`\r\n\x1b[90m[进程已退出，code ${exitCode}]\x1b[0m\r\n`); } catch {}
+      try { ws.close(); } catch {}
+    });
+  };
+
+  ws.on('message', raw => {
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.type === 'start')       start(msg.cols, msg.rows);
+    else if (msg.type === 'input')  { if (term) term.write(msg.data); }
+    else if (msg.type === 'resize') { if (term && msg.cols && msg.rows) { try { term.resize(msg.cols, msg.rows); } catch {} } }
+  });
+
+  const dispose = () => { if (term) { try { term.kill(); } catch {} term = null; } };
+  ws.on('close', dispose);
+  ws.on('error', dispose);
+}
+
+// ── WebSocket ──────────────────────────────────────────────────────────────
+//
+// Two WS endpoints share the one HTTP server:
+//   • default path  → live state stream (broadcast, one-to-many)
+//   • /ws/term      → interactive terminal (per-client PTY, two-way)
+//
+// Both run in `noServer` mode so a single `upgrade` handler can apply the SAME
+// isIpAllowed() gate before routing by path. The terminal is deliberately gated
+// no more strictly than the rest of the dashboard: the file-manager tab already
+// exposes the whole filesystem to anyone past the IP gate, so a shell is an
+// equivalent exposure, not a greater one. LAN exposure is governed solely by
+// DASHBOARD_HOST (bind address) + DASHBOARD_ALLOW/DENY, exactly like everything
+// else.
+
+const wss     = new WebSocket.Server({ noServer: true });
+const termWss = new WebSocket.Server({ noServer: true });
+
+server.on('upgrade', (req, socket, head) => {
+  if (!isIpAllowed(req.socket.remoteAddress)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  const pathName = req.url.split('?')[0];
+  if (pathName === '/ws/term') {
+    termWss.handleUpgrade(req, socket, head, ws => termWss.emit('connection', ws, req));
+  } else {
+    wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+  }
 });
+
+termWss.on('connection', handleTerminalConnection);
 
 wss.on('connection', ws => {
   clients.add(ws);

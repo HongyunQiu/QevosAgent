@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>QevosAgent · 终端</title>
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; background: #1e1e1e; }
+    #bar {
+      display: flex; align-items: center; gap: 10px;
+      font: 12px/1.6 system-ui, "Segoe UI", sans-serif;
+      color: #cfcfcf; padding: 6px 10px; background: #252526;
+      border-bottom: 1px solid #333;
+    }
+    #bar .dot { width: 9px; height: 9px; border-radius: 50%; background: #777; flex: none; }
+    #bar .dot.on  { background: #2ecc71; }
+    #bar .dot.off { background: #e74c3c; }
+    #bar .spacer { flex: 1; }
+    #bar button {
+      font: 12px system-ui; color: #ddd; background: #333; border: 1px solid #444;
+      border-radius: 4px; padding: 3px 10px; cursor: pointer;
+    }
+    #bar button:hover { background: #3c3c3c; }
+    #term { position: absolute; left: 0; right: 0; top: 33px; bottom: 0; padding: 6px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <span class="dot" id="dot"></span>
+    <span id="status">连接中…</span>
+    <span class="spacer"></span>
+    <button id="reconnect">重新连接</button>
+  </div>
+  <div id="term"></div>
+
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/xterm/addon-fit.js"></script>
+  <script>
+    const dotEl = document.getElementById('dot');
+    const statusEl = document.getElementById('status');
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: 'Consolas, "Cascadia Mono", Menlo, monospace',
+      fontSize: 14,
+      theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById('term'));
+    fit.fit();
+
+    let ws = null;
+
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      dotEl.className = 'dot' + (cls ? ' ' + cls : '');
+    }
+
+    function send(obj) {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+    }
+
+    function connect() {
+      if (ws) { try { ws.close(); } catch {} }
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(`${proto}://${location.host}/ws/term`);
+      setStatus('连接中…');
+
+      ws.onopen = () => {
+        setStatus('已连接', 'on');
+        fit.fit();
+        send({ type: 'start', cols: term.cols, rows: term.rows });
+        term.focus();
+      };
+      // Terminal output arrives as raw text frames.
+      ws.onmessage = ev => term.write(ev.data);
+      ws.onclose = () => setStatus('已断开', 'off');
+      ws.onerror = () => setStatus('连接出错', 'off');
+    }
+
+    term.onData(data => send({ type: 'input', data }));
+
+    function doFit() {
+      // When hosted in a hidden tab pane the iframe is 0×0; skip until it has size.
+      if (!document.getElementById('term').clientWidth) return;
+      fit.fit();
+      send({ type: 'resize', cols: term.cols, rows: term.rows });
+    }
+    window.addEventListener('resize', doFit);
+    // Re-fit whenever the iframe gains/changes size — e.g. the tab pane is shown
+    // (0×0 → real size) or the surrounding panel is resized. window 'resize'
+    // alone never fires for these.
+    new ResizeObserver(() => doFit()).observe(document.getElementById('term'));
+    document.getElementById('reconnect').addEventListener('click', connect);
+
+    connect();
+  </script>
+</body>
+</html>
