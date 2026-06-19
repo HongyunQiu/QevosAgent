@@ -2551,16 +2551,69 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── Terminal session control API (used by the agent's terminal_* tools) ────
+  if (req.method === 'GET' && req.url === '/api/term') {
+    json(200, { sessions: [...termSessions.values()].map(s => ({
+      id: s.id, title: s.title, cwd: s.cwd, cols: s.cols, rows: s.rows,
+      owner: s.owner, alive: s.alive, subscribers: s.subscribers.size,
+    })) });
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/api/term') {
+    let body = {}; try { body = JSON.parse(await readBody(req) || '{}'); } catch {}
+    const s = createTermSession({ title: body.title, cols: body.cols, rows: body.rows, cwd: body.cwd });
+    if (s.error) { json(503, { error: s.error }); return; }
+    // Nudge open browsers to surface a tab for this agent-created session.
+    for (const c of clients) { try { c.send(JSON.stringify({ type: 'open-terminal', id: s.id, title: s.title })); } catch {} }
+    json(200, { id: s.id, title: s.title });
+    return;
+  }
+  const termInputMatch = req.url.match(/^\/api\/term\/([^/?]+)\/input$/);
+  if (req.method === 'POST' && termInputMatch) {
+    const sess = termSessions.get(termInputMatch[1]);
+    if (!sess) { json(404, { error: 'no such session' }); return; }
+    let body = {}; try { body = JSON.parse(await readBody(req) || '{}'); } catch {}
+    try { sess.pty.write(body.data || ''); } catch (e) { json(500, { error: e.message }); return; }
+    json(200, { ok: true, seq: sess.totalSeq });
+    return;
+  }
+  const termOutMatch = req.url.match(/^\/api\/term\/([^/?]+)\/output(?:\?.*)?$/);
+  if (req.method === 'GET' && termOutMatch) {
+    const sess = termSessions.get(termOutMatch[1]);
+    if (!sess) { json(404, { error: 'no such session' }); return; }
+    const since = new URL(req.url, 'http://x').searchParams.get('since');
+    const r = termReadSince(sess, since);
+    json(200, { data: r.data, seq: r.seq, alive: sess.alive, owner: sess.owner });
+    return;
+  }
+  const termOwnerMatch = req.url.match(/^\/api\/term\/([^/?]+)\/owner$/);
+  if (req.method === 'POST' && termOwnerMatch) {
+    let body = {}; try { body = JSON.parse(await readBody(req) || '{}'); } catch {}
+    if (!setTermOwner(termOwnerMatch[1], body.who)) { json(404, { error: 'no such session' }); return; }
+    json(200, { ok: true });
+    return;
+  }
+  const termKillMatch = req.url.match(/^\/api\/term\/([^/?]+)$/);
+  if (req.method === 'DELETE' && termKillMatch) {
+    json(200, { ok: killTermSession(termKillMatch[1]) });
+    return;
+  }
+
   serveStatic(req, res);
 });
 
-// ── Terminal (PTY over WebSocket) ───────────────────────────────────────────
+// ── Terminal (named, shareable PTY sessions) ────────────────────────────────
 //
-// node-pty is an optional native dependency. We use the prebuilt-multiarch fork
-// so no local toolchain (node-gyp / VS Build Tools) is needed. If it still fails
-// to load — unsupported ABI, missing binary — the terminal degrades gracefully:
-// the endpoint stays up and tells the client to install it, rather than crashing
-// the whole dashboard at require time.
+// A terminal is a *named session* (id) that any number of browser tabs AND the
+// agent (over HTTP /api/term) can attach to at once — so the agent and the user
+// drive the SAME shell and watch each other. Each session keeps a ring buffer of
+// recent output so a (re)attaching client or the agent can read history, and an
+// `owner` flag ('user'|'agent') that the UI uses to tint the background when the
+// agent is "holding the mic".
+//
+// node-pty is an optional native dependency (prebuilt-multiarch fork — no local
+// toolchain needed). If it fails to load, the terminal degrades gracefully: the
+// endpoint stays up and tells the client to install it.
 let pty = null;
 let ptyLoadError = null;
 try {
@@ -2578,63 +2631,135 @@ function defaultShell() {
   return process.env.SHELL || 'bash';
 }
 
-// Protocol:
-//   client → server : JSON  {type:'start',cols,rows} | {type:'input',data} | {type:'resize',cols,rows}
-//   server → client : raw text frames = terminal output; socket closes on exit.
+const TERM_BUF_MAX = 200000;          // chars of output kept per session
+const termSessions = new Map();        // id → session
+let   termSeq      = 0;
+const nextTermId = () => 't' + (++termSeq) + '-' + Date.now().toString(36);
+
+function termBroadcast(sess, obj) {
+  const msg = JSON.stringify(obj);
+  for (const ws of sess.subscribers) { try { ws.send(msg); } catch {} }
+}
+
+// Create a new PTY-backed session. Returns the session, or { error } on failure.
+function createTermSession({ title, cols, rows, cwd } = {}) {
+  if (!pty) return { error: ptyLoadError ? ptyLoadError.message : 'node-pty 不可用' };
+  const startCwd = cwd || process.env.TERMINAL_CWD || os.homedir();
+  const shell = defaultShell();
+  let term;
+  try {
+    term = pty.spawn(shell, [], {
+      name: 'xterm-256color',
+      cols: cols || 80, rows: rows || 24,
+      cwd: startCwd,
+      // Windows: keep ConPTY (default). winpty produces no output when the host
+      // has no attached console (the GUI Electron case). ConPTY works there; its
+      // only quirk is a cosmetic AttachConsole crash in a child on kill.
+      env: { ...process.env, TERM: 'xterm-256color' },
+    });
+  } catch (e) { return { error: e.message }; }
+
+  const sess = {
+    id: nextTermId(), pty: term,
+    title: title || 'Terminal',
+    cwd: startCwd, cols: cols || 80, rows: rows || 24,
+    buf: '', totalSeq: 0,            // ring buffer + absolute char counter
+    subscribers: new Set(),          // attached browser WS clients
+    owner: 'user', alive: true,
+  };
+  term.onData(data => {
+    sess.buf += data;
+    if (sess.buf.length > TERM_BUF_MAX) sess.buf = sess.buf.slice(-TERM_BUF_MAX);
+    sess.totalSeq += data.length;
+    termBroadcast(sess, { type: 'output', data });
+  });
+  term.onExit(({ exitCode }) => {
+    sess.alive = false;
+    termBroadcast(sess, { type: 'exit', code: exitCode });
+    termSessions.delete(sess.id);
+  });
+  termSessions.set(sess.id, sess);
+  return sess;
+}
+
+// Read output recorded at/after absolute offset `since`. Clamps to the start of
+// the (capped) ring buffer when `since` is older than what we still hold.
+function termReadSince(sess, since) {
+  const bufStart = sess.totalSeq - sess.buf.length;
+  const from = Math.max(0, (Number(since) || 0) - bufStart);
+  return { data: sess.buf.slice(from), seq: sess.totalSeq };
+}
+
+function killTermSession(id) {
+  const sess = termSessions.get(id);
+  if (!sess) return false;
+  try { sess.pty.kill(); } catch {}
+  sess.alive = false;
+  termSessions.delete(id);
+  return true;
+}
+
+// Flip the "mic" owner and tell every attached client so the UI can tint.
+function setTermOwner(id, who) {
+  const sess = termSessions.get(id);
+  if (!sess) return false;
+  sess.owner = (who === 'agent') ? 'agent' : 'user';
+  termBroadcast(sess, { type: 'owner', who: sess.owner });
+  return true;
+}
+
+// Browser WS protocol:
+//   client → server : {type:'start', id?, cols, rows, title?}  (attach if id known, else create)
+//                     {type:'input', data} | {type:'resize',cols,rows} | {type:'kill'}
+//   server → client : {type:'session', id, title, owner}  (once, on attach; followed by buffered history)
+//                     {type:'output', data} | {type:'owner', who} | {type:'exit', code}
 function handleTerminalConnection(ws) {
   if (!pty) {
-    try { ws.send(`\r\n\x1b[31m终端不可用：node-pty 未能加载。\x1b[0m\r\n` +
-                  `请在 dashboard/ 目录执行: npm install\r\n` +
-                  (ptyLoadError ? `(${ptyLoadError.message})\r\n` : '')); } catch {}
+    try { ws.send(JSON.stringify({ type: 'output',
+      data: `\r\n\x1b[31m终端不可用：node-pty 未能加载。\x1b[0m\r\n请在 dashboard/ 目录执行: npm install\r\n` +
+            (ptyLoadError ? `(${ptyLoadError.message})\r\n` : '') })); } catch {}
     ws.close();
     return;
   }
 
-  let term = null;
-  const startCwd = process.env.TERMINAL_CWD || os.homedir();
-
-  const start = (cols, rows) => {
-    if (term) return;
-    const shell = defaultShell();
-    try {
-      const opts = {
-        name: 'xterm-256color',
-        cols: cols || 80,
-        rows: rows || 24,
-        cwd: startCwd,
-        env: { ...process.env, TERM: 'xterm-256color' },
-      };
-      // Windows: keep ConPTY (the default). winpty was tried as an alternative
-      // but produces NO output when the host process has no attached console —
-      // which is exactly the case for a GUI Electron app. ConPTY works fine
-      // there. Its only quirk: the console-list helper (conpty_console_list_agent)
-      // calls AttachConsole and crashes a short-lived CHILD process on each PTY
-      // kill when there's no console. That is cosmetic stderr noise — it neither
-      // crashes the server nor stops the kill — so we let it be.
-      term = pty.spawn(shell, [], opts);
-    } catch (e) {
-      try { ws.send(`\r\n\x1b[31m无法启动 shell (${shell}): ${e.message}\x1b[0m\r\n`); } catch {}
-      ws.close();
-      return;
-    }
-    term.onData(data => { try { ws.send(data); } catch {} });
-    term.onExit(({ exitCode }) => {
-      try { ws.send(`\r\n\x1b[90m[进程已退出，code ${exitCode}]\x1b[0m\r\n`); } catch {}
-      try { ws.close(); } catch {}
-    });
+  let sess = null;
+  const attach = (s) => {
+    sess = s;
+    s.subscribers.add(ws);
+    ws.send(JSON.stringify({ type: 'session', id: s.id, title: s.title, owner: s.owner }));
+    if (s.buf) ws.send(JSON.stringify({ type: 'output', data: s.buf }));  // replay history
   };
 
   ws.on('message', raw => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-    if (msg.type === 'start')       start(msg.cols, msg.rows);
-    else if (msg.type === 'input')  { if (term) term.write(msg.data); }
-    else if (msg.type === 'resize') { if (term && msg.cols && msg.rows) { try { term.resize(msg.cols, msg.rows); } catch {} } }
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.type === 'start') {
+      if (sess) return;
+      let s = msg.id ? termSessions.get(msg.id) : null;
+      if (!s) {
+        s = createTermSession({ title: msg.title, cols: msg.cols, rows: msg.rows });
+        if (s.error) {
+          try { ws.send(JSON.stringify({ type: 'output', data: `\r\n\x1b[31m无法启动 shell: ${s.error}\x1b[0m\r\n` })); } catch {}
+          ws.close(); return;
+        }
+      }
+      attach(s);
+    } else if (msg.type === 'input') {
+      if (sess && sess.alive) { try { sess.pty.write(msg.data); } catch {} }
+    } else if (msg.type === 'resize') {
+      if (sess && sess.alive && msg.cols && msg.rows) {
+        try { sess.pty.resize(msg.cols, msg.rows); sess.cols = msg.cols; sess.rows = msg.rows; } catch {}
+      }
+    } else if (msg.type === 'kill') {
+      if (sess) killTermSession(sess.id);
+    }
   });
 
-  const dispose = () => { if (term) { try { term.kill(); } catch {} term = null; } };
-  ws.on('close', dispose);
-  ws.on('error', dispose);
+  // A closing tab only DETACHES — the session lives on so the agent (or a
+  // reopened tab) can keep using it. Explicit teardown is {type:'kill'} or
+  // DELETE /api/term/:id; PTY exit reaps it.
+  const detach = () => { if (sess) sess.subscribers.delete(ws); };
+  ws.on('close', detach);
+  ws.on('error', detach);
 }
 
 // ── WebSocket ──────────────────────────────────────────────────────────────

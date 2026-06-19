@@ -2619,6 +2619,166 @@ def tool_ssh_execute(state: AgentState, **kwargs) -> ToolResult:
         return ToolResult(success=False, output="", error=f"{type(e).__name__}: {e}")
 
 
+# ── Shared built-in terminal (人机共用) ─────────────────────────────────────
+# These drive the dashboard's named PTY sessions over HTTP (/api/term/*), the
+# SAME sessions the user sees and types into. So the agent and the user share one
+# shell: the agent's commands run live in the user's visible terminal, and while
+# the agent is "holding the mic" that terminal tints + shows "🤖 Agent 操作中".
+#
+# Difference from `shell`: `shell` is one-shot and private (a fresh hidden
+# subprocess each call, no session state, no human visibility). Use the terminal
+# tools when state must persist across commands (cd / activated env / an ssh
+# session) or when the user should watch / be able to take over.
+
+_ANSI_RE = None
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI/VT escape sequences so the model reads clean text."""
+    global _ANSI_RE
+    if _ANSI_RE is None:
+        import re as _re
+        # CSI sequences, OSC sequences, and stray single-char escapes.
+        _ANSI_RE = _re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+    return _ANSI_RE.sub("", text or "").replace("\r\n", "\n").replace("\r", "")
+
+
+def _term_api(method: str, path: str, body=None, timeout: float = 10):
+    """Call the dashboard terminal API at http://localhost:DASHBOARD_PORT."""
+    import urllib.request as _ur
+    import urllib.error as _ue
+    port = os.environ.get("DASHBOARD_PORT", "8765")
+    url = f"http://localhost:{port}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = _ur.Request(url, data=data, headers={"Content-Type": "application/json"}, method=method)
+    try:
+        with _ur.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode("utf-8", "replace")
+            return json.loads(raw) if raw else {}
+    except _ue.HTTPError as e:
+        try:
+            return json.loads(e.read().decode("utf-8", "replace"))
+        except Exception:
+            return {"error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def tool_terminal_list(state: AgentState) -> ToolResult:
+    """列出所有内置终端会话（id / 标题 / cwd / owner / 是否存活）。
+
+    用于发现用户已经打开的终端，以便用 terminal_run/send 在其中操作。
+    """
+    r = _term_api("GET", "/api/term")
+    if "error" in r:
+        return ToolResult(success=False, output=None, error=r["error"])
+    return ToolResult(success=True, output=r.get("sessions", []))
+
+
+def tool_terminal_open(state: AgentState, title: str = "Agent") -> ToolResult:
+    """新建一个共享终端会话，用户界面会自动出现对应 Tab。返回 {id, title}。"""
+    r = _term_api("POST", "/api/term", {"title": title})
+    if "error" in r:
+        return ToolResult(success=False, output=None, error=r["error"])
+    return ToolResult(success=True, output={"id": r.get("id"), "title": r.get("title")})
+
+
+def tool_terminal_send(state: AgentState, id: str, text: str, submit: bool = True) -> ToolResult:
+    """向指定终端会话输入文本（submit=True 时自动追加回车提交），不等待输出立即返回。
+
+    适合交互式场景：应答提示符、向 REPL/ssh 会话喂输入。需要看结果时配合 terminal_read，
+    或直接用 terminal_run 一步到位。
+    """
+    data = text + ("\r" if submit else "")
+    r = _term_api("POST", f"/api/term/{id}/input", {"data": data})
+    if "error" in r:
+        return ToolResult(success=False, output=None, error=r["error"])
+    return ToolResult(success=True, output={"sent": True, "seq": r.get("seq")})
+
+
+def tool_terminal_read(state: AgentState, id: str, since: int = 0) -> ToolResult:
+    """读取终端会话自 since 偏移以来的输出（已去 ANSI）。返回 {output, seq, owner, alive}。
+
+    返回的 seq 可作为下次调用的 since，实现增量读取（只取新输出）。
+    """
+    r = _term_api("GET", f"/api/term/{id}/output?since={int(since)}")
+    if "error" in r:
+        return ToolResult(success=False, output=None, error=r["error"])
+    return ToolResult(success=True, output={
+        "output": _strip_ansi(r.get("data", "")),
+        "seq": r.get("seq"), "owner": r.get("owner"), "alive": r.get("alive"),
+    })
+
+
+def tool_terminal_run(state: AgentState, id: str, command: str, timeout: int = 60) -> ToolResult:
+    """在共享终端会话里执行一条命令并等待结束，返回干净输出与退出码 {output, exit_code}。
+
+    执行过程实时显示在用户可见的终端里；期间该终端背景变色并标注“🤖 Agent 操作中”，
+    结束后恢复。与 shell 不同：会话状态（cd / 激活的环境 / ssh 连接）在多次调用间保留。
+    底层用哨兵标记判定命令结束。timeout 为最长等待秒数（默认 60）。
+    """
+    import time as _time
+    import re as _re
+    import uuid as _uuid
+
+    timeout = int(timeout) if timeout and int(timeout) > 0 else 60
+    token = _uuid.uuid4().hex[:12]
+
+    base = _term_api("GET", f"/api/term/{id}/output?since=0")
+    if "error" in base:
+        return ToolResult(success=False, output=None, error=base["error"])
+    since = base.get("seq", 0)
+
+    _term_api("POST", f"/api/term/{id}/owner", {"who": "agent"})
+    try:
+        # Token comes BEFORE the exit code: in PowerShell `$LASTEXITCODE:foo`
+        # parses as the $scope:var syntax and swallows both, so the exit-code
+        # variable must not be immediately followed by `:literal`. Braces on
+        # ${LASTEXITCODE} keep it parsing cleanly.
+        if os.name == "nt":
+            wrapped = f'{command}; Write-Output "<<QEVOS_DONE:{token}:${{LASTEXITCODE}}>>"\r'
+        else:
+            wrapped = f'{command}; echo "<<QEVOS_DONE:{token}:$?>>"\r'
+        snd = _term_api("POST", f"/api/term/{id}/input", {"data": wrapped})
+        if "error" in snd:
+            return ToolResult(success=False, output=None, error=snd["error"])
+
+        marker = _re.compile(r"<<QEVOS_DONE:" + token + r":(-?\d*)>>")
+        deadline = _time.time() + timeout
+        acc = ""
+        code = None
+        done = False
+        while _time.time() < deadline:
+            r = _term_api("GET", f"/api/term/{id}/output?since={since}")
+            if "error" in r:
+                return ToolResult(success=False, output=None, error=r["error"])
+            if r.get("data"):
+                acc += r["data"]
+                since = r.get("seq", since)
+            m = marker.search(acc)
+            if m:
+                code = int(m.group(1)) if m.group(1) not in (None, "") else None
+                acc = acc[:m.start()]
+                done = True
+                break
+            if not r.get("alive", True):
+                break
+            _time.sleep(0.4)
+
+        clean = _strip_ansi(acc)
+        # Drop the echoed wrapped-command line (it contains the unique token).
+        clean = "\n".join(ln for ln in clean.split("\n") if token not in ln).strip("\n")
+        if not done:
+            return ToolResult(
+                success=False,
+                output={"output": clean, "exit_code": None, "timed_out": True},
+                error="命令超时未完成（终端仍在运行，可用 terminal_read 继续观察）",
+            )
+        return ToolResult(success=True, output={"output": clean, "exit_code": code})
+    finally:
+        _term_api("POST", f"/api/term/{id}/owner", {"who": "user"})
+
+
 def get_standard_tools() -> dict[str, ToolSpec]:
     """返回标准工具集（直接传给 agent.run()）。"""
     specs = [
@@ -2695,6 +2855,56 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "timeout": "（可选）超时秒数，默认 30s；耗时操作（下载/编译/解压）请显式设置，如 300 或 600",
             },
             fn=tool_shell,
+        ),
+        ToolSpec(
+            name="terminal_run",
+            description=(
+                "在【用户可见、人机共用】的内置终端会话里执行一条命令并等待结束，返回 {output, exit_code}。"
+                "与 shell 的区别：会话状态（cd / 激活的虚拟环境 / ssh 连接等）在多次调用间保留，"
+                "且执行过程用户能实时看到、随时接管；期间该终端会变色标注“Agent 操作中”。"
+                "需要持久会话或希望用户旁观/协作时用它；一次性私有命令用 shell。"
+                "没有可用会话时先用 terminal_open 新建（用户界面会自动出现该终端）。"
+            ),
+            args_schema={
+                "id": "终端会话 id（来自 terminal_list / terminal_open）",
+                "command": "要执行的命令字符串",
+                "timeout": "（可选）最长等待秒数，默认 60",
+            },
+            fn=tool_terminal_run,
+        ),
+        ToolSpec(
+            name="terminal_open",
+            description="新建一个共享终端会话，用户界面会自动出现对应 Tab。返回 {id, title}。",
+            args_schema={"title": "（可选）终端标题，默认 'Agent'"},
+            fn=tool_terminal_open,
+        ),
+        ToolSpec(
+            name="terminal_list",
+            description="列出当前所有内置终端会话（id/标题/cwd/owner/是否存活），用于发现用户已打开的终端。",
+            args_schema={},
+            fn=tool_terminal_list,
+        ),
+        ToolSpec(
+            name="terminal_send",
+            description=(
+                "向共享终端会话输入文本（submit=True 自动追加回车），不等待输出立即返回。"
+                "适合交互式应答：提示符、密码、REPL/ssh 会话喂输入。需要看结果配合 terminal_read。"
+            ),
+            args_schema={
+                "id": "终端会话 id",
+                "text": "要输入的文本",
+                "submit": "（可选）是否自动回车提交，默认 true",
+            },
+            fn=tool_terminal_send,
+        ),
+        ToolSpec(
+            name="terminal_read",
+            description="读取共享终端会话自 since 偏移以来的输出（已去 ANSI）。返回 {output, seq, owner, alive}；seq 可作下次 since 实现增量读。",
+            args_schema={
+                "id": "终端会话 id",
+                "since": "（可选）起始偏移，默认 0（从头读）；传上次返回的 seq 可只取新输出",
+            },
+            fn=tool_terminal_read,
         ),
         ToolSpec(
             name="write_file",

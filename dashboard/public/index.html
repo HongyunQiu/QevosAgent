@@ -827,6 +827,8 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 .center-tab:hover { color:var(--text); }
 .center-tab.active { color:var(--blue); border-bottom-color:var(--blue); }
+.center-tab.term-agent { color:var(--blue); }
+.center-tab.term-agent .ttab-label::before { content:'🤖 '; }
 .center-tab-add { font-size:15px; font-weight:400; padding:0 5px; }
 .center-tab-add.icon-add { display:inline-flex; align-items:center; justify-content:center; padding:0 5px; }
 .center-tab-add.icon-add svg { width:15px; height:15px; display:block; }
@@ -2150,6 +2152,9 @@ function handleMsg(msg) {
     if (!w || w.closed || typeof w.closed === 'undefined') {
       showOpenViewPrompt(msg.title || msg.displayId, url, msg.displayId);
     }
+  } else if (msg.type === 'open-terminal') {
+    // The agent created a shared terminal — surface a tab so the user can watch.
+    openTerminalTab({ sessionId: msg.id, title: msg.title });
   }
 }
 
@@ -3637,10 +3642,19 @@ function setCenterTab(name) {
 // server kill the backing PTY (handled in dashboard/server.js). Terminals are
 // intentionally NOT persisted — a PTY can't survive a page reload.
 let gTermSeq = 0;
-function newTerminalTab() {
+
+// Open a terminal tab. opts.sessionId attaches to an existing (e.g. agent-created)
+// shared session; omit to create a fresh one — the server assigns the id, which
+// the iframe reports back via a qv-session postMessage.
+function openTerminalTab(opts = {}) {
+  if (opts.sessionId) {
+    const existing = [...document.querySelectorAll('[id^=ctab-term-]')]
+      .find(b => b.dataset.sessionId === opts.sessionId);
+    if (existing) { setCenterTab(existing.id.replace('ctab-', '')); return; }
+  }
   gTermSeq += 1;
   const id  = 'term-' + Date.now() + '-' + gTermSeq;
-  const lbl = 'Terminal ' + gTermSeq;
+  const lbl = opts.title || ('Terminal ' + gTermSeq);
 
   const strip = document.querySelector('.center-tab-strip');
   const gap   = strip.querySelector('#ctab-addDir') || strip.querySelector('.bar-gap');
@@ -3648,7 +3662,8 @@ function newTerminalTab() {
 
   const btn = document.createElement('button');
   btn.className = 'center-tab'; btn.id = 'ctab-' + id;
-  btn.innerHTML = esc(lbl) + ' <span class="ctab-close" title="Close terminal">✕</span>';
+  if (opts.sessionId) btn.dataset.sessionId = opts.sessionId;
+  btn.innerHTML = '<span class="ttab-label">' + esc(lbl) + '</span> <span class="ctab-close" title="Close terminal">✕</span>';
   btn.querySelector('.ctab-close').addEventListener('click', e => { e.stopPropagation(); closeTerminalTab(id); });
   btn.addEventListener('click', () => setCenterTab(id));
   strip.insertBefore(btn, gap);
@@ -3656,20 +3671,43 @@ function newTerminalTab() {
   const pane = document.createElement('div');
   pane.className = 'center-pane'; pane.id = 'cpane-' + id;
   const frame = document.createElement('iframe');
-  frame.src = '/terminal.html';
+  frame.src = opts.sessionId ? ('/terminal.html?id=' + encodeURIComponent(opts.sessionId)) : '/terminal.html';
   frame.style.cssText = 'border:0;width:100%;height:100%;flex:1;background:#1e1e1e';
   pane.appendChild(frame);
   panel.appendChild(pane);
 
   setCenterTab(id);
 }
+function newTerminalTab() { openTerminalTab(); }
 
 function closeTerminalTab(id) {
   const wasActive = gCenterTab === id;
+  const pane  = document.getElementById('cpane-' + id);
+  const frame = pane && pane.querySelector('iframe');
+  // ws close only DETACHES now (so the agent/other tabs keep the session). The
+  // ✕ means "close this terminal", so explicitly kill the backing session.
+  try { frame && frame.contentWindow && frame.contentWindow.killSession && frame.contentWindow.killSession(); } catch {}
   document.getElementById('ctab-' + id)?.remove();
-  document.getElementById('cpane-' + id)?.remove();  // removing the iframe closes its WS → server kills the PTY
+  pane?.remove();
   if (wasActive) setCenterTab('events');
 }
+
+// Bridge postMessages from terminal.html iframes: capture each tab's backing
+// session id, and reflect the "agent holding the mic" state onto the tab.
+window.addEventListener('message', e => {
+  const m = e.data;
+  if (!m || typeof m !== 'object') return;
+  const btns = [...document.querySelectorAll('[id^=ctab-term-]')];
+  if (m.type === 'qv-session') {
+    for (const b of btns) {
+      const f = document.getElementById('cpane-' + b.id.replace('ctab-', ''))?.querySelector('iframe');
+      if (f && f.contentWindow === e.source) { b.dataset.sessionId = m.id; break; }
+    }
+  } else if (m.type === 'qv-owner') {
+    const b = btns.find(x => x.dataset.sessionId === m.id);
+    if (b) b.classList.toggle('term-agent', m.who === 'agent');
+  }
+});
 
 // ── Apps (user-space executable programs) ──────────────────────────────────
 let gApps        = [];      // [{id,name,icon,description,runtime,enabled,size}]
