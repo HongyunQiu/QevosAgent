@@ -707,6 +707,29 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
   text-transform: uppercase; opacity: 0.65; display: block; margin-bottom: 2px;
 }
 .ask-banner-q { word-break: break-word; }
+.ask-banner-toggle {
+  flex-shrink: 0; align-self: flex-start; margin-left: auto;
+  background: none; border: none; cursor: pointer; color: inherit;
+  opacity: 0.6; font-size: 11px; line-height: 1; padding: 2px 4px;
+  transition: transform 0.15s, opacity 0.15s;
+}
+.ask-banner-toggle:hover { opacity: 1; }
+/* Collapsed: shrink to a tiny pill in the bottom-right corner (just 💬 + caret)
+   instead of a full-width bar, so the area above — e.g. the terminal's bottom
+   input line — is no longer covered. */
+.ask-banner.collapsed {
+  left: auto; right: 8px;
+  padding: 0; gap: 0; line-height: 1;
+  border: 1px solid rgba(227,179,65,0.45); border-bottom: none;
+  border-radius: 5px 5px 0 0;   /* tiny tab flush atop the cmdbar */
+}
+.ask-banner.collapsed.nostop-idle { border-color: rgba(63,185,80,0.5); }
+.ask-banner.collapsed .ask-banner-icon,
+.ask-banner.collapsed .ask-banner-body { display: none; }
+.ask-banner.collapsed .ask-banner-toggle {
+  transform: rotate(-90deg); margin: 0; padding: 1px 6px;
+  font-size: 12px; opacity: 0.85;
+}
 
 /* Cmdbar highlight when awaiting input */
 .cmdbar.awaiting {
@@ -1787,6 +1810,8 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
         <span class="ask-banner-label">Agent is asking you</span>
         <span class="ask-banner-q" id="askBannerQ"></span>
       </div>
+      <button class="ask-banner-toggle" id="askBannerToggle" type="button"
+              title="收起 / 展开" aria-label="收起或展开提问" onclick="toggleAskBanner()">▾</button>
     </div>
     <span class="cmd-prompt" id="cmdPrompt">›</span>
     <input class="cmd-input" id="cmdInput"
@@ -2699,6 +2724,24 @@ function renderMainArea(data) {
 }
 
 
+// The ask banner can be collapsed (to a thin strip) so it stops covering the
+// area above it — notably the terminal's bottom input line. The collapse is
+// sticky across the 500ms state polls, but a NEW question (or a state-branch
+// change) re-expands it automatically. `gAskBannerKey` identifies "which prompt"
+// is showing; when it changes we clear the collapse.
+let gAskBannerCollapsed = false;
+let gAskBannerKey       = null;
+
+function toggleAskBanner() {
+  gAskBannerCollapsed = !gAskBannerCollapsed;
+  document.getElementById('askBanner').classList.toggle('collapsed', gAskBannerCollapsed);
+}
+
+function applyAskBanner(banner, baseClass, key) {
+  if (key !== gAskBannerKey) { gAskBannerKey = key; gAskBannerCollapsed = false; }  // new prompt → auto-expand
+  banner.className = baseClass + (gAskBannerCollapsed ? ' collapsed' : '');
+}
+
 function updateCmdBarMode(data) {
   const active   = isAgentActive(data);
   const awaiting = isAwaitingInput(data);
@@ -2717,8 +2760,9 @@ function updateCmdBarMode(data) {
     sendBtn.textContent = 'Send Goal';
     cmdbar.classList.add('nostop-idle');
     cmdbar.classList.remove('awaiting');
-    bannerQ.textContent = (data.meta && data.meta.awaiting_input) || uiT('nostop.idle_banner');
-    banner.className    = 'ask-banner nostop-idle visible';
+    const idleText = (data.meta && data.meta.awaiting_input) || uiT('nostop.idle_banner');
+    bannerQ.textContent = idleText;
+    applyAskBanner(banner, 'ask-banner nostop-idle visible', 'idle:' + idleText);
     // Auto-focus for quick re-entry
     if (document.activeElement !== input) input.focus();
   } else if (awaiting) {
@@ -2731,7 +2775,7 @@ function updateCmdBarMode(data) {
     cmdbar.classList.add('awaiting');
     cmdbar.classList.remove('nostop-idle');
     bannerQ.textContent = q;
-    banner.className    = 'ask-banner visible';
+    applyAskBanner(banner, 'ask-banner visible', 'ask:' + q);
     // Auto-focus so user can type immediately
     if (document.activeElement !== input) input.focus();
   } else {
@@ -2741,6 +2785,7 @@ function updateCmdBarMode(data) {
     cmdbar.classList.remove('awaiting');
     cmdbar.classList.remove('nostop-idle');
     banner.className    = 'ask-banner';
+    gAskBannerKey = null;   // banner hidden → the next prompt counts as new → re-expands
     input.placeholder = active
       ? '/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20'
       : 'No agent running — type a goal to start a new run, or use /command';
