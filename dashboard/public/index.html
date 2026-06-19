@@ -609,22 +609,24 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .dp-btn-primary:disabled { opacity:0.5; cursor:not-allowed; filter:none; }
 
 /* ── Settings modal ─────────────────────────────────────────────────── */
-.set-modal { position:fixed; inset:0; background:rgba(0,0,0,0.65); display:flex; align-items:flex-start; justify-content:center; z-index:9200; padding:48px 20px; overflow:auto; }
-.set-inner { background:var(--bg2); border:1px solid var(--border); border-radius:10px; width:100%; max-width:520px; display:flex; flex-direction:column; box-shadow:0 8px 32px rgba(0,0,0,0.6); }
-.set-head { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border); }
+.set-modal { position:fixed; inset:0; background:rgba(0,0,0,0.65); display:flex; align-items:flex-start; justify-content:center; z-index:9200; padding:32px 20px; overflow:auto; }
+/* Cap the modal to the viewport so head + foot (含保存按钮) 始终可见，只让 body 内部滚动——
+   矮屏上不会出现「下面够不着」。 */
+.set-inner { background:var(--bg2); border:1px solid var(--border); border-radius:10px; width:100%; max-width:520px; max-height:calc(100vh - 64px); display:flex; flex-direction:column; overflow:hidden; box-shadow:0 8px 32px rgba(0,0,0,0.6); }
+.set-head { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border); flex-shrink:0; }
 .set-title { font-size:14px; font-weight:700; color:var(--text); }
 .set-x { background:none; border:none; color:var(--muted); font-size:16px; cursor:pointer; line-height:1; padding:2px 6px; }
 .set-x:hover { color:var(--text); }
-.set-body { padding:18px 20px; }
+.set-body { padding:18px 20px; flex:1 1 auto; min-height:0; overflow-y:auto; }
 .set-fg { margin-bottom:13px; }
 .set-body label { display:block; font-size:12.5px; font-weight:500; color:var(--text); margin-bottom:6px; }
 .set-req { color:#f85149; margin-left:2px; }
 /* Inline hint after a label title: smaller, dimmer, not bold. */
 .set-hint-inline { font-size:11px; font-weight:400; color:var(--muted); }
-.set-body input[type=text], .set-body input[type=password], .set-body input[type=number] {
+.set-body input[type=text], .set-body input[type=password], .set-body input[type=number], .set-body select {
   width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text);
   font-size:13px; padding:8px 12px; outline:none; font-family:inherit; }
-.set-body input:focus { border-color:var(--blue); }
+.set-body input:focus, .set-body select:focus { border-color:var(--blue); }
 .set-inwrap { position:relative; }
 .set-inwrap input { padding-right:36px; }
 .set-eye { position:absolute; right:10px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:var(--muted); font-size:12px; }
@@ -637,6 +639,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .set-probe:hover:not(:disabled) { background:rgba(63,185,80,0.28); }
 .set-probe:disabled { opacity:0.5; cursor:not-allowed; }
 .set-tabs { display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid var(--border); }
+/* Tab groups stacked vertically: top = LLM 服务 (room for future providers),
+   bottom = 通用设置. The bottom group's border doubles as the divider above panes. */
+.set-tabgroup-lbl { font-size:10px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin:0 0 5px 2px; }
+.set-tabgroup-lbl.divider { margin-top:22px; padding-top:18px; border-top:1px solid var(--border); }
 .set-tab { background:none; border:none; color:var(--muted); font-size:12px; font-weight:500; padding:6px 12px; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; font-family:inherit; }
 .set-tab:hover { color:var(--text); }
 .set-tab.active { color:var(--text); border-bottom-color:var(--blue); }
@@ -647,7 +653,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .set-msg.error   { display:block; background:rgba(248,81,73,0.1); border:1px solid rgba(248,81,73,0.4); color:#f85149; }
 .set-msg.success { display:block; background:rgba(63,185,80,0.1); border:1px solid rgba(63,185,80,0.4); color:#3fb950; }
 .set-msg.info    { display:block; background:rgba(56,139,253,0.1); border:1px solid rgba(56,139,253,0.4); color:#79c0ff; }
-.set-foot { border-top:1px solid var(--border); padding:14px 20px; display:flex; justify-content:flex-end; gap:8px; }
+.set-foot { border-top:1px solid var(--border); padding:14px 20px; display:flex; justify-content:flex-end; gap:8px; flex-shrink:0; }
 .set-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:8px 18px; border-radius:6px; cursor:pointer; font-size:13px; font-family:inherit; }
 .set-btn:hover:not(:disabled) { border-color:var(--blue); }
 .set-btn-primary { background:linear-gradient(135deg,#1f6feb,#3b82f6); border-color:transparent; color:#fff; }
@@ -1802,47 +1808,105 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     <div class="set-body">
       <div id="setMsg" class="set-msg"></div>
 
-      <div class="set-tabs">
+      <!-- ── LLM 服务（预留未来更多 LLM 服务商 tab）── tab 在上，内容紧随其后 ── -->
+      <div class="set-tabgroup-lbl">LLM 服务</div>
+      <div class="set-tabs set-tabs-llm" data-group="api">
         <button type="button" class="set-tab active" data-tab="primary" id="setTabPrimary">主 API<span class="set-dot"></span></button>
         <button type="button" class="set-tab" data-tab="backup" id="setTabBackup">备用 API<span class="set-dot"></span></button>
       </div>
 
-      <div class="set-fg">
-        <div class="set-lblrow">
-          <label for="setBase"><span id="setLblBase">API 服务地址</span><span class="set-req" id="setMarkBase">*</span> <span class="set-hint-inline" id="setHintBase">（OpenAI 兼容接口的 base URL）</span></label>
-          <button type="button" class="set-probe" id="setBtnTest">探测</button>
+      <!-- 主 API / 备用 API 共用同一组输入框，按 tab 切换其值 -->
+      <div class="set-pane" id="setPaneApi">
+        <div class="set-fg">
+          <div class="set-lblrow">
+            <label for="setBase"><span id="setLblBase">API 服务地址</span><span class="set-req" id="setMarkBase">*</span> <span class="set-hint-inline" id="setHintBase">（OpenAI 兼容接口的 base URL）</span></label>
+            <button type="button" class="set-probe" id="setBtnTest">探测</button>
+          </div>
+          <input type="text" id="setBase" placeholder="http://127.0.0.1:8080/v1">
         </div>
-        <input type="text" id="setBase" placeholder="http://127.0.0.1:8080/v1">
-      </div>
 
-      <div class="set-fg">
-        <label for="setKey">API 密钥 <span class="set-hint-inline">（本地填 local，云端填 API Key）</span></label>
-        <div class="set-inwrap">
-          <input type="password" id="setKey" placeholder="sk-… 或 local（本地服务）">
-          <button type="button" class="set-eye" id="setEye" title="显示/隐藏">👁</button>
+        <div class="set-fg">
+          <label for="setKey">API 密钥 <span class="set-hint-inline">（本地填 local，云端填 API Key）</span></label>
+          <div class="set-inwrap">
+            <input type="password" id="setKey" placeholder="sk-… 或 local（本地服务）">
+            <button type="button" class="set-eye" id="setEye" title="显示/隐藏">👁</button>
+          </div>
+        </div>
+
+        <div class="set-fg">
+          <label for="setModel"><span id="setLblModel">模型名称</span><span class="set-req" id="setMarkModel">*</span> <span class="set-hint-inline" id="setHintModel">（与服务端返回的 model id 一致）</span></label>
+          <input type="text" id="setModel" placeholder="gpt-4o / qwen3-72b / deepseek-chat">
         </div>
       </div>
 
-      <div class="set-fg">
-        <label for="setModel"><span id="setLblModel">模型名称</span><span class="set-req" id="setMarkModel">*</span> <span class="set-hint-inline" id="setHintModel">（与服务端返回的 model id 一致）</span></label>
-        <input type="text" id="setModel" placeholder="gpt-4o / qwen3-72b / deepseek-chat">
+      <!-- ── 通用设置 ── tab 在上，内容紧随其后 ── -->
+      <div class="set-tabgroup-lbl divider">通用设置</div>
+      <div class="set-tabs" data-group="general">
+        <button type="button" class="set-tab active" data-tab="other" id="setTabOther">其他配置</button>
+        <button type="button" class="set-tab" data-tab="lan" id="setTabLan">局域网</button>
+        <button type="button" class="set-tab" data-tab="runtime" id="setTabRuntime">运行参数</button>
       </div>
 
-      <div class="set-seclbl">其他设置</div>
+      <!-- 其他配置 -->
+      <div class="set-pane" id="setPaneOther">
+        <div class="set-fg">
+          <label for="setIters">最大迭代次数 <span class="set-hint-inline">（Agent 单次任务最多的执行步骤，默认 100）</span></label>
+          <input type="number" id="setIters" placeholder="100" min="1" max="500" value="100">
+        </div>
 
-      <div class="set-fg">
-        <label for="setIters">最大迭代次数 <span class="set-hint-inline">（Agent 单次任务最多的执行步骤，默认 100）</span></label>
-        <input type="number" id="setIters" placeholder="100" min="1" max="500" value="100">
+        <div class="set-fg">
+          <label for="setName">实例昵称 <span class="set-hint-inline">（显示在右上角区分多个实例，可留空）</span></label>
+          <input type="text" id="setName" placeholder="（可选，如 主控机）" maxlength="24">
+        </div>
+
+        <div class="set-fg">
+          <label for="setProxy">HTTP 代理 <span class="set-hint-inline">（访问外部 API 用，需含 http:// 和端口，本地自动跳过）</span></label>
+          <input type="text" id="setProxy" placeholder="http://127.0.0.1:7897">
+        </div>
       </div>
 
-      <div class="set-fg">
-        <label for="setName">实例昵称 <span class="set-hint-inline">（显示在右上角区分多个实例，可留空）</span></label>
-        <input type="text" id="setName" placeholder="（可选，如 主控机）" maxlength="24">
+      <!-- 高级设置 · 局域网 -->
+      <div class="set-pane" id="setPaneLan" style="display:none;">
+        <div class="set-fg">
+          <label for="setHost">绑定地址 <span class="set-hint-inline">（决定看板是否暴露到局域网，改动需重启看板进程生效）</span></label>
+          <select id="setHost">
+            <option value="127.0.0.1">仅本机可访问（127.0.0.1，默认）</option>
+            <option value="0.0.0.0">开放局域网（0.0.0.0）</option>
+          </select>
+        </div>
+
+        <div class="set-fg">
+          <label for="setPort">端口 <span class="set-hint-inline">（默认 8765，改动需重启看板进程生效）</span></label>
+          <input type="number" id="setPort" placeholder="8765" min="1" max="65535">
+        </div>
+
+        <div class="set-fg">
+          <label for="setAllow">IP 白名单 <span class="set-hint-inline">（逗号分隔的 IP 或 CIDR，留空=不启用；只放行名单内主机，本机始终放行）</span></label>
+          <input type="text" id="setAllow" placeholder="192.168.1.0/24, 10.0.0.5">
+        </div>
+
+        <div class="set-fg">
+          <label for="setDeny">IP 黑名单 <span class="set-hint-inline">（逗号分隔的 IP 或 CIDR，黑名单优先于白名单）</span></label>
+          <input type="text" id="setDeny" placeholder="192.168.1.66, 192.168.2.0/24">
+        </div>
       </div>
 
-      <div class="set-fg">
-        <label for="setProxy">HTTP 代理 <span class="set-hint-inline">（访问外部 API 用，需含 http:// 和端口，本地自动跳过）</span></label>
-        <input type="text" id="setProxy" placeholder="http://127.0.0.1:7897">
+      <!-- 高级设置 · 运行参数 -->
+      <div class="set-pane" id="setPaneRuntime" style="display:none;">
+        <div class="set-fg">
+          <label for="setToolFeedback">工具反馈最大字符数 <span class="set-hint-inline">（MAX_TOOL_FEEDBACK_CHARS，单次工具结果回灌给模型的截断上限，默认 4000；编程相关任务建议用 24000）</span></label>
+          <input type="number" id="setToolFeedback" placeholder="4000" min="200">
+        </div>
+
+        <div class="set-fg">
+          <label for="setMaxTokens">LLM 单次最大 tokens <span class="set-hint-inline">（LLM_MAX_TOKENS，模型单次回复的最大输出长度，留空=默认 16384）</span></label>
+          <input type="number" id="setMaxTokens" placeholder="（留空=默认 16384）" min="1">
+        </div>
+
+        <div class="set-fg">
+          <label for="setTemp">采样温度 <span class="set-hint-inline">（LLM_TEMPERATURE，0~2，越高越发散，留空=默认 0.3）</span></label>
+          <input type="number" id="setTemp" placeholder="（留空=默认 0.3）" min="0" max="2" step="0.1">
+        </div>
       </div>
     </div>
     <div class="set-foot">
@@ -5488,14 +5552,23 @@ fetch('/api/version').then(r => r.json()).then(d => {
   const inBase = document.getElementById('setBase');
   const inKey  = document.getElementById('setKey');
   const inModel= document.getElementById('setModel');
-  // base / key / model switch with the tab; the rest don't.
+  // Two independent tab groups, each with its own content area shown below it:
+  //   • "api"  (LLM 服务)   主/备用 — share one set of inputs, switching swaps values.
+  //   • "general" (通用设置) 其他配置/局域网/运行参数 — each its own pane.
+  // Both groups' content is visible at once; only the tabs within a group are exclusive.
   const tabState = { primary: { base:'', key:'', model:'' }, backup: { base:'', key:'', model:'' } };
-  let activeTab = 'primary';
+  const GPANES = { other:'setPaneOther', lan:'setPaneLan', runtime:'setPaneRuntime' };
+  let apiTab     = 'primary';   // 主 | 备用 — what snap()/loadTab() act on
+  let generalTab = 'other';     // 其他配置 | 局域网 | 运行参数
 
-  const snap = () => { tabState[activeTab].base = inBase.value; tabState[activeTab].key = inKey.value; tabState[activeTab].model = inModel.value; };
+  // DASHBOARD_HOST/PORT are read once at dashboard startup, so a change only
+  // takes effect after the whole dashboard process restarts (not just the agent).
+  // Remember what was loaded so we can warn on save only when they actually change.
+  let loadedHost = '127.0.0.1', loadedPort = '';
+  const snap = () => { tabState[apiTab].base = inBase.value; tabState[apiTab].key = inKey.value; tabState[apiTab].model = inModel.value; };
   const loadTab = n => { inBase.value = tabState[n].base; inKey.value = tabState[n].key; inModel.value = tabState[n].model; };
   function marks() {
-    const b = activeTab === 'backup';
+    const b = apiTab === 'backup';
     document.getElementById('setMarkBase').style.display  = b ? 'none' : 'inline';
     document.getElementById('setMarkModel').style.display = b ? 'none' : 'inline';
     document.getElementById('setHintBase').textContent = b
@@ -5510,13 +5583,21 @@ fetch('/api/version').then(r => r.json()).then(d => {
     document.getElementById('setTabBackup').classList.toggle('has-value', !!(bk.base.trim() || bk.key.trim() || bk.model.trim()));
     document.getElementById('setTabPrimary').classList.toggle('has-value', !!(pr.base.trim() || pr.model.trim()));
   }
-  function switchTab(n) {
-    if (n === activeTab) return;
-    snap(); activeTab = n; loadTab(n);
-    document.querySelectorAll('.set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === n));
+  // ── LLM API 组：内容区 setPaneApi 常驻，切 tab 只交换输入框的值 ──
+  function switchApiTab(n) {
+    if (n !== apiTab) { snap(); apiTab = n; loadTab(n); }
+    document.querySelectorAll('.set-tabs[data-group="api"] .set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === n));
     marks(); dots(); msg.className = 'set-msg';
   }
-  document.querySelectorAll('.set-tab').forEach(e => e.addEventListener('click', () => switchTab(e.dataset.tab)));
+  // ── 通用设置组：切换可见面板 ──
+  function switchGeneralTab(n) {
+    generalTab = n;
+    Object.values(GPANES).forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+    const el = document.getElementById(GPANES[n]); if (el) el.style.display = '';
+    document.querySelectorAll('.set-tabs[data-group="general"] .set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === n));
+  }
+  document.querySelectorAll('.set-tabs[data-group="api"] .set-tab').forEach(e => e.addEventListener('click', () => switchApiTab(e.dataset.tab)));
+  document.querySelectorAll('.set-tabs[data-group="general"] .set-tab').forEach(e => e.addEventListener('click', () => switchGeneralTab(e.dataset.tab)));
   [inBase, inKey, inModel].forEach(e => e.addEventListener('input', () => { snap(); dots(); }));
 
   document.getElementById('setEye').addEventListener('click', () => {
@@ -5536,12 +5617,21 @@ fetch('/api/version').then(r => r.json()).then(d => {
       const env = await res.json();
       tabState.primary = { base: env.OPENAI_BASE_URL || '', key: env.OPENAI_API_KEY || '', model: env.OPENAI_MODEL || '' };
       tabState.backup  = { base: env.BACKUP_OPENAI_BASE_URL || '', key: env.BACKUP_OPENAI_API_KEY || '', model: env.BACKUP_OPENAI_MODEL || '' };
-      activeTab = 'primary';
-      document.querySelectorAll('.set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === 'primary'));
-      loadTab('primary'); marks(); dots();
+      apiTab = 'primary'; loadTab('primary'); switchApiTab('primary');
+      switchGeneralTab('other');
       document.getElementById('setIters').value = env.MAX_ITERS || '100';
       document.getElementById('setName').value  = env.INSTANCE_NAME || '';
       document.getElementById('setProxy').value = env.HTTPS_PROXY || env.HTTP_PROXY || '';
+      // 高级设置
+      loadedHost = (env.DASHBOARD_HOST === '0.0.0.0') ? '0.0.0.0' : '127.0.0.1';
+      loadedPort = env.DASHBOARD_PORT || '';
+      document.getElementById('setHost').value         = loadedHost;
+      document.getElementById('setPort').value         = loadedPort;
+      document.getElementById('setAllow').value        = env.DASHBOARD_ALLOW || '';
+      document.getElementById('setDeny').value         = env.DASHBOARD_DENY || '';
+      document.getElementById('setToolFeedback').value = env.MAX_TOOL_FEEDBACK_CHARS || '';
+      document.getElementById('setMaxTokens').value    = env.LLM_MAX_TOKENS || '';
+      document.getElementById('setTemp').value         = env.LLM_TEMPERATURE || '';
     } catch (e) {
       // Surface the failure instead of silently showing an empty form — most
       // commonly an old backend without /api/env (404), which used to look like
@@ -5559,7 +5649,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
   // ── Probe current tab's endpoint ──────────────────────────────────
   document.getElementById('setBtnTest').addEventListener('click', async () => {
     const baseUrl = inBase.value.trim(), apiKey = inKey.value.trim();
-    if (!baseUrl) { showMsg('error', '请先填写' + (activeTab === 'backup' ? '备用 API ' : '') + '服务地址'); return; }
+    if (!baseUrl) { showMsg('error', '请先填写' + (apiTab === 'backup' ? '备用 API ' : '') + '服务地址'); return; }
     const btn = document.getElementById('setBtnTest');
     btn.disabled = true; btn.textContent = '验证中…'; msg.className = 'set-msg';
     try {
@@ -5583,14 +5673,14 @@ fetch('/api/version').then(r => r.json()).then(d => {
     msg.className = 'set-msg'; snap();
     const pB = tabState.primary.base.trim(), pM = tabState.primary.model.trim();
     if (!pB || !pM) {
-      if (activeTab !== 'primary') switchTab('primary');
+      if (apiTab !== 'primary') switchApiTab('primary');
       showMsg('error', !pB ? '主 API 服务地址不能为空' : '主 API 模型名称不能为空');
       return;
     }
     const bB = tabState.backup.base.trim(), bK = tabState.backup.key.trim(), bM = tabState.backup.model.trim();
     const bAny = bB || bK || bM, bAll = bB && bM;  // key may be empty (local service)
     if (bAny && !bAll) {
-      if (activeTab !== 'backup') switchTab('backup');
+      if (apiTab !== 'backup') switchApiTab('backup');
       showMsg('error', '备用 API 需要同时填写 base URL 和模型名称（API 密钥可空）');
       return;
     }
@@ -5606,6 +5696,15 @@ fetch('/api/version').then(r => r.json()).then(d => {
       INSTANCE_NAME: document.getElementById('setName').value.trim(),
       HTTPS_PROXY:   proxy,
       HTTP_PROXY:    proxy,
+      // 高级设置 —— 局域网可见性。空值会从 .env 删除该键，回到默认行为。
+      DASHBOARD_HOST:  document.getElementById('setHost').value === '0.0.0.0' ? '0.0.0.0' : '',
+      DASHBOARD_PORT:  document.getElementById('setPort').value.trim(),
+      DASHBOARD_ALLOW: document.getElementById('setAllow').value.trim(),
+      DASHBOARD_DENY:  document.getElementById('setDeny').value.trim(),
+      // 高级设置 —— Agent 运行参数
+      MAX_TOOL_FEEDBACK_CHARS: document.getElementById('setToolFeedback').value.trim(),
+      LLM_MAX_TOKENS:  document.getElementById('setMaxTokens').value.trim(),
+      LLM_TEMPERATURE: document.getElementById('setTemp').value.trim(),
     };
     const btn = document.getElementById('setSave');
     btn.disabled = true; btn.textContent = '保存中…';
@@ -5614,7 +5713,14 @@ fetch('/api/version').then(r => r.json()).then(d => {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       }).then(x => x.json());
-      if (r.ok) { showMsg('success', '已保存，新配置将在下次启动 Agent 时生效'); setTimeout(closeSettings, 1000); }
+      if (r.ok) {
+        const lanChanged = (data.DASHBOARD_HOST === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1') !== loadedHost
+                        || data.DASHBOARD_PORT !== loadedPort;
+        showMsg('success', lanChanged
+          ? '已保存。绑定地址/端口需重启看板进程后生效，其余配置下次启动 Agent 时生效。'
+          : '已保存，新配置将在下次启动 Agent 时生效');
+        setTimeout(closeSettings, lanChanged ? 2200 : 1000);
+      }
       else showMsg('error', '保存失败：' + (r.error || '未知错误'));
     } catch (e) { showMsg('error', '保存失败：' + e.message); }
     finally { btn.disabled = false; btn.textContent = '保存'; }

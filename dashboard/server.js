@@ -1731,6 +1731,15 @@ const server = http.createServer(async (req, res) => {
       BACKUP_OPENAI_BASE_URL: process.env.BACKUP_OPENAI_BASE_URL || '',
       BACKUP_OPENAI_API_KEY:  process.env.BACKUP_OPENAI_API_KEY  || '',
       BACKUP_OPENAI_MODEL:    process.env.BACKUP_OPENAI_MODEL    || '',
+      // 高级设置 —— 局域网可见性
+      DASHBOARD_HOST:  process.env.DASHBOARD_HOST  || '',
+      DASHBOARD_PORT:  process.env.DASHBOARD_PORT  || '',
+      DASHBOARD_ALLOW: process.env.DASHBOARD_ALLOW || '',
+      DASHBOARD_DENY:  process.env.DASHBOARD_DENY  || '',
+      // 高级设置 —— Agent 运行参数
+      MAX_TOOL_FEEDBACK_CHARS: process.env.MAX_TOOL_FEEDBACK_CHARS || '',
+      LLM_MAX_TOKENS:  process.env.LLM_MAX_TOKENS  || '',
+      LLM_TEMPERATURE: process.env.LLM_TEMPERATURE || '',
       configured: !!process.env.OPENAI_BASE_URL,
     });
     return;
