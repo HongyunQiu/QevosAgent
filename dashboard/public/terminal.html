@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
   <style>
     :root { color-scheme: dark; }
-    html, body { height: 100%; margin: 0; background: #1e1e1e; transition: background .2s; }
+    html, body { height: 100%; margin: 0; background: #1e1e1e; transition: background .2s; overflow: hidden; }
     /* "Agent holds the mic" — tint the whole surface so the user notices. */
     body.agent-active { background: #16202e; }
     #bar {
@@ -54,6 +54,10 @@
       cursorBlink: true,
       fontFamily: 'Consolas, "Cascadia Mono", Menlo, monospace',
       fontSize: 14,
+      // Bounded scrollback (not infinite): older lines are dropped past this.
+      // The DOM renderer only paints the visible rows, so this caps memory, not
+      // render speed. 5000 gives generous history while staying lightweight.
+      scrollback: 5000,
       theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
     });
     const baseTheme  = { background: '#1e1e1e', foreground: '#d4d4d4' };
