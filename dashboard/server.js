@@ -976,7 +976,7 @@ function poll() {
 const clients = new Set();
 
 function broadcast() {
-  const msg = JSON.stringify({ type: 'state', ...state });
+  const msg = JSON.stringify({ type: 'state', ...state, terminals: termListPublic() });
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   }
@@ -1712,7 +1712,7 @@ const server = http.createServer(async (req, res) => {
 
   // ── GET /api/state  ───────────────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/state') {
-    json(200, { type: 'state', ...state });
+    json(200, { type: 'state', ...state, terminals: termListPublic() });
     return;
   }
 
@@ -2563,8 +2563,8 @@ const server = http.createServer(async (req, res) => {
     let body = {}; try { body = JSON.parse(await readBody(req) || '{}'); } catch {}
     const s = createTermSession({ title: body.title, cols: body.cols, rows: body.rows, cwd: body.cwd });
     if (s.error) { json(503, { error: s.error }); return; }
-    // Nudge open browsers to surface a tab for this agent-created session.
-    for (const c of clients) { try { c.send(JSON.stringify({ type: 'open-terminal', id: s.id, title: s.title })); } catch {} }
+    // createTermSession already broadcast()s the new session list, so every
+    // frontend surfaces a tab for it — no separate open-terminal message needed.
     json(200, { id: s.id, title: s.title });
     return;
   }
@@ -2677,8 +2677,10 @@ function createTermSession({ title, cols, rows, cwd } = {}) {
     sess.alive = false;
     termBroadcast(sess, { type: 'exit', code: exitCode });
     termSessions.delete(sess.id);
+    broadcast();   // session gone → sync the tab away in every frontend
   });
   termSessions.set(sess.id, sess);
+  broadcast();     // new session → surface a tab in every frontend
   return sess;
 }
 
@@ -2696,6 +2698,7 @@ function killTermSession(id) {
   try { sess.pty.kill(); } catch {}
   sess.alive = false;
   termSessions.delete(id);
+  broadcast();   // sync the tab away in every frontend
   return true;
 }
 
@@ -2706,6 +2709,15 @@ function setTermOwner(id, who) {
   sess.owner = (who === 'agent') ? 'agent' : 'user';
   termBroadcast(sess, { type: 'owner', who: sess.owner });
   return true;
+}
+
+// Public session list — rides the state broadcast so EVERY frontend (incl. ones
+// opened later) can rebuild its terminal tabs and stay in sync. Tiny metadata;
+// the live output stream is a separate per-session fan-out, untouched.
+function termListPublic() {
+  return [...termSessions.values()].map(s => ({
+    id: s.id, title: s.title, owner: s.owner, alive: s.alive,
+  }));
 }
 
 // Browser WS protocol:
@@ -2797,7 +2809,7 @@ termWss.on('connection', handleTerminalConnection);
 
 wss.on('connection', ws => {
   clients.add(ws);
-  ws.send(JSON.stringify({ type: 'state', ...state }));
+  ws.send(JSON.stringify({ type: 'state', ...state, terminals: termListPublic() }));
 
   ws.on('message', raw => {
     try {

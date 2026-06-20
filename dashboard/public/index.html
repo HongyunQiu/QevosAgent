@@ -2137,6 +2137,8 @@ function handleMsg(msg) {
     if (window._wsPillUpdateInfo) window._wsPillUpdateInfo(msg.networkInfo, msg.teamNodeId);
     // Clear the local launching flag once the server confirms launch is done
     if (!msg.launching) gIsLaunching = false;
+    // Keep terminal tabs in sync with live sessions across all frontends.
+    updateTerminalTabsFromState(msg.terminals);
 
     const wasOnLive = !gViewRunId                    // first load
                    || gViewRunId === prevActiveRunId  // was watching the live run
@@ -2177,10 +2179,9 @@ function handleMsg(msg) {
     if (!w || w.closed || typeof w.closed === 'undefined') {
       showOpenViewPrompt(msg.title || msg.displayId, url, msg.displayId);
     }
-  } else if (msg.type === 'open-terminal') {
-    // The agent created a shared terminal — surface a tab so the user can watch.
-    openTerminalTab({ sessionId: msg.id, title: msg.title });
   }
+  // Note: terminals (incl. agent-created ones) now surface via the session list
+  // carried in the broadcast state — see updateTerminalTabsFromState.
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
@@ -3695,7 +3696,8 @@ function openTerminalTab(opts = {}) {
   if (opts.sessionId) {
     const existing = [...document.querySelectorAll('[id^=ctab-term-]')]
       .find(b => b.dataset.sessionId === opts.sessionId);
-    if (existing) { setCenterTab(existing.id.replace('ctab-', '')); return; }
+    // background: opened by cross-frontend sync — don't steal the user's view.
+    if (existing) { if (!opts.background) setCenterTab(existing.id.replace('ctab-', '')); return; }
   }
   gTermSeq += 1;
   const id  = 'term-' + Date.now() + '-' + gTermSeq;
@@ -3721,20 +3723,57 @@ function openTerminalTab(opts = {}) {
   pane.appendChild(frame);
   panel.appendChild(pane);
 
-  setCenterTab(id);
+  if (!opts.background) setCenterTab(id);
 }
-function newTerminalTab() { openTerminalTab(); }
+
+// Create via the API first so the local tab knows the session id immediately —
+// this makes cross-frontend dedupe (by sessionId) reliable. The server's
+// broadcast then surfaces the SAME session as a (background) tab in other
+// frontends. Falls back to an implicit /ws/term create if the API is unreachable.
+async function newTerminalTab() {
+  try {
+    const r = await fetch('/api/term', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    }).then(x => x.json());
+    if (r && r.id) { openTerminalTab({ sessionId: r.id, title: r.title }); return; }
+  } catch {}
+  openTerminalTab();
+}
+
+// Remove a terminal tab from THIS frontend's DOM only (no server kill).
+function removeTerminalTabLocal(id) {
+  const wasActive = gCenterTab === id;
+  document.getElementById('ctab-' + id)?.remove();
+  document.getElementById('cpane-' + id)?.remove();
+  if (wasActive) setCenterTab('events');
+}
 
 function closeTerminalTab(id) {
-  const wasActive = gCenterTab === id;
   const pane  = document.getElementById('cpane-' + id);
   const frame = pane && pane.querySelector('iframe');
   // ws close only DETACHES now (so the agent/other tabs keep the session). The
   // ✕ means "close this terminal", so explicitly kill the backing session.
   try { frame && frame.contentWindow && frame.contentWindow.killSession && frame.contentWindow.killSession(); } catch {}
-  document.getElementById('ctab-' + id)?.remove();
-  pane?.remove();
-  if (wasActive) setCenterTab('events');
+  removeTerminalTabLocal(id);
+}
+
+// Sync terminal tabs to the live session list from the broadcast state: open a
+// (background) tab for any session we don't show yet, and drop tabs whose
+// session was closed elsewhere. Diff-based — never rebuilds, so it won't thrash
+// the iframes. This is what makes terminals appear across all frontends.
+function updateTerminalTabsFromState(terminals) {
+  if (!Array.isArray(terminals)) return;
+  const live = new Set(terminals.map(t => t.id));
+  const tabs = () => [...document.querySelectorAll('[id^=ctab-term-]')];
+  for (const t of terminals) {
+    if (!tabs().some(b => b.dataset.sessionId === t.id)) {
+      openTerminalTab({ sessionId: t.id, title: t.title, background: true });
+    }
+  }
+  for (const b of tabs()) {
+    const sid = b.dataset.sessionId;
+    if (sid && !live.has(sid)) removeTerminalTabLocal(b.id.replace('ctab-', ''));
+  }
 }
 
 // Bridge postMessages from terminal.html iframes: capture each tab's backing
