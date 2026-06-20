@@ -8,15 +8,19 @@
   <style>
     :root { color-scheme: dark; }
     html, body { height: 100%; margin: 0; background: #1e1e1e; transition: background .2s; overflow: hidden; }
+    body { display: flex; flex-direction: column; }   /* terminal on top, status bar pinned below */
     /* "Agent holds the mic" — tint the whole surface so the user notices. */
     body.agent-active { background: #16202e; }
+    /* Status bar pinned to the BOTTOM, so the terminal content (and its bottom
+       input line) sits higher — further from the dashboard's bottom ask box. */
     #bar {
+      order: 2; flex: none;
       display: flex; align-items: center; gap: 10px;
       font: 12px/1.6 system-ui, "Segoe UI", sans-serif;
       color: #cfcfcf; padding: 6px 10px; background: #252526;
-      border-bottom: 1px solid #333;
+      border-top: 1px solid #333; box-sizing: border-box;
     }
-    body.agent-active #bar { background: #1d3050; border-bottom-color: #2f5a8f; }
+    body.agent-active #bar { background: #1d3050; border-top-color: #2f5a8f; }
     #bar .dot { width: 9px; height: 9px; border-radius: 50%; background: #777; flex: none; }
     #bar .dot.on  { background: #2ecc71; }
     #bar .dot.off { background: #e74c3c; }
@@ -31,7 +35,7 @@
       border-radius: 4px; padding: 3px 10px; cursor: pointer;
     }
     #bar button:hover { background: #3c3c3c; }
-    #term { position: absolute; left: 0; right: 0; top: 33px; bottom: 0; padding: 6px; box-sizing: border-box; }
+    #term { order: 1; flex: 1; min-height: 0; padding: 6px; box-sizing: border-box; }
   </style>
 </head>
 <body>
