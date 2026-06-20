@@ -578,15 +578,23 @@ function renderPane(id, data) {
 
   const ct = (data.content_type || 'html').toLowerCase();
 
+  // base_path: directory (relative to the run dir) that this content's relative
+  // resource paths should resolve against — set when web_show was given a file path
+  // living in a subdirectory (e.g. "artifacts"). Empty = run dir root.
+  const basePrefix = (data.base_path || '').replace(/^\/+|\/+$/g, '');
+  const baseSeg = basePrefix ? basePrefix + '/' : '';
+
   // Resolve a potentially relative image/resource path to an absolute API URL.
   // Paths that are already absolute (http/https/data/blob) or start with /api/ are
-  // left unchanged. Everything else is treated as relative to the run directory and
-  // rewritten to /api/run-file-raw/{runId}/{path}.
+  // left unchanged. Everything else is treated as relative to the run directory
+  // (optionally under base_path) and rewritten to /api/run-file-raw/{runId}/{path}.
   function resolveRunPath(src) {
     if (!src || !runId) return src;
     if (/^(https?:|data:|blob:|\/\/|\/api\/)/.test(src)) return src;
     const rel = src.replace(/^\.\//, '');
-    return `/api/run-file-raw/${runId}/${rel}`;
+    // absolute filesystem path (e.g. C:/.. or /home/..) can't be served safely
+    if (/^([A-Za-z]:[\\/]|file:|[\\/])/.test(rel)) return src;
+    return `/api/run-file-raw/${runId}/${baseSeg}${rel}`;
   }
 
   // Inject a <base href> into a full HTML document so that relative resource paths
@@ -594,7 +602,7 @@ function renderPane(id, data) {
   // the run-file-raw endpoint.
   function injectBaseHref(html) {
     if (!runId) return html;
-    const base = `<base href="${window.location.origin}/api/run-file-raw/${runId}/">`;
+    const base = `<base href="${window.location.origin}/api/run-file-raw/${runId}/${baseSeg}">`;
     if (/<head[\s>]/i.test(html)) {
       return html.replace(/(<head[^>]*>)/i, `$1${base}`);
     }

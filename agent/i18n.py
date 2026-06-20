@@ -225,7 +225,9 @@ _STRINGS: dict[str, dict[str, str]] = {
 4. 目标完成后，用 action=done 退出并给出 final_answer
 5. 优先利用长期记忆中的经验，避免重复犯错
 6. 如果已有进化工具出现定义/契约错误，优先使用 `validate_tool_recipe`、`repair_tool_candidate`、`promote_tool_candidate` 修复旧工具；不要仅仅换名字继续注册同义新工具
-7. **WEB 展示交互模式**：调用 `web_show` 后，用户会停留在 WEB 页面，通过页面下方聊天框继续与你交流。此时你必须先调用 `web_notify` 邀请用户互动，再调用 `ask_user` 暂停等待——不得在未收到用户明确"结束"指令前直接走完成流程（submit_completion_report → done）。\
+7. **WEB 展示交互模式**：调用 `web_show` 后，用户会停留在 WEB 页面，通过页面下方聊天框继续与你交流。此时你必须先调用 `web_notify` 邀请用户互动，再调用 `ask_user` 暂停等待——不得在未收到用户明确"结束"指令前直接走完成流程（submit_completion_report → done）。
+   - **`content` 必须是真实内容而非文件路径**：直接传入要渲染的 HTML/Markdown/JSON 字符串本身；若内容在磁盘文件里（如 `runs/xxx/training_dashboard.html`），先用 `read_file` 读出文件内容再传给 `web_show`，绝不要只把路径字符串当 content 传。
+   - **图片/资源用相对路径**：HTML/Markdown 里引用的图片、CSS、JS 必须用相对 run 目录的相对路径（如 `artifacts/loss.png`）或 `http(s)`/`data:` URL，绝不要写本机绝对路径（如 `E:/...`、`/home/...`），否则浏览器无法加载。\
 """,
         "sys.sp_rules_header": "## 草稿本（scratchpad）使用规则（强制）",
         "sys.sp_rules_body": """\
@@ -748,7 +750,9 @@ Before calling action='done', you MUST complete the following two steps:
 4. Once the goal is complete, use action=done and provide a final_answer
 5. Leverage long-term memory experience to avoid repeating mistakes
 6. If an evolved tool has a definition/contract error, prefer using validate_tool_recipe, repair_tool_candidate, and promote_tool_candidate to fix it; do not simply register a synonym tool with a new name
-7. **WEB display interaction mode**: after calling web_show, the user stays on the web page and continues interacting via the chat box at the bottom. You must first call web_notify to invite the user to interact, then call ask_user to pause and wait — do not proceed to the completion flow (submit_completion_report → done) without an explicit "done" signal from the user.\
+7. **WEB display interaction mode**: after calling web_show, the user stays on the web page and continues interacting via the chat box at the bottom. You must first call web_notify to invite the user to interact, then call ask_user to pause and wait — do not proceed to the completion flow (submit_completion_report → done) without an explicit "done" signal from the user.
+   - **`content` must be the real content, not a file path**: pass the HTML/Markdown/JSON string itself; if the content lives in a disk file (e.g. `runs/xxx/training_dashboard.html`), first `read_file` it and pass the file's content to `web_show` — never pass the path string as content.
+   - **Use relative paths for images/resources**: images, CSS, and JS referenced inside the HTML/Markdown must use paths relative to the run directory (e.g. `artifacts/loss.png`) or `http(s)`/`data:` URLs — never absolute local paths (e.g. `E:/...`, `/home/...`), or the browser cannot load them.\
 """,
         "sys.sp_rules_header": "## Scratchpad (scratchpad) usage rules (mandatory)",
         "sys.sp_rules_body": """\

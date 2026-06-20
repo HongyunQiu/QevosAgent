@@ -2169,6 +2169,84 @@ def tool_file_tab(
     })
 
 
+def _looks_like_path(s: str) -> bool:
+    """判断字符串更像"文件路径"而非"真实内容"。
+
+    用于纠错：LLM 经常把 `runs/xxx/foo.html` 这样的路径直接当 content 传进来，
+    本意是想展示该文件的内容。
+    """
+    if not isinstance(s, str):
+        return False
+    s2 = s.strip()
+    if not s2 or "\n" in s2 or len(s2) > 1024:
+        return False
+    # 含有 HTML/标签结构 → 是真实内容而非路径
+    if "<" in s2 and ">" in s2:
+        return False
+    # 看起来要像个带扩展名的路径
+    return bool(re.search(r"\.[A-Za-z0-9]{1,8}$", s2))
+
+
+def _resolve_web_content(run_dir: str, content: str, content_type: str):
+    """若 content 实际是一个文件路径，则读出文件内容并返回 (content, base_path)。
+
+    base_path 是该文件所在目录相对 run_dir 的 posix 路径（用于让 HTML/Markdown 里
+    的相对图片/资源路径在前端正确解析）。若 content 本就是真实内容，原样返回。
+    """
+    base_path = ""
+    if content_type not in ("html", "markdown", "text", "chart", "image"):
+        return content, base_path
+    if not _looks_like_path(content):
+        return content, base_path
+
+    cand = content.strip().strip('"').strip("'")
+    p = Path(cand)
+    if not p.is_absolute():
+        p = Path(run_dir) / cand
+    try:
+        if not p.is_file():
+            return content, base_path
+    except OSError:
+        return content, base_path
+
+    run_root = Path(run_dir).resolve()
+    try:
+        p_res = p.resolve()
+        under_run = True
+        try:
+            rel_to_run = p_res.relative_to(run_root)
+        except ValueError:
+            under_run = False
+            rel_to_run = None
+    except OSError:
+        return content, base_path
+
+    if content_type == "image":
+        # run_dir 内的图片：存相对路径，前端经 /api/run-file-raw 解析；
+        # run_dir 外的图片：内联为 data URI，保证一定能显示。
+        if under_run:
+            return rel_to_run.as_posix(), ""
+        try:
+            import base64 as _b64
+            import mimetypes as _mt
+            mime = _mt.guess_type(str(p_res))[0] or "image/png"
+            data = p_res.read_bytes()
+            return f"data:{mime};base64," + _b64.b64encode(data).decode(), ""
+        except Exception:
+            return content, base_path
+
+    # 文本类（html / markdown / text / chart）→ 读出文本内容
+    try:
+        text = p_res.read_text(encoding="utf-8")
+    except Exception:
+        return content, base_path
+
+    if under_run and rel_to_run is not None:
+        parent = rel_to_run.parent.as_posix()
+        base_path = "" if parent in (".", "") else parent
+    return text, base_path
+
+
 def tool_web_show(
     state: AgentState,
     content: str,
@@ -2181,12 +2259,17 @@ def tool_web_show(
 
     content_type: html | markdown | table | chart | text | image
     mode: replace（覆盖）| append（追加）
+
+    纠错：若 content 实际是一个文件路径（如误传 runs/xxx/foo.html），自动读出
+    文件内容再展示，并据其所在目录解析相对资源路径。
     """
     import time as _time
 
     run_dir = _get_run_dir(state)
     if not run_dir:
         return ToolResult(success=False, output="", error="无法获取 run_dir，请确保 agent 通过持久化模式运行")
+
+    content, base_path = _resolve_web_content(run_dir, content, content_type)
 
     fp = Path(run_dir) / f"web_display_{display_id}.json"
 
@@ -2207,6 +2290,7 @@ def tool_web_show(
             "content_type": content_type,
             "title": title,
             "content": content,
+            "base_path": base_path,
             "created_at": _time.time(),
             "updated_at": _time.time(),
         }
@@ -3339,10 +3423,21 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "（例如：已展示完毕，有什么问题或需要调整的吗？）；"
                 "② 然后调用 ask_user 暂停任务，等待用户通过 WEB 聊天框发来下一步指令。"
                 "不要在调用 web_show 后立即完成任务（submit_completion_report/done），"
-                "除非用户已明确说不需要进一步交互。"
+                "除非用户已明确说不需要进一步交互。\n"
+                "【内容必须是真实内容，不是文件路径】content 参数要直接传入要渲染的"
+                "字符串本身（HTML/Markdown/JSON 文本），**绝不要**只传一个文件路径"
+                "（如 runs/xxx/foo.html）；若内容已在磁盘文件里，先用 read_file 读出再传入。"
+                "（兜底：即便误传了路径，工具会尝试自动读取，但不应依赖此行为。）\n"
+                "【图片等资源用相对路径】HTML/Markdown 内引用的图片、CSS、JS 等资源"
+                "必须使用相对 run 目录的相对路径（如 artifacts/loss.png），或 http(s)/"
+                "data: URL；**绝不要**写本机绝对路径（如 E:/... 或 /home/...），否则前端无法加载。"
             ),
             args_schema={
-                "content": "要展示的内容字符串",
+                "content": (
+                    "要展示的【真实内容字符串】（HTML/Markdown/JSON 文本等），"
+                    "不是文件路径；磁盘文件请先 read_file 读出。"
+                    "内部引用的图片用相对路径（artifacts/x.png）或 data: URL，勿用绝对路径。"
+                ),
                 "content_type": (
                     "内容类型：\n"
                     "  - html: HTML 片段（无 <html>/<body> 标签），适合简单布局；"
