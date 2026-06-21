@@ -1831,6 +1831,102 @@ def tool_request_advisor(state: AgentState, reason: str = "") -> ToolResult:
     )
 
 
+def _resolve_advisor_config(advisor) -> Tuple[str, str, str, str]:
+    """解析顾问模型配置，返回 (n, base_url, api_key, model)。
+
+    优先读 os.environ（启动时已从 .env 载入），缺失时再直接解析 .env 文件，
+    以便看板保存后无需重启 agent 也能取到最新值。
+    """
+    n = str(advisor).strip() or "1"
+    if n not in ("1", "2"):
+        n = "1"
+    prefix = f"ADVISOR{n}_OPENAI_"
+
+    base_url = (os.environ.get(prefix + "BASE_URL") or "").strip()
+    api_key = (os.environ.get(prefix + "API_KEY") or "").strip()
+    model = (os.environ.get(prefix + "MODEL") or "").strip()
+    if not (base_url and model):
+        env_path = os.path.join(os.getcwd(), ".env")
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip()
+                        if k == prefix + "BASE_URL" and not base_url:
+                            base_url = v
+                        elif k == prefix + "API_KEY" and not api_key:
+                            api_key = v
+                        elif k == prefix + "MODEL" and not model:
+                            model = v
+            except Exception:
+                pass
+    return n, base_url, api_key, model
+
+
+def tool_consult_advisor(
+    state: AgentState,
+    question: str,
+    advisor: int = 1,
+    model: Optional[str] = None,
+    max_tokens: int = 4096,
+) -> ToolResult:
+    """向「顾问模型」咨询，获取来自更强模型的独立专业意见。
+
+    顾问 1/2 在看板「设置 → LLM 服务 → 顾问模型1/2」配置，存于 .env 的
+    ADVISOR1_OPENAI_* / ADVISOR2_OPENAI_*，仅供本工具按需调用，不参与主备 fallback。
+    兼容 OpenAI / 本地模型 / OpenAI 兼容代理；命中 anthropic.com 时自动改用原生
+    Anthropic SDK（功能最全，非兼容层）。
+    """
+    n, base_url, api_key, cfg_model = _resolve_advisor_config(advisor)
+    if not base_url or not cfg_model:
+        return ToolResult(
+            success=False,
+            output=None,
+            error=f"顾问模型{n} 未配置：请在看板「设置 → LLM 服务 → 顾问模型{n}」填写服务地址和模型名称",
+        )
+
+    use_model = model or cfg_model
+    host = re.sub(r"^https?://", "", base_url).split("/")[0].lower()
+
+    # Anthropic 官方 endpoint：仅当域名命中 anthropic.com 才走原生 SDK；OpenAI 兼容代理
+    # （含转发 Claude 的网关）仍走 OpenAI SDK。原生失败则回退到 OpenAI 兼容层。
+    if host.endswith("anthropic.com"):
+        try:
+            import anthropic
+
+            native_base = re.sub(r"/v1/?$", "", base_url.rstrip("/")) or "https://api.anthropic.com"
+            client = anthropic.Anthropic(api_key=(api_key or ""), base_url=native_base)
+            resp = client.messages.create(
+                model=use_model,
+                max_tokens=int(max_tokens),
+                messages=[{"role": "user", "content": question}],
+            )
+            text = "".join(
+                getattr(b, "text", "") for b in resp.content if getattr(b, "type", None) == "text"
+            )
+            return ToolResult(success=True, output=text)
+        except Exception:
+            pass  # 回退到 OpenAI 兼容层
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=(api_key or "local"), base_url=base_url)
+        resp = client.chat.completions.create(
+            model=use_model,
+            messages=[{"role": "user", "content": question}],
+            max_tokens=int(max_tokens),
+        )
+        return ToolResult(success=True, output=resp.choices[0].message.content)
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
 def _get_run_dir(state: AgentState) -> Optional[str]:
     """Return the current run directory path, or None if unavailable."""
     persistence = getattr(state, "persistence", None)
@@ -3129,6 +3225,24 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "reason": "请求指导的原因（可选）：例如 '完成了阶段一，想确认方向' 或 '对下一步没有把握'",
             },
             fn=tool_request_advisor,
+        ),
+        ToolSpec(
+            name="consult_advisor",
+            description=(
+                "向「顾问模型」咨询复杂问题，获取来自更强模型的独立专业意见。"
+                "顾问 1/2 在看板「设置 → LLM 服务 → 顾问模型1/2」配置（存 .env 的 ADVISOR1/2_OPENAI_*），"
+                "仅供本工具按需调用，不参与主备 fallback。兼容 OpenAI / 本地模型 / OpenAI 兼容代理；"
+                "Anthropic 填 https://api.anthropic.com/v1/ + Anthropic key + claude-* 即可"
+                "（命中 anthropic.com 时自动改用原生 Anthropic SDK）。"
+                "与 request_advisor 不同：本工具是带着具体问题去问外部更强模型，而非触发内部高级指导员。"
+            ),
+            args_schema={
+                "question": "要咨询的问题（字符串，必填）",
+                "advisor": "顾问编号 1 或 2（可选，默认 1）",
+                "model": "模型名称（可选，覆盖该顾问在 .env 中配置的模型）",
+                "max_tokens": "最大输出 token 数（可选，默认 4096）",
+            },
+            fn=tool_consult_advisor,
         ),
         ToolSpec(
             name="ask_user",

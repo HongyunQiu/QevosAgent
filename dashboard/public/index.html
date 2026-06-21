@@ -5701,7 +5701,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
     const isAdv = apiTab === 'advisor1' || apiTab === 'advisor2';
     document.getElementById('setHintBase').textContent =
       apiTab === 'backup' ? '（主 API 失败时自动切换，留空不启用）'
-      : isAdv             ? '（仅供 openai_consult 工具按需咨询，不参与主备 fallback）'
+      : isAdv             ? '（仅供 consult_advisor 工具按需调用，不参与主备 fallback）'
       :                     '（OpenAI 兼容接口的 base URL）';
     document.getElementById('setHintModel').textContent =
       apiTab === 'backup' ? '（备用 endpoint 需单独指定 model id）'

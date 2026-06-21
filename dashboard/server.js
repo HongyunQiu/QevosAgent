@@ -1731,7 +1731,7 @@ const server = http.createServer(async (req, res) => {
       BACKUP_OPENAI_BASE_URL: process.env.BACKUP_OPENAI_BASE_URL || '',
       BACKUP_OPENAI_API_KEY:  process.env.BACKUP_OPENAI_API_KEY  || '',
       BACKUP_OPENAI_MODEL:    process.env.BACKUP_OPENAI_MODEL    || '',
-      // 顾问模型 1 / 2 —— 仅供 openai_consult 工具按需咨询，不参与主备 fallback
+      // 顾问模型 1 / 2 —— 仅供 consult_advisor 工具按需调用，不参与主备 fallback
       ADVISOR1_OPENAI_BASE_URL: process.env.ADVISOR1_OPENAI_BASE_URL || '',
       ADVISOR1_OPENAI_API_KEY:  process.env.ADVISOR1_OPENAI_API_KEY  || '',
       ADVISOR1_OPENAI_MODEL:    process.env.ADVISOR1_OPENAI_MODEL    || '',
