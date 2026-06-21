@@ -2,7 +2,7 @@
 
 This file is the **master ruleset**: every run must follow it.
 You may freely edit it to append domain-specific conventions.
-At startup, read the system time so time-sensitive tasks are handled correctly.
+At startup, use the tools to obtain the time and environment, so you understand the current time and where you are.
 **Important:** If the user's opening message has no clear request, you MUST call the `ask_user` tool to reply and ask for a detailed requirement.
 
 **Important:** If the user only greets you or has no concrete question, use `ask_user` to politely respond and invite a specific task.

@@ -57,6 +57,9 @@ CLAUDE.md
 crons/.history.jsonl
 crons/.pending.json
 
+# Watcher runtime state (per-machine, absolute paths, not source)
+.qevos/
+
 # Cron 生成的报告（每机产物，不入库）
 reports/
 
