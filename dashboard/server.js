@@ -1731,6 +1731,13 @@ const server = http.createServer(async (req, res) => {
       BACKUP_OPENAI_BASE_URL: process.env.BACKUP_OPENAI_BASE_URL || '',
       BACKUP_OPENAI_API_KEY:  process.env.BACKUP_OPENAI_API_KEY  || '',
       BACKUP_OPENAI_MODEL:    process.env.BACKUP_OPENAI_MODEL    || '',
+      // 顾问模型 1 / 2 —— 仅供 openai_consult 工具按需咨询，不参与主备 fallback
+      ADVISOR1_OPENAI_BASE_URL: process.env.ADVISOR1_OPENAI_BASE_URL || '',
+      ADVISOR1_OPENAI_API_KEY:  process.env.ADVISOR1_OPENAI_API_KEY  || '',
+      ADVISOR1_OPENAI_MODEL:    process.env.ADVISOR1_OPENAI_MODEL    || '',
+      ADVISOR2_OPENAI_BASE_URL: process.env.ADVISOR2_OPENAI_BASE_URL || '',
+      ADVISOR2_OPENAI_API_KEY:  process.env.ADVISOR2_OPENAI_API_KEY  || '',
+      ADVISOR2_OPENAI_MODEL:    process.env.ADVISOR2_OPENAI_MODEL    || '',
       // 高级设置 —— 局域网可见性
       DASHBOARD_HOST:  process.env.DASHBOARD_HOST  || '',
       DASHBOARD_PORT:  process.env.DASHBOARD_PORT  || '',
