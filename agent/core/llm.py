@@ -116,11 +116,34 @@ class LLMBackend(ABC):
 
     Optional:
     - estimate_tokens(messages, system) -> int (best-effort)
+
+    After each call, the backend records the normalized finish reason on
+    ``last_finish_reason`` ("length" means the output was truncated by the
+    token limit). Callers should read it immediately after the call, before
+    any other call (e.g. complete_text) overwrites it.
     """
+
+    # Normalized finish reason of the most recent call ("length" = truncated).
+    last_finish_reason: Optional[str] = None
+
+    # Whether this backend can continue from an assistant-message prefix
+    # (used to resume truncated output without re-generating the whole thing).
+    supports_continuation: bool = False
 
     @abstractmethod
     def complete(self, messages: list[dict], system: str) -> str:
         ...
+
+    def complete_continue(
+        self, messages: list[dict], system: str, assistant_prefix: str,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Resume generation from *assistant_prefix*, returning ONLY the new text.
+
+        Default: unsupported. Backends that set ``supports_continuation = True``
+        must override. Updates ``last_finish_reason`` like ``complete``.
+        """
+        raise NotImplementedError
 
     def estimate_tokens(self, messages: list[dict], system: str) -> int:
         # Default: heuristic; subclasses can override.
@@ -132,6 +155,21 @@ class LLMBackend(ABC):
     def complete_text(self, messages: list[dict], system: str, max_tokens: int = 200) -> str:
         """Plain-text lightweight call. Default falls back to complete(); subclasses may override."""
         return self.complete(messages, system)
+
+
+def _normalize_finish_reason(reason) -> Optional[str]:
+    """Normalize provider-specific finish reasons to a canonical set.
+
+    Truncation is the only signal we act on, so map every "ran out of output
+    budget" variant (OpenAI ``length``, Anthropic ``max_tokens``) to ``length``.
+    Other reasons are lower-cased and passed through; missing → None.
+    """
+    if not reason:
+        return None
+    r = str(reason).strip().lower()
+    if r in ("length", "max_tokens", "model_length", "max_output_tokens"):
+        return "length"
+    return r
 
 
 # ── OpenAI 后端实现 ────────────────────────────────────────────────────────────
@@ -242,6 +280,10 @@ class OpenAIBackend(LLMBackend):
         self.base_url = base_url
         self._is_official_openai = self._detect_official_openai_endpoint(base_url)
         self._use_response_format = self._is_official_openai
+        # Assistant-prefix continuation relies on vLLM's continue_final_message +
+        # add_generation_prompt extra params, which the official OpenAI chat API
+        # does not support. Enable only for local/compatible (non-official) servers.
+        self.supports_continuation = not self._is_official_openai
         # vLLM/OpenAI-compatible servers may compute a negative default max_tokens when
         # the prompt is long; set an explicit positive value.
         if max_tokens is None:
@@ -608,10 +650,13 @@ class OpenAIBackend(LLMBackend):
         max_tokens: int,
         use_json_format: bool,
         thinking_budget: Optional[int] = None,
+        continue_final: bool = False,
     ) -> str:
         """Internal helper: raw API call with explicit format and token controls.
 
         thinking_budget: override self.thinking_budget for this call (None = use instance default).
+        continue_final: when True, ask the server to continue the final assistant
+            message instead of starting a new turn (vLLM continue_final_message).
         """
         budget = self.thinking_budget if thinking_budget is None else thinking_budget
         normalized = self._normalize_messages(messages)
@@ -638,9 +683,17 @@ class OpenAIBackend(LLMBackend):
             extra: dict = {"chat_template_kwargs": {"enable_thinking": enable}}
             if enable:
                 extra["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            if continue_final:
+                # Resume the final assistant message verbatim rather than emitting
+                # a fresh turn — lets us stitch a truncated response back together.
+                extra["continue_final_message"] = True
+                extra["add_generation_prompt"] = False
             kwargs["extra_body"] = extra
 
         resp = self._create_with_retry(kwargs)
+        self.last_finish_reason = _normalize_finish_reason(
+            getattr(resp.choices[0], "finish_reason", None)
+        )
         msg = resp.choices[0].message
         content = getattr(msg, "content", None)
         if content is None:
@@ -659,12 +712,19 @@ class OpenAIBackend(LLMBackend):
                 stream_kwargs.setdefault("stream_options", None)
                 stream_resp = self._create_with_retry(stream_kwargs, is_stream=True)
                 parts = []
+                stream_fr = None
                 for chunk in stream_resp:
+                    if not chunk.choices:
+                        continue
                     delta = getattr(chunk.choices[0], "delta", None)
                     if delta is not None:
                         c = getattr(delta, "content", None)
                         if c is not None:
                             parts.append(c)
+                    fr = getattr(chunk.choices[0], "finish_reason", None)
+                    if fr:
+                        stream_fr = fr
+                self.last_finish_reason = _normalize_finish_reason(stream_fr)
                 content = "".join(parts)
                 if content:
                     return content
@@ -695,6 +755,24 @@ class OpenAIBackend(LLMBackend):
             max_tokens=max_tokens,
             use_json_format=False,
             thinking_budget=0,
+        )
+
+    def complete_continue(
+        self, messages: list[dict], system: str, assistant_prefix: str,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Continue the truncated assistant_prefix, returning only the new text.
+
+        Thinking is forced off: continuation across a reasoning boundary is
+        ill-defined, and continue_final_message resumes raw text only.
+        """
+        msgs = list(messages) + [{"role": "assistant", "content": assistant_prefix}]
+        return self._call_api(
+            msgs, system,
+            max_tokens=max_tokens if max_tokens is not None else self.max_tokens,
+            use_json_format=False,
+            thinking_budget=0,
+            continue_final=True,
         )
 
 
@@ -736,6 +814,8 @@ class AnthropicBackend(LLMBackend):
             # Anthropic requires max_tokens > budget_tokens
             max_tokens = max(max_tokens, self.thinking_budget + 2048)
         self.max_tokens = max_tokens
+        # Anthropic supports continuation natively via assistant-message prefill.
+        self.supports_continuation = True
 
     @staticmethod
     def _extract_text(content) -> str:
@@ -796,6 +876,32 @@ class AnthropicBackend(LLMBackend):
         if budget > 0:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
         resp = self.client.messages.create(**kwargs)
+        self.last_finish_reason = _normalize_finish_reason(
+            getattr(resp, "stop_reason", None)
+        )
+        return self._extract_text(resp.content)
+
+    def complete_continue(
+        self, messages: list[dict], system: str, assistant_prefix: str,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Continue the truncated assistant_prefix via Anthropic assistant prefill.
+
+        Thinking is omitted: Anthropic disallows a trailing assistant message
+        (prefill) together with extended thinking.
+        """
+        msgs = list(self._normalize_messages(messages)) + [
+            {"role": "assistant", "content": assistant_prefix}
+        ]
+        resp = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens if max_tokens is not None else self.max_tokens,
+            system=system,
+            messages=msgs,
+        )
+        self.last_finish_reason = _normalize_finish_reason(
+            getattr(resp, "stop_reason", None)
+        )
         return self._extract_text(resp.content)
 
     def complete_text(self, messages: list[dict], system: str, max_tokens: int = 200) -> str:

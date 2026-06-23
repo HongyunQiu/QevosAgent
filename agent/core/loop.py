@@ -768,8 +768,51 @@ def run(
                     s = s[:max_chars] + "\n...[TRUNCATED]"
                 print(f"{DEEP_GREEN}\n[DEBUG_LLM_IO] >>> request{RESET}\n{s}\n")
 
+            finish_reason = None
             try:
                 raw_response = llm.complete(messages, system)
+                # 紧接 complete() 抓取 finish_reason：后续 _apply_runtime_patch 的
+                # mini 诊断会调 complete_text（复用 _call_api），会覆盖 last_finish_reason，
+                # 所以必须在这一刻就快照到局部变量。"length" = 输出被 token 上限截断。
+                finish_reason = getattr(llm, "last_finish_reason", None)
+
+                # 截断续写：若输出被 token 上限截断，复用已生成前缀、只补尾巴，
+                # 避免整段重生成（长文的主要耗时）。续写不可用/失败时，raw_response
+                # 保持截断态，由下游 parse 失败 → ERROR 分支的 max_tokens 翻倍兜底。
+                # 前提：后端支持 + thinking 关闭（推理模型续写跨思考边界会乱）。
+                if (
+                    finish_reason == "length"
+                    and os.environ.get("LLM_CONTINUATION", "1") != "0"
+                    and getattr(llm, "supports_continuation", False)
+                    and int(getattr(llm, "thinking_budget", 0) or 0) == 0
+                    and isinstance(raw_response, str) and raw_response.strip()
+                ):
+                    _cont_max = int(os.environ.get("LLM_CONTINUATION_MAX", "4"))
+                    _cont_rounds = 0
+                    for _r in range(_cont_max):
+                        try:
+                            piece = llm.complete_continue(messages, system, raw_response)
+                        except Exception as e:
+                            if hooks.on_error:
+                                hooks.on_error(f"[续写] 第{_r + 1}轮失败，回退常规重试: {e}")
+                            break
+                        finish_reason = getattr(llm, "last_finish_reason", None)
+                        if not piece:
+                            break
+                        raw_response += piece
+                        _cont_rounds += 1
+                        if hooks.on_error:
+                            hooks.on_error(
+                                f"[续写] 第{_r + 1}轮 +{len(piece)} 字符 (finish_reason={finish_reason})"
+                            )
+                        if finish_reason != "length":
+                            break
+                    if _cont_rounds:
+                        state.long_term.append(
+                            f"[自我修复] 输出被截断，续写 {_cont_rounds} 轮补全"
+                            f"（最终 finish_reason={finish_reason}），未整段重生成。"
+                        )
+
                 # 成功一轮，清零连续异常计数器（与下方的熔断逻辑配套）。
                 if state.meta.get("_consec_llm_errors"):
                     state.meta["_consec_llm_errors"] = 0
@@ -979,9 +1022,12 @@ def run(
                     hooks.on_error(error_msg)
 
                 is_json_parse_error = isinstance(error_msg, str) and "JSON 解析失败" in error_msg
+                # finish_reason == "length" 是后端给出的确定性截断信号，比"JSON 解析失败"
+                # 子串启发式更可靠：据此判定截断，不再只靠猜。
+                is_truncated = finish_reason == "length"
                 retry_max = int(os.environ.get("JSON_PARSE_RETRY_MAX", "3"))
 
-                if is_json_parse_error and hasattr(llm, "max_tokens"):
+                if (is_json_parse_error or is_truncated) and hasattr(llm, "max_tokens"):
                     retry_n = int(state.meta.get("json_parse_retry", 0))
                     cap = int(os.environ.get("LLM_MAX_TOKENS_CAP", "32768"))
                     old = int(getattr(llm, "max_tokens", 0) or 0)
@@ -992,14 +1038,17 @@ def run(
                         except Exception:
                             pass
                         state.meta["json_parse_retry"] = retry_n + 1
+                        _trunc_desc = (
+                            "确认输出被截断" if is_truncated else "JSON 解析失败，疑似输出被截断"
+                        )
                         state.long_term.append(
-                            f"[自我修复] JSON 解析失败，疑似输出被截断：max_tokens {old}→{new} 后重试。"
+                            f"[自我修复] {_trunc_desc}：max_tokens {old}→{new} 后重试。"
                         )
                         if hooks.on_error:
                             hooks.on_error(f"[自我修复] 提升 max_tokens {old}→{new} 并重试")
 
-                # 连续 JSON 解析失败计数（独立于 json_parse_retry）
-                if is_json_parse_error:
+                # 连续截断/JSON 解析失败计数（独立于 json_parse_retry）
+                if is_json_parse_error or is_truncated:
                     streak = int(state.meta.get("_json_fail_streak", 0)) + 1
                     state.meta["_json_fail_streak"] = streak
                 else:
@@ -1010,7 +1059,7 @@ def run(
                 _apply_runtime_patch(raw_response, action, state, llm, hooks=hooks)
 
                 # 超出重试上限后注入强提示，打破截断死循环
-                if is_json_parse_error and streak > retry_max:
+                if (is_json_parse_error or is_truncated) and streak > retry_max:
                     overload_hint = (
                         f"\n\n⛔ 循环检测：JSON 解析已连续失败 {streak} 次，输出持续被截断。"
                         "根本原因极可能是 args（尤其是 content/code 字段）过长，超出模型单次输出上限。"
