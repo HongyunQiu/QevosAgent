@@ -24,6 +24,7 @@ const os           = require('os');
 const { spawn }    = require('child_process');
 const WebSocket    = require('ws');
 const EventEmitter = require('events');
+const { zipDirToStream } = require('./zip');
 
 // Emits 'open-view' when Electron should open a view tab.
 // main.js listens to this because both files run in the same Node process.
@@ -1575,6 +1576,17 @@ function readBody(req) {
   });
 }
 
+// Buffer variant — for binary uploads (raw file bytes), where string accumulation
+// would corrupt the data.
+function readBodyBuffer(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
 function serveStatic(req, res) {
   const urlPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
   const fp  = path.join(PUBLIC, urlPath);
@@ -2503,6 +2515,51 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
       res.end(data);
     } catch (e) { res.writeHead(404); res.end(String(e)); }
+    return;
+  }
+
+  // ── POST /api/fs/upload?dir=<destDir>&rel=<relPath> — upload one file ─────
+  // Raw binary body = file bytes. `rel` is a posix-style relative path under
+  // `dir` (so folder uploads can recreate their tree); intermediate dirs are
+  // created as needed. The frontend sends one request per file.
+  if (req.method === 'POST' && req.url.startsWith('/api/fs/upload')) {
+    try {
+      const u   = new URL(req.url, 'http://x');
+      const dir = u.searchParams.get('dir');
+      const rel = u.searchParams.get('rel');
+      if (!dir || !rel) return json(400, { error: 'dir and rel required' });
+      // Guard against path traversal escaping the destination dir.
+      const dest = path.resolve(dir, rel);
+      const root = path.resolve(dir);
+      if (dest !== root && !dest.startsWith(root + path.sep)) {
+        return json(400, { error: 'invalid rel path' });
+      }
+      const data = await readBodyBuffer(req);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, data);
+      return json(200, { ok: true, path: dest, size: data.length });
+    } catch (e) { return json(400, { error: String(e.message) }); }
+  }
+
+  // ── GET /api/fs/zip?path=<dir> — stream a directory as a .zip ────────────
+  if (req.method === 'GET' && req.url.startsWith('/api/fs/zip')) {
+    try {
+      const u       = new URL(req.url, 'http://x');
+      const dirPath = u.searchParams.get('path');
+      if (!dirPath) { res.writeHead(400); res.end('path required'); return; }
+      let st;
+      try { st = fs.statSync(dirPath); } catch { res.writeHead(404); res.end('not found'); return; }
+      if (!st.isDirectory()) { res.writeHead(400); res.end('not a directory'); return; }
+      const base = path.basename(dirPath.replace(/[/\\]+$/, '')) || 'folder';
+      const fname = encodeURIComponent(base + '.zip');
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${base}.zip"; filename*=UTF-8''${fname}`,
+        'Cache-Control': 'no-cache',
+      });
+      zipDirToStream(dirPath, res);
+      res.end();
+    } catch (e) { try { res.writeHead(500); res.end(String(e)); } catch {} }
     return;
   }
 

@@ -638,6 +638,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .set-probe { flex-shrink:0; padding:2px 9px; background:rgba(63,185,80,0.15); color:#3fb950; font-size:10.5px; font-weight:600; border:none; border-radius:10px; cursor:pointer; }
 .set-probe:hover:not(:disabled) { background:rgba(63,185,80,0.28); }
 .set-probe:disabled { opacity:0.5; cursor:not-allowed; }
+.set-model-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
+.set-modelchip { padding:3px 10px; background:rgba(88,166,255,0.12); color:#58a6ff; font-size:11px; font-family:var(--mono); font-weight:500; border:1px solid rgba(88,166,255,0.35); border-radius:11px; cursor:pointer; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.set-modelchip:hover { background:rgba(88,166,255,0.22); }
+.set-modelchip.active { background:rgba(88,166,255,0.3); border-color:#58a6ff; color:#cde6ff; }
 .set-tabs { display:flex; gap:4px; margin-bottom:16px; border-bottom:1px solid var(--border); }
 .set-tabs-llm { flex-wrap:wrap; row-gap:0; }
 /* Tab groups stacked vertically: top = LLM 服务 (room for future providers),
@@ -1368,6 +1372,22 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     height: 100dvh;
   }
 }
+
+/* ── Right-click context menu (file manager upload/download) ─────────────── */
+.ctx-menu {
+  position: fixed; z-index: 9999; min-width: 180px;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+  font-size: 13px; user-select: none;
+}
+.ctx-item {
+  padding: 6px 12px; border-radius: 4px; cursor: pointer;
+  color: var(--text); white-space: nowrap;
+}
+.ctx-item:hover { background: var(--bg4); }
+.ctx-item.disabled { color: var(--muted); cursor: default; }
+.ctx-item.disabled:hover { background: transparent; }
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
 <script src="/cm6-bundle.js"></script>
@@ -1866,6 +1886,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
         <div class="set-fg">
           <label for="setModel"><span id="setLblModel">模型名称</span><span class="set-req" id="setMarkModel">*</span> <span class="set-hint-inline" id="setHintModel">（与服务端返回的 model id 一致）</span></label>
           <input type="text" id="setModel" placeholder="gpt-4o / qwen3-72b / deepseek-chat">
+          <div class="set-model-chips" id="setModelChips" style="display:none;"></div>
         </div>
       </div>
 
@@ -5088,7 +5109,7 @@ function _dirPaneHTML(id, label, dirPath) {
     <button class="icon-btn" id="${id}-dlBtn" disabled onclick="downloadDirFile('${id}')">↓ Download</button>
   </div>
   <div class="files-body">
-    <div class="files-tree" id="${id}-tree"><div class="files-empty">Loading…</div></div>
+    <div class="files-tree" id="${id}-tree" oncontextmenu="onDirTreeContextMenu('${id}', event)"><div class="files-empty">Loading…</div></div>
     <div class="files-content">
       <div class="files-content-path" id="${id}-pathBar" style="display:none"></div>
       <pre class="files-view" id="${id}-view"><span class="files-placeholder">Select a file to view its contents</span></pre>
@@ -5315,6 +5336,109 @@ function downloadDirFile(id) {
   });
   document.body.appendChild(a); a.click();
   document.body.removeChild(a); URL.revokeObjectURL(a.href);
+}
+
+// ── Dir-tab right-click: upload / download ────────────────────────────────
+// Works in all browsers and Electron (no drag needed): downloads go through
+// the existing /api/fs/raw + new /api/fs/zip; uploads stream raw file bytes to
+// /api/fs/upload, one request per file (folders keep their tree via
+// webkitRelativePath).
+let _ctxMenuEl = null;
+function _hideCtxMenu() {
+  if (_ctxMenuEl) { _ctxMenuEl.remove(); _ctxMenuEl = null; }
+  document.removeEventListener('click', _hideCtxMenu, true);
+  document.removeEventListener('scroll', _hideCtxMenu, true);
+}
+function _showCtxMenu(x, y, items) {
+  _hideCtxMenu();
+  const m = document.createElement('div');
+  m.className = 'ctx-menu';
+  for (const it of items) {
+    if (it.sep) { const s = document.createElement('div'); s.className = 'ctx-sep'; m.appendChild(s); continue; }
+    const b = document.createElement('div');
+    b.className = 'ctx-item' + (it.disabled ? ' disabled' : '');
+    b.textContent = it.label;
+    if (!it.disabled) b.addEventListener('click', () => { _hideCtxMenu(); it.action(); });
+    m.appendChild(b);
+  }
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, window.innerWidth  - r.width  - 6) + 'px';
+  m.style.top  = Math.min(y, window.innerHeight - r.height - 6) + 'px';
+  _ctxMenuEl = m;
+  setTimeout(() => {
+    document.addEventListener('click', _hideCtxMenu, true);
+    document.addEventListener('scroll', _hideCtxMenu, true);
+  }, 0);
+}
+
+function onDirTreeContextMenu(id, e) {
+  e.preventDefault();
+  const s = gDirTabState[id]; if (!s) return;
+  const curDir = s.currentDir;
+  const row    = e.target.closest('.ftree-file, .ftree-dir');
+  const items  = [];
+  const uploadItems = (dest) => ([
+    { label: '⬆ Upload file…',   action: () => pickAndUpload(id, dest, false) },
+    { label: '⬆ Upload folder…', action: () => pickAndUpload(id, dest, true)  },
+  ]);
+
+  if (row && row.classList.contains('ftree-file')) {
+    const fp = row.dataset.fullpath;
+    items.push({ label: '⬇ Download', action: () => downloadFsFile(fp) });
+    items.push({ sep: true }, ...uploadItems(curDir));
+  } else if (row && row.classList.contains('ftree-dir')) {
+    const fp = row.dataset.fullpath;  // folder (or parent ".." path)
+    items.push({ label: '⬇ Download as zip', action: () => downloadFsZip(fp) });
+    items.push({ sep: true }, ...uploadItems(fp));
+  } else {
+    items.push({ label: '⬇ Download folder as zip', action: () => downloadFsZip(curDir) });
+    items.push({ sep: true }, ...uploadItems(curDir));
+  }
+  _showCtxMenu(e.clientX, e.clientY, items);
+}
+
+function downloadFsFile(fp) {
+  const name = fp.split(/[/\\]/).pop();
+  const a = Object.assign(document.createElement('a'), {
+    href: '/api/fs/raw?path=' + encodeURIComponent(fp), download: name || '' });
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function downloadFsZip(dirPath) {
+  const a = Object.assign(document.createElement('a'), {
+    href: '/api/fs/zip?path=' + encodeURIComponent(dirPath), download: '' });
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+function pickAndUpload(id, destDir, isFolder) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  if (isFolder) input.webkitdirectory = true; else input.multiple = true;
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.addEventListener('change', async () => {
+    const files = Array.from(input.files || []);
+    input.remove();
+    if (files.length) await uploadFilesToDir(id, destDir, files);
+  });
+  input.click();
+}
+
+async function uploadFilesToDir(id, destDir, files) {
+  toast(`Uploading ${files.length} file(s)…`);
+  let ok = 0, fail = 0;
+  for (const f of files) {
+    const rel = (f.webkitRelativePath || f.name).replace(/\\/g, '/');
+    try {
+      const res = await fetch(
+        '/api/fs/upload?dir=' + encodeURIComponent(destDir) + '&rel=' + encodeURIComponent(rel),
+        { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: f });
+      if (res.ok && (await res.json()).ok) ok++; else fail++;
+    } catch { fail++; }
+  }
+  toast(fail ? `✓ ${ok} uploaded · ✗ ${fail} failed` : `✓ Uploaded ${ok} file(s)`);
+  const s = gDirTabState[id];
+  if (s) loadDirTabFiles(id, s.currentDir);
 }
 
 // ── Server-side directory picker (browser fallback) ──────────────────────
@@ -5717,7 +5841,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
   }
   // ── LLM API 组：内容区 setPaneApi 常驻，切 tab 只交换输入框的值 ──
   function switchApiTab(n) {
-    if (n !== apiTab) { snap(); apiTab = n; loadTab(n); }
+    if (n !== apiTab) { snap(); apiTab = n; loadTab(n); renderModelChips(null); }
     document.querySelectorAll('.set-tabs[data-group="api"] .set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === n));
     marks(); dots(); msg.className = 'set-msg';
   }
@@ -5739,6 +5863,36 @@ fetch('/api/version').then(r => r.json()).then(d => {
   });
 
   const showMsg = (t, x) => { msg.className = 'set-msg ' + t; msg.textContent = x; };
+
+  const TAB_LABELS = { primary:'主 API', backup:'备用 API', advisor1:'顾问模型1', advisor2:'顾问模型2' };
+
+  // Server-side probe of {baseUrl}/models. Returns string[] of model ids,
+  // or null when the endpoint is unreachable / returned no usable list.
+  async function probeModels(baseUrl, apiKey) {
+    try {
+      const r = await fetch('/api/env/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl, apiKey: apiKey || 'local' }),
+      }).then(x => x.json());
+      if (r.ok && Array.isArray(r.models) && r.models.length) return r.models;
+    } catch { /* network error → treat as unreachable */ }
+    return null;
+  }
+
+  // Render clickable model chips under the model input. Clicking one fills it.
+  // Pass a single-element or empty/null list to hide the chip row.
+  const chipBox = document.getElementById('setModelChips');
+  function renderModelChips(models) {
+    if (!models || models.length <= 1) { chipBox.innerHTML = ''; chipBox.style.display = 'none'; return; }
+    chipBox.style.display = 'flex';
+    chipBox.innerHTML = models.map(m =>
+      `<button type="button" class="set-modelchip${m === inModel.value ? ' active' : ''}" title="${esc(m)}" data-m="${esc(m)}">${esc(m)}</button>`
+    ).join('');
+    chipBox.querySelectorAll('.set-modelchip').forEach(b => b.addEventListener('click', () => {
+      inModel.value = b.dataset.m; snap(); dots();
+      chipBox.querySelectorAll('.set-modelchip').forEach(x => x.classList.toggle('active', x === b));
+    }));
+  }
 
   async function openSettings() {
     msg.className = 'set-msg';
@@ -5792,8 +5946,16 @@ fetch('/api/version').then(r => r.json()).then(d => {
         body: JSON.stringify({ baseUrl, apiKey: apiKey || 'local' }),
       }).then(x => x.json());
       if (r.ok) {
-        if (r.models && r.models.length) showMsg('success', '连接成功 — 可用模型：' + r.models.join('、'));
-        else showMsg('success', '连接成功（HTTP ' + r.status + '）— 服务端响应正常');
+        if (r.models && r.models.length === 1) {
+          inModel.value = r.models[0]; snap(); dots(); renderModelChips(null);
+          showMsg('success', '连接成功 — 已自动填入模型：' + r.models[0]);
+        } else if (r.models && r.models.length > 1) {
+          renderModelChips(r.models);
+          showMsg('success', '连接成功 — 检测到 ' + r.models.length + ' 个模型，请在下方点击选择');
+        } else {
+          renderModelChips(null);
+          showMsg('success', '连接成功（HTTP ' + r.status + '）— 服务端响应正常');
+        }
       } else {
         const hint = r.status === 401 ? '（需要 API 密钥或密钥有误）' : '';
         showMsg('error', '连接失败：' + (r.error || 'HTTP ' + r.status) + hint);
@@ -5805,6 +5967,33 @@ fetch('/api/version').then(r => r.json()).then(d => {
   // ── Save ──────────────────────────────────────────────────────────
   document.getElementById('setSave').addEventListener('click', async () => {
     msg.className = 'set-msg'; snap();
+
+    // 自动录入模型名：某 tab 填了 base 但 model 为空时，保存前探测一次。
+    // 单模型 → 自动回填；多模型 → 切到该 tab、出 chips、暂停保存让用户点选；
+    // 探测不通 → 非阻塞，保持原值交给后续常规校验（已在用户确认的策略下）。
+    {
+      const saveBtn = document.getElementById('setSave');
+      const orig = saveBtn.textContent;
+      for (const n of ['primary', 'backup', 'advisor1', 'advisor2']) {
+        const s = tabState[n];
+        if (!s.base.trim() || s.model.trim()) continue;
+        saveBtn.disabled = true; saveBtn.textContent = '探测模型中…';
+        const models = await probeModels(s.base.trim(), s.key.trim());
+        saveBtn.disabled = false; saveBtn.textContent = orig;
+        if (!models) continue;                       // 不可达 → 非阻塞跳过
+        if (models.length === 1) {
+          s.model = models[0];
+          if (n === apiTab) inModel.value = models[0];
+          dots();
+        } else {
+          switchApiTab(n);
+          renderModelChips(models);
+          showMsg('error', '「' + TAB_LABELS[n] + '」检测到 ' + models.length + ' 个模型，请在下方点击选择后再保存');
+          return;
+        }
+      }
+    }
+
     const pB = tabState.primary.base.trim(), pM = tabState.primary.model.trim();
     if (!pB || !pM) {
       if (apiTab !== 'primary') switchApiTab('primary');
