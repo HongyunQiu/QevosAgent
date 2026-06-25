@@ -3748,4 +3748,22 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             fn=tool_run_app,
         ),
     ]
-    return {s.name: s for s in specs}
+    tools = {s.name: s for s in specs}
+    tools.update(_load_pro_tools())
+    return tools
+
+
+# ── PRO extension point (tool auto-discovery) ────────────────────────────────
+# Closed-source PRO builds may drop an `agent/pro/tools.py` exposing
+# `get_pro_tools() -> dict[str, ToolSpec]`. When the module is absent
+# (open-source build) this is a no-op and the standard tool set is unchanged.
+def _load_pro_tools() -> dict[str, "ToolSpec"]:
+    try:
+        from agent.pro.tools import get_pro_tools  # type: ignore
+    except Exception:
+        return {}
+    try:
+        extra = get_pro_tools() or {}
+        return {name: spec for name, spec in extra.items() if name}
+    except Exception:
+        return {}

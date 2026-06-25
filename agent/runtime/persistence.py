@@ -16,6 +16,29 @@ from pathlib import Path
 from typing import Optional
 
 
+# ── PRO extension point (run lifecycle hooks) ────────────────────────────────
+# Closed-source PRO builds may drop an `agent/pro/hooks.py` exposing optional
+# callables `on_run_start(run_dir, state)` / `on_run_finish(run_dir, state, outcome, error)`.
+# When the module is absent (open-source build) this is a no-op. Hooks are called
+# defensively — any exception is swallowed so reporting never breaks a run.
+def _pro_hook(name: str):
+    try:
+        from agent.pro import hooks as _h  # type: ignore
+    except Exception:
+        return None
+    return getattr(_h, name, None)
+
+
+def _fire_pro_hook(name: str, *args) -> None:
+    fn = _pro_hook(name)
+    if fn is None:
+        return
+    try:
+        fn(*args)
+    except Exception:
+        pass
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -213,6 +236,7 @@ class RunPersistence:
                 self.save_scratchpad(scratchpad)
         else:
             _write_json_atomic(self.status_path, self._status_payload(status="running"))
+        _fire_pro_hook("on_run_start", str(self.run_dir), state)
 
     def append_short_term(self, record: dict) -> None:
         self.short_term_path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,3 +395,4 @@ class RunPersistence:
         self._write_execution_summary(state, status, diagnostics, error)
         self._write_issues(state, diagnostics, error)
         self._write_reflection(diagnostics, error)
+        _fire_pro_hook("on_run_finish", str(self.run_dir), state, status, error)

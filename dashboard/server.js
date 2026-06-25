@@ -1587,6 +1587,42 @@ function readBodyBuffer(req) {
   });
 }
 
+// ── Extension points (PRO overlay) ───────────────────────────────────────────
+// Closed-source PRO builds add features by dropping optional modules at the
+// conventional paths below — WITHOUT editing this file. When a module is absent
+// (the open-source build) every hook is a no-op and behaviour is byte-identical
+// to a build that never had these seams. See doc/pro-extension-points.md.
+function loadOptionalModule(relPath) {
+  try {
+    const p = path.join(__dirname, relPath);
+    if (fs.existsSync(p)) {
+      console.log(`  [ext] loaded ${relPath}`);
+      return require(p);
+    }
+  } catch (e) {
+    console.error(`  [ext] failed to load ${relPath}: ${e.message}`);
+  }
+  return null;
+}
+
+// ① Auth provider — gates HTTP + WS and may serve its own endpoints (login page,
+//    /api/login, …). Optional exports (all async-friendly):
+//      handle(req, res)    -> truthy if it fully handled the request (pre-auth,
+//                             e.g. serving the login page or /api/login)
+//      checkHttp(req)      -> { ok:true } | { ok:false, status?, headers?, body? }
+//      checkUpgrade(req)   -> boolean (allow this WebSocket upgrade?)
+const authProvider = loadOptionalModule('auth-provider.js');
+
+// ② Route plugin — adds API routes without touching the dispatch chain below.
+//      handle(req, res, ctx) -> truthy if it handled the request
+//    ctx = { json, readBody } convenience helpers.
+const routePlugin = loadOptionalModule('routes-pro.js');
+
+// ③ Frontend overlay — if public/pro/pro.js exists, a <script> tag for it is
+//    injected into every served HTML page. The file itself is served by the
+//    normal static handler (it lives under PUBLIC). pro.js self-mounts its UI.
+const PRO_UI_ENTRY = fs.existsSync(path.join(PUBLIC, 'pro', 'pro.js'));
+
 function serveStatic(req, res) {
   const urlPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
   const fp  = path.join(PUBLIC, urlPath);
@@ -1597,7 +1633,11 @@ function serveStatic(req, res) {
       const langScript = `<script>window.QEVOS_LANG="${LANG}";</script>`;
       // Inject right after <head> so QEVOS_LANG is defined before ui_i18n.js
       // runs; otherwise UI_LANG freezes to the default before the value is set.
-      const html = content.toString('utf8').replace('<head>', '<head>' + langScript);
+      let html = content.toString('utf8').replace('<head>', '<head>' + langScript);
+      // ③ PRO frontend overlay (no-op when public/pro/pro.js is absent).
+      if (PRO_UI_ENTRY) {
+        html = html.replace('</body>', '<script src="/pro/pro.js" defer></script>\n</body>');
+      }
       res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain' });
       res.end(html, 'utf8');
     } else {
@@ -1624,6 +1664,23 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(code, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(obj));
   };
+
+  // ── PRO extension seams (no-op in open-source build) ──────────────────────
+  // ① Auth provider: let it serve its own pre-auth endpoints (login page,
+  //    /api/login) first, then gate everything else.
+  if (authProvider) {
+    if (authProvider.handle && await authProvider.handle(req, res)) return;
+    if (authProvider.checkHttp) {
+      const gate = await authProvider.checkHttp(req);
+      if (gate && gate.ok === false) {
+        res.writeHead(gate.status || 401, gate.headers || { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(gate.body != null ? gate.body : 'Unauthorized');
+        return;
+      }
+    }
+  }
+  // ② Route plugin: PRO-only API routes, without editing the dispatch chain below.
+  if (routePlugin && routePlugin.handle && await routePlugin.handle(req, res, { json, readBody })) return;
 
   // ── POST /api/launch  ─────────────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/api/launch') {
@@ -2855,11 +2912,17 @@ function handleTerminalConnection(ws) {
 const wss     = new WebSocket.Server({ noServer: true });
 const termWss = new WebSocket.Server({ noServer: true });
 
-server.on('upgrade', (req, socket, head) => {
+server.on('upgrade', async (req, socket, head) => {
   if (!isIpAllowed(req.socket.remoteAddress)) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
     socket.destroy();
     return;
+  }
+  // ① PRO auth provider gates WS upgrades too (no-op in open-source build).
+  if (authProvider && authProvider.checkUpgrade) {
+    let ok = false;
+    try { ok = await authProvider.checkUpgrade(req); } catch { ok = false; }
+    if (!ok) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
   }
   const pathName = req.url.split('?')[0];
   if (pathName === '/ws/term') {
