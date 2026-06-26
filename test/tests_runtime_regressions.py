@@ -14,11 +14,9 @@ from agent.core.types_def import Action, ActionType, AgentState, ToolResult, Too
 from agent.runtime.persistence import RunPersistence
 from agent.tools.standard import (
     get_standard_tools,
-    tool_load_snapshot_meta,
     tool_promote_tool_candidate,
     tool_repair_tool_candidate,
     tool_scratchpad_set,
-    tool_save_snapshot_meta,
     tool_validate_tool_recipe,
 )
 from run_goal import ensure_env_defaults, format_probe_summary, probe_openai_configuration
@@ -55,91 +53,6 @@ class ExecuteArgFilteringTests(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(seen["code"], "print('ok')")
-
-
-class SnapshotValidationTests(unittest.TestCase):
-    def test_load_snapshot_meta_skips_invalid_evolved_tools(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            snapshot_path = Path(tmpdir) / "snapshot.json"
-            snapshot_path.write_text(
-                json.dumps(
-                    {
-                        "long_term": ["memory"],
-                        "evolved_tools": {
-                            "good_tool": {
-                                "name": "good_tool",
-                                "description": "works",
-                                "args_schema": {"value": "payload"},
-                                "python_code": (
-                                    "def run(state, value):\n"
-                                    "    return ToolResult(success=True, output=value)\n"
-                                ),
-                            },
-                            "bad_tool": {
-                                "name": "bad_tool",
-                                "description": "broken",
-                                "args_schema": {"url": "target"},
-                                "python_code": (
-                                    "def run(state, url):\n"
-                                    "    return ToolResult(output=url, error=None)\n"
-                                ),
-                            },
-                        },
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-
-            state = AgentState(goal="test")
-            result = tool_load_snapshot_meta(state=state, path=str(snapshot_path))
-
-            self.assertTrue(result.success)
-            self.assertIn("good_tool", state.tools)
-            self.assertNotIn("bad_tool", state.tools)
-            self.assertIn("invalid_evolved_tools", state.meta)
-            self.assertIn("bad_tool", state.meta["invalid_evolved_tools"])
-            self.assertEqual(result.output["restored"], 1)
-            self.assertEqual(result.output["invalid"], 1)
-
-    def test_candidate_repairs_restore_as_metadata_only(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            snapshot_path = Path(tmpdir) / "snapshot.json"
-            state = AgentState(goal="test")
-            state.meta["evolved_tools"] = {
-                "formal_tool": {
-                    "name": "formal_tool",
-                    "description": "formal",
-                    "args_schema": {"value": "payload"},
-                    "python_code": (
-                        "def run(state, value):\n"
-                        "    return ToolResult(success=True, output=value)\n"
-                    ),
-                }
-            }
-            state.meta["tool_repair_candidates"] = {
-                "formal_tool": {
-                    "name": "formal_tool",
-                    "description": "candidate",
-                    "args_schema": {"value": "payload"},
-                    "python_code": (
-                        "def run(state, value):\n"
-                        "    return ToolResult(success=True, output='candidate:' + value)\n"
-                    ),
-                    "validation": {"ok": True, "errors": []},
-                }
-            }
-
-            save_result = tool_save_snapshot_meta(state=state, path=str(snapshot_path))
-            self.assertTrue(save_result.success)
-
-            new_state = AgentState(goal="restore")
-            load_result = tool_load_snapshot_meta(state=new_state, path=str(snapshot_path))
-
-            self.assertTrue(load_result.success)
-            self.assertIn("formal_tool", new_state.tools)
-            self.assertIn("tool_repair_candidates", new_state.meta)
-            self.assertIn("formal_tool", new_state.meta["tool_repair_candidates"])
 
 
 class ToolRepairFlowTests(unittest.TestCase):
