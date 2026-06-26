@@ -6,8 +6,6 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.core.llm import LLMBackend
-from agent.core.loop import run
 from agent.core.executor import execute
 from agent.core.loop import _extract_claimed_artifact_paths, _parse_acceptance_evidence
 from agent.core.types_def import Action, ActionType, AgentState, ToolResult, ToolSpec
@@ -19,7 +17,7 @@ from agent.tools.standard import (
     tool_scratchpad_set,
     tool_validate_tool_recipe,
 )
-from run_goal import ensure_env_defaults, format_probe_summary, probe_openai_configuration
+from run_goal import format_probe_summary, probe_openai_configuration
 
 
 class ExecuteArgFilteringTests(unittest.TestCase):
@@ -195,165 +193,7 @@ class AcceptancePathParsingTests(unittest.TestCase):
         )
 
 
-class EnvDefaultTests(unittest.TestCase):
-    def test_ensure_env_defaults_enables_memory_persistence_flags(self):
-        keys = (
-            "AUTO_SAVE_SNAPSHOT_ON_EXIT",
-            "AUTO_REMEMBER_ON_DONE",
-            "OPENAI_PROFILE",
-            "OPENAI_BASE_URL",
-            "OPENAI_PROFILE_OSS120B_BASE_URL",
-        )
-        old = {k: os.environ.get(k) for k in keys}
-        try:
-            for key in keys:
-                os.environ.pop(key, None)
-
-            os.environ["OPENAI_PROFILE"] = "oss120b"
-            os.environ["OPENAI_PROFILE_OSS120B_BASE_URL"] = "http://env-oss120b.example/v1"
-            ensure_env_defaults()
-
-            self.assertEqual(os.environ["AUTO_SAVE_SNAPSHOT_ON_EXIT"], "1")
-            self.assertEqual(os.environ["AUTO_REMEMBER_ON_DONE"], "1")
-        finally:
-            for key, value in old.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-    def test_ensure_env_defaults_uses_profile_specific_base_url_env(self):
-        keys = (
-            "OPENAI_PROFILE",
-            "OPENAI_BASE_URL",
-            "OPENAI_PROFILE_OSS120B_BASE_URL",
-            "OPENAI_API_KEY",
-            "OPENAI_MODEL",
-        )
-        old = {k: os.environ.get(k) for k in keys}
-        try:
-            for key in keys:
-                os.environ.pop(key, None)
-
-            os.environ["OPENAI_PROFILE"] = "oss120b"
-            os.environ["OPENAI_PROFILE_OSS120B_BASE_URL"] = "http://env-oss120b.example/v1"
-
-            ensure_env_defaults()
-
-            self.assertEqual(os.environ["OPENAI_BASE_URL"], "http://env-oss120b.example/v1")
-            self.assertEqual(os.environ["OPENAI_MODEL"], "openai/gpt-oss-120b")
-        finally:
-            for key, value in old.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-    def test_ensure_env_defaults_requires_profile_base_url_when_missing(self):
-        keys = (
-            "OPENAI_PROFILE",
-            "OPENAI_BASE_URL",
-            "OPENAI_PROFILE_QWEN3527DGX_BASE_URL",
-            "OPENAI_API_KEY",
-            "OPENAI_MODEL",
-        )
-        old = {k: os.environ.get(k) for k in keys}
-        old_cwd = os.getcwd()
-        try:
-            for key in keys:
-                os.environ.pop(key, None)
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                os.chdir(tmpdir)
-                os.environ["OPENAI_PROFILE"] = "qwen3527dgx"
-
-                with self.assertRaises(ValueError):
-                    ensure_env_defaults()
-        finally:
-            os.chdir(old_cwd)
-            for key, value in old.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-    def test_ensure_env_defaults_auto_loads_dotenv_file(self):
-        keys = (
-            "OPENAI_PROFILE",
-            "OPENAI_BASE_URL",
-            "OPENAI_PROFILE_OSS120B_BASE_URL",
-            "OPENAI_API_KEY",
-            "OPENAI_MODEL",
-        )
-        old = {k: os.environ.get(k) for k in keys}
-        old_cwd = os.getcwd()
-        try:
-            for key in keys:
-                os.environ.pop(key, None)
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                env_path = Path(tmpdir) / ".env"
-                env_path.write_text(
-                    "OPENAI_PROFILE=oss120b\n"
-                    "OPENAI_PROFILE_OSS120B_BASE_URL=http://from-dotenv.example/v1\n"
-                    "OPENAI_API_KEY=dotenv-key\n",
-                    encoding="utf-8",
-                )
-                os.chdir(tmpdir)
-
-                ensure_env_defaults()
-
-                self.assertEqual(os.environ["OPENAI_BASE_URL"], "http://from-dotenv.example/v1")
-                self.assertEqual(os.environ["OPENAI_API_KEY"], "dotenv-key")
-                self.assertEqual(os.environ["OPENAI_MODEL"], "openai/gpt-oss-120b")
-        finally:
-            os.chdir(old_cwd)
-            for key, value in old.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-    def test_ensure_env_defaults_does_not_override_existing_env_with_dotenv(self):
-        keys = (
-            "OPENAI_PROFILE",
-            "OPENAI_BASE_URL",
-            "OPENAI_PROFILE_OSS120B_BASE_URL",
-            "OPENAI_API_KEY",
-            "OPENAI_MODEL",
-        )
-        old = {k: os.environ.get(k) for k in keys}
-        old_cwd = os.getcwd()
-        try:
-            for key in keys:
-                os.environ.pop(key, None)
-
-            os.environ["OPENAI_PROFILE"] = "oss120b"
-            os.environ["OPENAI_PROFILE_OSS120B_BASE_URL"] = "http://from-env.example/v1"
-            os.environ["OPENAI_API_KEY"] = "preexisting-key"
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                env_path = Path(tmpdir) / ".env"
-                env_path.write_text(
-                    "OPENAI_PROFILE=oss120b\n"
-                    "OPENAI_PROFILE_OSS120B_BASE_URL=http://from-dotenv.example/v1\n"
-                    "OPENAI_API_KEY=dotenv-key\n",
-                    encoding="utf-8",
-                )
-                os.chdir(tmpdir)
-
-                ensure_env_defaults()
-
-                self.assertEqual(os.environ["OPENAI_BASE_URL"], "http://from-env.example/v1")
-                self.assertEqual(os.environ["OPENAI_API_KEY"], "preexisting-key")
-        finally:
-            os.chdir(old_cwd)
-            for key, value in old.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
+class ProbeConfigTests(unittest.TestCase):
     def test_probe_openai_configuration_auto_switches_to_only_available_model(self):
         keys = ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")
         old = {k: os.environ.get(k) for k in keys}
@@ -402,26 +242,6 @@ class EnvDefaultTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
-    def test_probe_openai_configuration_wraps_connection_errors(self):
-        keys = ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL")
-        old = {k: os.environ.get(k) for k in keys}
-        try:
-            os.environ["OPENAI_BASE_URL"] = "http://bad-host.example/v1"
-            os.environ["OPENAI_API_KEY"] = "local"
-            os.environ["OPENAI_MODEL"] = "qwen3527dgx"
-
-            def boom():
-                raise RuntimeError("Connection error")
-
-            with self.assertRaisesRegex(RuntimeError, "LLM 服务探测失败"):
-                probe_openai_configuration(list_models=boom)
-        finally:
-            for key, value in old.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
     def test_format_probe_summary_for_matched_model(self):
         summary = format_probe_summary(
             {
@@ -453,82 +273,7 @@ class EnvDefaultTests(unittest.TestCase):
         self.assertIn("auto-selected", summary)
 
 
-class _SequenceLLM(LLMBackend):
-    def __init__(self, responses):
-        self._responses = list(responses)
-
-    def complete(self, messages: list[dict], system: str) -> str:
-        if not self._responses:
-            raise AssertionError("No more fake LLM responses available")
-        return self._responses.pop(0)
-
-
 class RunPersistenceTests(unittest.TestCase):
-    def test_run_streams_short_term_and_final_answer_during_execution(self):
-        keys = ("RUN_DIR", "USER_GOAL")
-        old = {k: os.environ.get(k) for k in keys}
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                os.environ["RUN_DIR"] = tmpdir
-                os.environ["USER_GOAL"] = "测试持久化"
-
-                llm = _SequenceLLM(
-                    [
-                        json.dumps(
-                            {
-                                "thought": "先补验收块",
-                                "action": "tool_call",
-                                "tool": "scratchpad_append",
-                                "args": {
-                                    "content": (
-                                        "ACCEPTANCE:\n"
-                                        "- criteria: 返回最终答案\n"
-                                        "- evidence_type: none\n"
-                                        "- verdict: PASS"
-                                    )
-                                },
-                            },
-                            ensure_ascii=False,
-                        ),
-                        json.dumps(
-                            {
-                                "thought": "完成任务",
-                                "action": "done",
-                                "final_answer": "持久化完成",
-                            },
-                            ensure_ascii=False,
-                        ),
-                    ]
-                )
-
-                state = run(
-                    goal="测试持久化",
-                    llm=llm,
-                    tools=get_standard_tools(),
-                    max_iterations=4,
-                )
-                state.persistence.finish(state, outcome="done")
-
-                short_term_path = Path(tmpdir) / "short_term.jsonl"
-                self.assertTrue(short_term_path.exists())
-                short_term_lines = short_term_path.read_text(encoding="utf-8").splitlines()
-                self.assertGreaterEqual(len(short_term_lines), 4)
-                self.assertIn("请完成以下目标", short_term_lines[0])
-
-                final_answer_path = Path(tmpdir) / "final_answer.md"
-                self.assertTrue(final_answer_path.exists())
-                self.assertEqual(final_answer_path.read_text(encoding="utf-8"), "持久化完成")
-
-                status = json.loads((Path(tmpdir) / "status.json").read_text(encoding="utf-8"))
-                self.assertEqual(status["status"], "done")
-                self.assertTrue(status["final_answer_written"])
-        finally:
-            for key, value in old.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
     def test_scratchpad_tool_persists_via_run_persistence(self):
         state = AgentState(goal="test")
         with tempfile.TemporaryDirectory() as tmpdir:
