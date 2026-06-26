@@ -1623,6 +1623,13 @@ const routePlugin = loadOptionalModule('routes-pro.js');
 //    normal static handler (it lives under PUBLIC). pro.js self-mounts its UI.
 const PRO_UI_ENTRY = fs.existsSync(path.join(PUBLIC, 'pro', 'pro.js'));
 
+// ⑥ Server boot plugin — an in-process background service started once after the
+//    HTTP server is listening. Used by PRO for long-lived services (e.g. the Hub
+//    connector). Optional export:
+//      init(ctx) -> void   ctx = { server, serverEvents, wss, getState, broadcast, config }
+//    Loaded here, invoked in the server.listen callback below (try/caught there).
+const serverPlugin = loadOptionalModule('server-plugin.js');
+
 function serveStatic(req, res) {
   const urlPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
   const fp  = path.join(PUBLIC, urlPath);
@@ -3018,5 +3025,21 @@ findFreePort(PORT).then(port => {
     console.log('');
     console.log('  Press Ctrl+C to stop.');
     console.log('');
+
+    // ⑥ Boot the optional PRO server plugin (no-op in open-source build).
+    if (serverPlugin && typeof serverPlugin.init === 'function') {
+      try {
+        serverPlugin.init({
+          server,
+          serverEvents,
+          wss,
+          getState: () => state,
+          broadcast,
+          config: { port, HOST, AGENT_DIR, RUNS_DIR, SKILLS_DIR, APP_VERSION, instanceName: state.instanceName || '' },
+        });
+      } catch (e) {
+        console.error(`  [ext] server-plugin init failed: ${e.message}`);
+      }
+    }
   });
 });
