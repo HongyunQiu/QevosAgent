@@ -991,8 +991,9 @@ def build_system_prompt(
 def _build_context_suffix(
     scratchpad: str = "",
     runtime_patches: Optional[list[str]] = None,
+    thought_rigor: Optional[bool] = None,
 ) -> str:
-    """构建每轮注入到最后一条 user 消息末尾的动态内容（scratchpad + runtime_patches）。"""
+    """构建每轮注入到最后一条 user 消息末尾的动态内容（scratchpad + runtime_patches + 严密度补丁）。"""
     parts: list[str] = []
     if runtime_patches:
         parts.append(
@@ -1005,6 +1006,14 @@ def _build_context_suffix(
             + t("sys.sp_rules") + "\n\n"
             + scratchpad.strip()
         )
+    # thought 严密度补丁：以尾部注入实现，保持 system prompt 前缀稳定、不破坏 KV Cache。
+    # 优先级：显式入参（如 /rigor 命令写入 state.meta）> 环境变量 THOUGHT_RIGOR > 默认关。
+    # 放在最后 → 离生成点最近，遵守度最好。
+    if thought_rigor is None:
+        import os as _os
+        thought_rigor = _os.environ.get("THOUGHT_RIGOR", "off").strip().lower() in ("on", "1", "true")
+    if thought_rigor:
+        parts.append(t("sys.rigor_patch"))
     return "\n\n".join(parts)
 
 
@@ -1298,14 +1307,15 @@ def build_context_messages(
     state: AgentState,
     scratchpad: str = "",
     runtime_patches: Optional[list[str]] = None,
+    thought_rigor: Optional[bool] = None,
 ) -> list[dict]:
     """
     把 AgentState.short_term 转换成 LLM 的 messages 列表。
-    scratchpad 和 runtime_patches 动态拼接到最后一条 user 消息末尾，
+    scratchpad、runtime_patches 和 thought 严密度补丁动态拼接到最后一条 user 消息末尾，
     避免写入 system prompt 导致 KV Cache 每轮失效。
     """
     msgs = [dict(m) for m in state.short_term]
-    suffix = _build_context_suffix(scratchpad, runtime_patches)
+    suffix = _build_context_suffix(scratchpad, runtime_patches, thought_rigor)
     if not suffix:
         return msgs
     # 找最后一条 user 消息追加；若不存在则新增一条

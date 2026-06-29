@@ -675,6 +675,17 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 .cmd-input::placeholder { color:var(--muted); }
 .cmd-input:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(88,166,255,0.12); }
+/* Rigor lightbulb — sits inside the input box, right edge */
+.cmd-input-wrap { position:relative; flex:1; min-width:0; display:flex; }
+.cmd-input-wrap .cmd-input { flex:1; padding-right:34px; }
+.rigor-bulb {
+  position:absolute; right:5px; top:50%; transform:translateY(-50%);
+  background:transparent; border:none; cursor:pointer; padding:2px 4px;
+  font-size:15px; line-height:1; border-radius:6px;
+  filter:grayscale(1) opacity(0.4); transition:filter 0.15s, background 0.15s, text-shadow 0.15s;
+}
+.rigor-bulb:hover { background:var(--bg2); filter:grayscale(0.5) opacity(0.7); }
+.rigor-bulb.on { filter:none; text-shadow:0 0 7px rgba(255,200,40,0.95), 0 0 14px rgba(255,180,0,0.55); }
 .cmd-send {
   background:linear-gradient(135deg,#1f6feb,#3b82f6); border:1px solid transparent; color:#fff;
   box-sizing:border-box; width:72px; padding:8px 0; text-align:center;
@@ -1835,9 +1846,14 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
               title="收起 / 展开" aria-label="收起或展开提问" onclick="toggleAskBanner()">▾</button>
     </div>
     <span class="cmd-prompt" id="cmdPrompt">›</span>
-    <input class="cmd-input" id="cmdInput"
-           placeholder="/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20"
-           onkeydown="onCmdKey(event)">
+    <div class="cmd-input-wrap">
+      <input class="cmd-input" id="cmdInput"
+             placeholder="/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20"
+             onkeydown="onCmdKey(event)">
+      <button class="rigor-bulb" id="rigorBulb" type="button"
+              title="思维严密模式：observe → infer → decide。点亮即注入 /rigor on"
+              aria-label="切换思维严密模式" onclick="toggleRigor()">💡</button>
+    </div>
     <button class="cmd-send" id="cmdSendBtn" onclick="sendCmd()">Send</button>
     <button class="nostop-btn" id="nostopBtn" onclick="toggleNostop()">nostop</button>
   </div>
@@ -2004,6 +2020,7 @@ let gSysPromptExpanded = false;   // persist System-Prompt expand state across r
 let gGoalExpanded      = false;   // persist Goal "show more" (full assembled goal) across re-renders
 const gJobPollers  = {};          // { jobId: intervalId } — polling timers for running jobs
 let gNostop        = false;       // whether to launch agent in --nostop (continuous) mode
+let gRigor         = false;       // thought rigor mode (observe→infer→decide) — injected via /rigor
 let gAgentsProfile = '';          // full filename of AGENTS_*.md override (empty = default AGENTS.md)
 let gAdvisorProfile= '';          // full filename of ADVISOR_*.md override (empty = default ADVISOR.md)
 let gProfileLists  = { agents: [], advisor: [] };  // populated from /api/profiles
@@ -2258,6 +2275,22 @@ function toggleNostop() {
   const btn = document.getElementById('nostopBtn');
   if (btn) btn.className = 'nostop-btn' + (gNostop ? ' on' : '');
   toast(gNostop ? '⟳ Nostop mode ON — agent will persist between tasks' : '⟳ Nostop mode OFF');
+}
+
+// Lightbulb in the command bar: inject /rigor on|off into the running agent.
+async function toggleRigor() {
+  const runId = (gState && gState.activeRunId) || gViewRunId;
+  if (!runId || !(gState && isAgentActive(gState))) { toast('⚠ No active run'); return; }
+  const next = !gRigor;
+  try {
+    const res = await postJsonWithRetry('/api/inject', { command: `/rigor ${next ? 'on' : 'off'}`, runId });
+    if (res.ok) {
+      gRigor = next;
+      const bulb = document.getElementById('rigorBulb');
+      if (bulb) bulb.className = 'rigor-bulb' + (gRigor ? ' on' : '');
+      toast(gRigor ? '💡 思维严密模式 ON' : '思维严密模式 OFF');
+    } else toast('✗ Server rejected');
+  } catch { toast('✗ Network error (retried)'); }
 }
 
 // ── Profile selector (AGENTS_*.md / ADVISOR_*.md override) ───────────────

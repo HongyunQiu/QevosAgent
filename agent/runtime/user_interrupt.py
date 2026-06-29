@@ -392,6 +392,20 @@ class UserInterruptHandler:
             print(f"\n{BLUE}{t('interrupt.inject_done')}{RESET}", flush=True)
             return "continue"
 
+        if name == "/rigor":
+            val = arg.strip().lower()
+            if val in ("on", "1", "true"):
+                state.meta["thought_rigor"] = True
+                print(f"\n{BLUE}{t('interrupt.rigor_on')}{RESET}", flush=True)
+            elif val in ("off", "0", "false"):
+                state.meta["thought_rigor"] = False
+                print(f"\n{BLUE}{t('interrupt.rigor_off')}{RESET}", flush=True)
+            else:
+                cur = state.meta.get("thought_rigor")
+                state_str = "on" if cur else ("off" if cur is not None else "default(env)")
+                print(f"\n{BLUE}{t('interrupt.rigor_usage', state=state_str)}{RESET}", flush=True)
+            return "continue"
+
         if name == "/compress":
             try:
                 keep = int(arg) if arg.strip() else 8

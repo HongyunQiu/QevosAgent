@@ -696,7 +696,7 @@ def run(
             # ─────────────────────────────────────────────────────────────────
 
             system = build_system_prompt(state.tools, state.long_term, concept_memory=state.meta.get("concept_memory", ""))
-            messages = build_context_messages(state, scratchpad=state.meta.get("scratchpad", ""), runtime_patches=state.meta.get("runtime_patches"))
+            messages = build_context_messages(state, scratchpad=state.meta.get("scratchpad", ""), runtime_patches=state.meta.get("runtime_patches"), thought_rigor=state.meta.get("thought_rigor"))
 
             pack = _maybe_compress_for_context(state, llm, system, messages)
             system = pack["system"]

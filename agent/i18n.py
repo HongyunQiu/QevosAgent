@@ -184,6 +184,14 @@ _STRINGS: dict[str, dict[str, str]] = {
         "sys.preamble": "你是一个通用自主智能体。你通过循环调用工具来完成任意目标。",
         "sys.format_header":  "## 输出格式（严格遵守，必须是合法 JSON）",
         "sys.thought_hint":   "你当前的推理过程，分析情况、决定下一步",
+        "sys.rigor_patch": (
+            "## 本轮 thought 严密度要求\n"
+            "撰写 thought 字段时，必须分三段推理：\n"
+            "①【观察】先客观复述上一步结果中实际看到的关键事实（可引用原文片段），不要脑补或跳步；\n"
+            "②【推断】基于观察给出解释，并指出依据哪条事实；\n"
+            "③【决策】据此决定下一步。\n"
+            "若观察与预期不符，先承认现象再修正假设。"
+        ),
         "sys.note_field":     '  "scratchpad_note": "（可选）对上一步工具结果的1-2条关键新发现，将自动追加草稿本，每条<=40字",',
         "sys.tool_hint":      "工具名（action=tool_call 时必填）",
         "sys.answer_hint":    "最终结论（action=done 时填写，其他时候省略）",
@@ -428,6 +436,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "interrupt.compress":
             "[压缩] 已标记：下次 LLM 调用前将压缩上下文，"
             "保留最近 {keep} 条（当前共 {before} 条）。",
+        "interrupt.rigor_on":      "[用户干预] thought 严密模式已开启（观察→推断→决策），下轮生效。",
+        "interrupt.rigor_off":     "[用户干预] thought 严密模式已关闭，下轮生效。",
+        "interrupt.rigor_usage":   "[用户干预] 用法: /rigor on|off（当前: {state}）",
         "interrupt.add_iters":     "[用户干预] 已增加 {n} 次迭代，累计待增加: {total} 次。",
         "interrupt.add_iters_usage":"[用户干预] 用法: /+<正整数>，例如 /+50",
         "interrupt.unknown_cmd":   "[用户干预] 未知命令: {name}。输入 /help 查看可用命令。",
@@ -456,6 +467,7 @@ _STRINGS: dict[str, dict[str, str]] = {
   /inject <消息>     将消息注入 Agent 上下文，下轮 LLM 可感知
   /newtask <目标>    注入新任务目标（nostop 模式专用，解除等待并开始新一轮）
   /compress [N]      下次 LLM 调用前压缩上下文（保留最近 N 条，默认 8）
+  /rigor on|off      切换 thought 严密模式（观察→推断→决策），下轮生效
   /status            显示当前状态：迭代号、正在执行的工具、草稿本
   /log [N]           显示最近 N 条执行记录（默认 5 条）
   /+N                增加 N 次最大迭代次数（例如 /+50）
@@ -554,6 +566,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "interrupt.compress":
             "[Compress] Marked: context will be compressed before the next LLM call, "
             "keeping the latest {keep} (currently {before}).",
+        "interrupt.rigor_on":      "[Interrupt] thought rigor mode ON (observe→infer→decide); effective next turn.",
+        "interrupt.rigor_off":     "[Interrupt] thought rigor mode OFF; effective next turn.",
+        "interrupt.rigor_usage":   "[Interrupt] Usage: /rigor on|off (current: {state})",
         "interrupt.add_iters":     "[Interrupt] Added {n} iterations — queued total: {total}.",
         "interrupt.add_iters_usage":"[Interrupt] Usage: /+<positive int>, e.g. /+50",
         "interrupt.unknown_cmd":   "[Interrupt] Unknown command: {name}. Type /help for available commands.",
@@ -582,6 +597,7 @@ _STRINGS: dict[str, dict[str, str]] = {
   /inject <msg>      Inject a message into Agent context; LLM sees it next turn
   /newtask <goal>    Inject a new goal (nostop mode: unblocks the wait loop)
   /compress [N]      Compress context before the next LLM call (keep latest N, default 8)
+  /rigor on|off      Toggle thought rigor mode (observe→infer→decide); effective next turn
   /status            Show current state: iteration, active tool, scratchpad
   /log [N]           Show the last N execution records (default 5)
   /+N                Add N more max iterations (e.g. /+50)
@@ -719,6 +735,16 @@ Tip: just type / to pause; enter the full command then press Enter.
         "sys.preamble": "You are a general-purpose autonomous agent. You complete any goal by repeatedly calling tools.",
         "sys.format_header":  "## Output format (strictly required — must be valid JSON)",
         "sys.thought_hint":   "Your current reasoning: analyse the situation and decide the next step",
+        "sys.rigor_patch": (
+            "## Thought rigor requirement for this turn\n"
+            "When writing the thought field, reason in three parts:\n"
+            "(1) [Observe] first state objectively the key facts you actually see in the last "
+            "result (quote snippets when useful); do not assume or skip steps;\n"
+            "(2) [Infer] give an interpretation grounded in those facts, naming which fact it rests on;\n"
+            "(3) [Decide] choose the next step accordingly.\n"
+            "If the observation contradicts your expectation, acknowledge the phenomenon first, "
+            "then revise the hypothesis."
+        ),
         "sys.note_field":     '  "scratchpad_note": "(optional) 1-2 key findings from the last tool result, auto-appended to scratchpad, ≤40 chars each",',
         "sys.tool_hint":      "tool name (required when action=tool_call)",
         "sys.answer_hint":    "final conclusion (fill when action=done, omit otherwise)",
