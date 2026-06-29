@@ -63,8 +63,9 @@ def list_runs(runs_dir: Path) -> list[Path]:
 
 
 def load_short_term(run_dir: Path) -> list[dict]:
-    """加载 short_term.jsonl，过滤掉 __token__ 元数据行。"""
+    """加载 short_term.jsonl，过滤掉 __token__/__compaction__/__handoff__ 元数据行。"""
     msgs = []
+    _META_ROLES = {"__token__", "__compaction__", "__handoff__"}
     path = run_dir / "short_term.jsonl"
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -75,7 +76,7 @@ def load_short_term(run_dir: Path) -> list[dict]:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if obj.get("role") == "__token__":
+            if obj.get("role") in _META_ROLES:
                 continue
             msgs.append(obj)
     return msgs

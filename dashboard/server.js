@@ -607,6 +607,10 @@ function parseLine(raw, lineIdx) {
   if (role === '__token__') {
     return { idx: lineIdx, type: 'token_stats', promptEst: rec.prompt_est, contextWindow: rec.context_window, maxTokens: rec.max_tokens };
   }
+  // 压缩封段标记 / 新段交接种子：原始记录的分段元数据，时间线暂不单独渲染（不可当普通消息解析）。
+  if (role === '__compaction__' || role === '__handoff__') {
+    return null;
+  }
 
   // Multimodal messages have content as an array of blocks (text + image).
   // Extract the text blocks for further parsing; note image presence separately.

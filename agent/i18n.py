@@ -88,22 +88,31 @@ _STRINGS: dict[str, dict[str, str]] = {
             "以下为最近 {keep} 条执行记录。"
         ),
         "compress.request": (
-            "[系统指令] 请将以上执行历史压缩为结构化摘要。\n"
+            "[系统指令] 请将以上执行历史提炼成一份结构化的「工作交接文档」。\n"
             "任务目标参考：{goal}"
         ),
         "compress.system": (
-            "你是一个智能体执行历史的压缩专家。\n"
+            "你是智能体执行历史的「工作交接」专家。\n"
             "你将收到一段智能体与工具交互的完整消息历史。\n"
-            "请将其压缩为简洁、结构化的执行摘要，作为后续步骤的工作记忆。\n\n"
-            "输出格式（直接输出纯文本，不要 JSON，不要标题装饰）：\n"
-            "• 已完成：逐条列出已完成的步骤及其关键结果\n"
-            "• 关键发现：执行中发现的重要事实、数据或结论\n"
-            "• 遇到的问题：障碍及采取的应对方式（若有）\n"
-            "• 当前状态：目前进展到哪一步，下一步计划是什么\n\n"
-            "压缩原则：\n"
-            "- 保留：步骤结果、关键数据、重要决策、有效的解决路径\n"
+            "请把它提炼成一份结构化的工作交接文档，使接手者无需阅读原始历史即可继续工作。\n\n"
+            "输出格式（直接输出纯文本，严格使用以下小节标题，不要 JSON，不要额外前后缀）：\n"
+            "## 目标\n（用一两句话复述当前任务目标）\n"
+            "## 已完成\n（逐条列出已完成步骤及其关键结果）\n"
+            "## 当前状态\n（现在进行到哪一步、正卡在什么地方）\n"
+            "## 下一步\n（明确、可执行的后续动作）\n"
+            "## 关键事实与路径\n（文件路径、配置、ID、数据等不能丢失的硬信息）\n"
+            "## 待澄清 / 坑\n（悬而未决的问题、已知陷阱；没有就写「无」）\n\n"
+            "提炼原则：\n"
+            "- 保留：步骤结果、关键数据、重要决策、有效路径、硬信息（路径/ID/配置）\n"
             "- 丢弃：工具原始输出的冗长内容、重复失败的重试、无结论的中间思考\n"
-            "- 总长控制在 500 字以内，语言简洁直接"
+            "- 总长控制在 1500 字以内，简洁、可直接据此行动"
+        ),
+        "compress.handoff_bridge": (
+            "[系统｜上下文已压缩] 此前的执行历史已封存为一份独立的工作交接文档"
+            "（落盘于 handoff_{seg}.md），原始逐条记录完整保留在 short_term.jsonl 中未删除。\n"
+            "请把下面这份交接文档作为继续工作的唯一上文依据——从这里开始是一个干净的新阶段。\n"
+            "若交接文档中某处细节不足，可调用 recall_history 回查原始记录。\n\n"
+            "===== 工作交接文档 =====\n{handoff}"
         ),
 
         # ── note (auto_scratchpad_note) ───────────────────────────────────────
@@ -610,22 +619,33 @@ Tip: just type / to pause; enter the full command then press Enter.
             "The {keep} most recent records follow."
         ),
         "compress.request": (
-            "[System instruction] Please compress the execution history above into a structured summary.\n"
+            "[System instruction] Please distill the execution history above into a structured handoff document.\n"
             "Task goal reference: {goal}"
         ),
         "compress.system": (
-            "You are a compression expert for agent execution histories.\n"
+            "You are a work-handoff expert for agent execution histories.\n"
             "You will receive a complete message history of an agent interacting with tools.\n"
-            "Compress it into a concise, structured execution summary for use as working memory in subsequent steps.\n\n"
-            "Output format (plain text only — no JSON, no decorative headers):\n"
-            "• Completed: list each completed step and its key result\n"
-            "• Key findings: important facts, data, or conclusions discovered during execution\n"
-            "• Problems encountered: obstacles and how they were handled (if any)\n"
-            "• Current state: how far along the task is, and what the next step is\n\n"
-            "Compression principles:\n"
-            "- Keep: step results, key data, important decisions, effective solution paths\n"
+            "Distill it into a structured handoff document so a successor can continue the work "
+            "without reading the raw history.\n\n"
+            "Output format (plain text only — use exactly the section headers below, no JSON, no extra wrapping):\n"
+            "## Goal\n(restate the current task goal in one or two sentences)\n"
+            "## Done\n(list each completed step and its key result)\n"
+            "## Current state\n(how far along the task is, and where it is currently stuck)\n"
+            "## Next steps\n(clear, actionable follow-up actions)\n"
+            "## Key facts & paths\n(file paths, configs, IDs, data — hard information that must not be lost)\n"
+            "## Open questions / pitfalls\n(unresolved issues, known traps; write 'none' if there are none)\n\n"
+            "Distillation principles:\n"
+            "- Keep: step results, key data, important decisions, effective paths, hard info (paths/IDs/configs)\n"
             "- Discard: verbose raw tool output, repeated failed retries, inconclusive intermediate thoughts\n"
-            "- Keep the total under 500 words; be concise and direct"
+            "- Keep the total under 1500 words; concise and directly actionable"
+        ),
+        "compress.handoff_bridge": (
+            "[System | context compressed] The execution history so far has been sealed into a standalone "
+            "handoff document (persisted to handoff_{seg}.md); the full per-message log is preserved intact "
+            "in short_term.jsonl.\n"
+            "Treat the handoff document below as the sole context for continuing work — a clean new phase starts here.\n"
+            "If any detail in the handoff is insufficient, call recall_history to look up the raw records.\n\n"
+            "===== HANDOFF DOCUMENT =====\n{handoff}"
         ),
 
         # ── note (auto_scratchpad_note) ───────────────────────────────────────

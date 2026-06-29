@@ -246,6 +246,14 @@ class RunPersistence:
     def save_scratchpad(self, text: str) -> None:
         _write_text_atomic(self.scratchpad_path, text or "")
 
+    def save_handoff(self, seg_index: int, text: str) -> None:
+        """落盘第 seg_index 段的工作交接文档（handoff_{N}.md）。
+
+        每次压缩封段时写一份，作为该段的结构化总结；原始逐条记录仍完整
+        保留在 short_term.jsonl，handoff 是其上层、可读的交接视图。
+        """
+        _write_text_atomic(self.run_dir / f"handoff_{int(seg_index)}.md", text or "")
+
     def save_system_prompt(self, text: str) -> None:
         _write_text_atomic(self.system_prompt_path, text or "")
 

@@ -162,34 +162,11 @@ def _llm_compress_full_history(messages: list[dict], state: AgentState, llm: LLM
         summary = llm.complete_text(
             messages=messages + [compress_request],
             system=compress_system,
-            max_tokens=500,
+            max_tokens=1500,
         ).strip()
-        return summary[:1000]  # 硬上限
+        return summary[:4000]  # 硬上限（交接文档比常驻草稿本宽松）
     except Exception:
         return ""
-
-
-def _write_summary_to_scratchpad(state: AgentState, summary: str, tag: str = "compress") -> None:
-    """将摘要追加写入草稿本并落盘。超限时从中部裁剪，保留头部（任务描述）和最新内容。"""
-    if not summary or not summary.strip():
-        return
-    max_chars = int(os.environ.get("SCRATCHPAD_MAX_CHARS", "2000"))
-    cur = state.meta.get("scratchpad", "") or ""
-    new_sp = cur + f"\n[{tag}] {summary.strip()}"
-    if len(new_sp) > max_chars:
-        lines = new_sp.splitlines(keepends=True)
-        head = "".join(lines[:3])
-        body = new_sp[len(head):]
-        overflow = len(head) + len(body) - max_chars
-        body = body[overflow:]
-        new_sp = head + body
-    state.meta["scratchpad"] = new_sp
-    persistence = _get_persistence(state)
-    if persistence is not None:
-        try:
-            persistence.save_scratchpad(new_sp)
-        except Exception:
-            pass
 
 
 def _overwrite_scratchpad(state: AgentState, new_content: str) -> None:
@@ -214,19 +191,58 @@ def _overwrite_scratchpad(state: AgentState, new_content: str) -> None:
             pass
 
 
-def _collapse_to_bridge(state: AgentState) -> None:
-    """LLM 全文压缩完成后，将 short_term 缩减为 [goal, bridge]。
+def _seal_segment_and_handoff(state: AgentState, handoff_text: str) -> int:
+    """封存当前段并落盘工作交接文档，返回刚封存的段号。
 
-    历史摘要已写入草稿本（体现在 system prompt 中），short_term 只需保留
-    原始目标和一条指向草稿本的桥接消息。
+    在 short_term.jsonl 上打两条元数据行（沿用 __token__ 那套约定，消费方会跳过）：
+      1. __compaction__  封段标记：记录 iter / 段号 / handoff 文件名 / 封段时段长，
+                          供导出器把 jsonl 无歧义地切成独立段（微调样本边界）。
+      2. __handoff__     新段的种子上下文：把交接文档作为下一段的起始语境写入，
+                          使每段切出来都自洽、不依赖上一段任何一行。
+    这两行只落盘、不进内存 short_term（内存由 _collapse_to_bridge 硬重置）。
+    """
+    persistence = _get_persistence(state)
+    seg = int(state.meta.get("_compaction_seg", 0))
+    iter_n = int(getattr(state, "iteration", 0) or 0)
+
+    if persistence is not None:
+        try:
+            persistence.save_handoff(seg, handoff_text)
+        except Exception:
+            pass
+        ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        try:
+            persistence.append_short_term({
+                "role": "__compaction__",
+                "iter": iter_n,
+                "seg": seg,
+                "handoff": f"handoff_{seg}.md",
+                "sealed_len": len(getattr(state, "short_term", []) or []),
+                "ts": ts,
+            })
+            persistence.append_short_term({
+                "role": "__handoff__",
+                "seg": seg + 1,
+                "content": handoff_text,
+            })
+        except Exception:
+            pass
+
+    state.meta["_compaction_seg"] = seg + 1
+    return seg
+
+
+def _collapse_to_bridge(state: AgentState, handoff_text: str, seg: int) -> None:
+    """压缩完成后，将 short_term 硬重置为 [goal, handoff_bridge]。
+
+    不保留任何上一段的原始消息——从这里开始是一个干净的新段，避免回放该段
+    时出现"已被告知历史压缩，但上文又真实存在旧消息"的语义矛盾（污染微调数据）。
+    交接文档全文作为种子上下文注入桥接消息，模型读它即可继续工作。
     """
     goal_msg = state.short_term[0] if state.short_term else None
     bridge = {
         "role": "user",
-        "content": (
-            "[系统] 执行历史已通过模型压缩，关键信息已整理至 system prompt 的草稿本中。"
-            "请以草稿本内容作为历史执行记录的完整参考，继续后续任务。"
-        ),
+        "content": t("compress.handoff_bridge", seg=seg, handoff=handoff_text),
     }
     state.short_term = ([goal_msg] if goal_msg else []) + [bridge]
 
@@ -257,29 +273,29 @@ def compress_context(
     """
     before = len(state.short_term)
 
-    # ── 路径 1：agent 手动提供摘要 ────────────────────────────────────────────
+    # ── 路径 1：agent 手动提供摘要 → 直接作为交接文档封段硬重置 ────────────────
     if summary and summary.strip():
-        _write_summary_to_scratchpad(state, summary.strip(), tag="compress:manual")
-        _trim_short_term(state, keep_last=6)
-        _compact_short_term_messages(state, per_message_chars=1500)
-        method = "手动摘要+机械裁剪"
+        handoff = summary.strip()
+        seg = _seal_segment_and_handoff(state, handoff)
+        _overwrite_scratchpad(state, handoff)        # system prompt 留一份缩略图
+        _collapse_to_bridge(state, handoff, seg)     # 硬重置为 [goal, handoff]
+        method = "手动交接"
 
-    # ── 路径 2：LLM 全文压缩 ──────────────────────────────────────────────────
+    # ── 路径 2：LLM 全文压缩 → 生成结构化交接文档，封段硬重置 ──────────────────
     elif use_llm_summary:
         llm = state.meta.get("_llm")
         if llm is not None and state.short_term:
-            # 若调用方未传入已组装的 messages，则从 state 重建
+            # 若调用方未传入已组装的 messages，则从 state 重建（带上草稿本，避免漏掉累积笔记）
             if messages is None:
-                messages = build_context_messages(state)
-            llm_summary = _llm_compress_full_history(messages, state, llm)
-            if llm_summary:
-                # 用新摘要覆盖整个草稿本（它已是全量压缩，不需要追加）
-                _overwrite_scratchpad(state, llm_summary)
-                # short_term 缩减为 [goal, bridge]，历史已在草稿本中
-                _collapse_to_bridge(state)
-                method = "llm全文压缩"
+                messages = build_context_messages(state, scratchpad=state.meta.get("scratchpad", ""))
+            handoff = _llm_compress_full_history(messages, state, llm)
+            if handoff:
+                seg = _seal_segment_and_handoff(state, handoff)
+                _overwrite_scratchpad(state, handoff)
+                _collapse_to_bridge(state, handoff, seg)
+                method = "llm工作交接压缩"
             else:
-                # LLM 调用失败，降级到机械裁剪
+                # LLM 调用失败，降级到机械裁剪（不封段：非干净边界）
                 _trim_short_term(state, keep_last=6)
                 _compact_short_term_messages(state, per_message_chars=1500)
                 method = "机械裁剪(llm降级)"
@@ -306,7 +322,7 @@ def compress_context(
     # "llm_full" 类型的压缩成果（scratchpad 已是权威全量摘要），实现零额外
     # LLM 调用就喂给 advisor 一份宏观进展。
     state.meta["_last_compression_iter"]   = int(getattr(state, "iteration", 0) or 0)
-    if method == "llm全文压缩":
+    if method in ("llm工作交接压缩", "手动交接"):
         state.meta["_last_compression_method"] = "llm_full"
     else:
         state.meta["_last_compression_method"] = "mechanical"

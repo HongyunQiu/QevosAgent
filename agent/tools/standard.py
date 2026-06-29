@@ -247,6 +247,86 @@ def tool_compress_context(state: AgentState, summary: str = "", use_llm_summary:
         return ToolResult(success=False, output=None, error=str(e))
 
 
+def tool_recall_history(state: AgentState, last_n: int = 12, query: str = "", seg: int = -1) -> ToolResult:
+    """回查落盘的原始执行记录 short_term.jsonl（压缩丢失细节时的兜底）。
+
+    记录按 __compaction__ 封段标记切成多段；默认只看**当前段**（最后一次压缩
+    之后的原始记录），避免一次糊一脸全量历史。
+
+    参数：
+      last_n: 返回最近 N 条原始记录（默认 12）。
+      query:  关键词过滤（非空时在选定范围内做子串匹配，忽略 last_n 上限）。
+      seg:    指定段号（0 起）。-1=当前段；传 -2 表示跨所有段检索（一般配合 query）。
+    """
+    import os as _os
+    import json as _json
+    from pathlib import Path as _Path
+
+    run_dir = None
+    persistence = getattr(state, "persistence", None)
+    if persistence is not None:
+        run_dir = str(getattr(persistence, "run_dir", "") or "")
+    if not run_dir:
+        run_dir = _os.environ.get("RUN_DIR", "")
+    if not run_dir:
+        return ToolResult(success=False, output=None, error="无法定位 run 目录，无原始记录可查")
+
+    path = _Path(run_dir) / "short_term.jsonl"
+    if not path.exists():
+        return ToolResult(success=True, output="(尚无原始记录 short_term.jsonl)")
+
+    # 解析并按 __compaction__ 切段；跳过纯元数据行
+    segments: list[list[dict]] = [[]]
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = _json.loads(line)
+        except Exception:
+            continue
+        role = rec.get("role")
+        if role == "__token__" or role == "__handoff__":
+            continue
+        if role == "__compaction__":
+            segments.append([])
+            continue
+        segments[-1].append(rec)
+
+    total_segs = len(segments)
+    # 选定检索范围
+    if seg == -2:
+        scope = [r for s in segments for r in s]
+        scope_desc = f"全部 {total_segs} 段"
+    else:
+        idx = (total_segs - 1) if seg < 0 else min(seg, total_segs - 1)
+        scope = segments[idx]
+        scope_desc = f"第 {idx} 段（共 {total_segs} 段）"
+
+    def _fmt(rec: dict) -> str:
+        role = rec.get("role", "?")
+        content = rec.get("content", "")
+        if not isinstance(content, str):
+            content = _json.dumps(content, ensure_ascii=False)
+        return f"[{role}] {content.strip()}"
+
+    if query:
+        hits = [r for r in scope if query in _fmt(r)]
+        picked = hits[-last_n:] if last_n and last_n > 0 else hits
+        header = f"recall_history｜{scope_desc}｜query='{query}'｜命中 {len(hits)} 条，显示 {len(picked)} 条"
+    else:
+        picked = scope[-last_n:] if last_n and last_n > 0 else scope
+        header = f"recall_history｜{scope_desc}｜显示最近 {len(picked)} / {len(scope)} 条"
+
+    body = "\n\n".join(_fmt(r) for r in picked)
+    # 输出整体限长，防止回查反而撑爆上下文
+    max_out = int(_os.environ.get("RECALL_HISTORY_MAX_CHARS", "6000"))
+    if len(body) > max_out:
+        body = body[-max_out:]
+        header += "（已尾部截断）"
+    return ToolResult(success=True, output=f"{header}\n\n{body}")
+
+
 def _find_python_executable() -> str:
     """找到当前可用的 Python 解释器路径。
 
@@ -2992,6 +3072,21 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "use_llm_summary": "（可选，默认 true）是否允许自动调用模型生成摘要；设为 false 则退化为纯机械裁剪",
             },
             fn=tool_compress_context,
+        ),
+        ToolSpec(
+            name="recall_history",
+            description=(
+                "回查被压缩封存的原始执行记录。"
+                "当交接文档/草稿本里某处细节不够、需要核对早先究竟发生了什么时使用。"
+                "默认只返回当前段（最后一次压缩之后）最近若干条原始记录；"
+                "可用 query 关键词检索，或用 seg 指定历史段号（seg=-2 跨全部段检索）。"
+            ),
+            args_schema={
+                "last_n": "（可选，默认12）返回最近 N 条原始记录",
+                "query": "（可选）关键词，在选定范围内子串匹配",
+                "seg": "（可选，默认-1=当前段）指定段号(0起)；-2=跨所有段检索",
+            },
+            fn=tool_recall_history,
         ),
         ToolSpec(
             name="scratchpad_get",
