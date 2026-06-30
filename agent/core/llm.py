@@ -45,6 +45,8 @@ def generate_error_feedback(raw: str, exc: Exception):
         return t("err.unquoted_value", raw=raw300), "unquoted_string_value"
     elif has_split_structure:
         return t("err.split_structure", raw=raw300), "split_structure"
+    elif _brace_imbalance(raw) > 0:
+        return t("parse.incomplete_json", raw=raw300), "incomplete_json"
     else:
         return t("err.generic", exc=exc, raw=raw300), "json_parse_error"
 
@@ -1042,6 +1044,87 @@ def _strip_thinking_tags(text: str) -> str:
     return text
 
 
+def _balanced_completion_parse(s: str):
+    """Repair JSON truncated/missing its trailing closers, dependency-free.
+
+    Scans *s* tracking string state and ``{}``/``[]`` nesting, then — if the
+    text ends with unclosed structures (or a dangling string) — appends the
+    needed closing characters and re-parses. Handles the common real failure
+    where the model drops the outer ``}`` after a nested ``args`` object.
+
+    Returns the parsed dict, or None when it can't be safely completed
+    (mismatched brackets, or the completion still doesn't parse). Best-effort:
+    never raises.
+    """
+    in_str = False
+    esc = False
+    stack = []
+    for ch in s:
+        if esc:
+            esc = False
+            continue
+        if in_str:
+            if ch == '\\':
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in '{[':
+            stack.append('}' if ch == '{' else ']')
+        elif ch in '}]':
+            if stack and stack[-1] == ch:
+                stack.pop()
+            else:
+                return None  # mismatched closer — structure is genuinely broken
+    if not stack and not in_str:
+        return None  # already balanced; if it didn't parse, this won't help
+
+    repaired = s
+    if in_str:
+        repaired += '"'  # close a dangling string value
+    # A trailing comma before the appended closers is invalid JSON; drop it.
+    tail = repaired.rstrip()
+    if tail.endswith(','):
+        repaired = tail[:-1]
+    repaired += ''.join(reversed(stack))
+    try:
+        obj = json.loads(repaired)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def _brace_imbalance(raw: str) -> int:
+    """Return net unclosed ``{``/``[`` depth outside of strings (>0 = incomplete).
+
+    Used to tell *incomplete* JSON (missing closers) apart from genuinely
+    malformed JSON (unescaped quote/backslash), so the error feedback points the
+    model at the real problem instead of sending it hunting for a phantom quote.
+    """
+    in_str = False
+    esc = False
+    depth = 0
+    for ch in raw:
+        if esc:
+            esc = False
+            continue
+        if in_str:
+            if ch == '\\':
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in '{[':
+            depth += 1
+        elif ch in '}]':
+            depth -= 1
+    return depth
+
+
 def _extract_json(text: str) -> tuple:
     """Extract the first JSON *object* from *text* using three strategies.
 
@@ -1122,6 +1205,15 @@ def _extract_json(text: str) -> tuple:
             parse_error = e
         search_from = idx + 1
 
+    # 3.5) Balanced-completion repair — dependency-free recovery of JSON that is
+    #      missing its trailing closer(s) (e.g. the model dropped the outer ``}``
+    #      after a nested ``args`` object). Runs BEFORE json_repair so it works
+    #      even on environments where json_repair isn't installed, and takes
+    #      precedence over the inner sub-object brace_fallback.
+    _balanced = _balanced_completion_parse(stripped)
+    if isinstance(_balanced, dict) and ("thought" in _balanced or "action" in _balanced):
+        return _balanced, None
+
     # 4) json_repair — handles malformed JSON (e.g. missing opening quote on a value).
     #    Placed BEFORE returning the brace-scan fallback so that a mis-parsed inner
     #    sub-object does not shadow a repairable outer response object.
@@ -1132,6 +1224,11 @@ def _extract_json(text: str) -> tuple:
             return repaired, None
     except Exception:
         pass
+
+    # 4.5) Balanced completion that parsed but lacks thought/action — still better
+    #      than returning a stray inner sub-object. Accept as a last structured try.
+    if isinstance(_balanced, dict):
+        return _balanced, None
 
     # 5) Last resort: return whatever the brace scan found, even if not an agent dict.
     if _brace_fallback is not None:
@@ -1215,7 +1312,13 @@ def parse_response(raw: str) -> Action:
             and not _has_unescaped_backslash
             and not _has_unquoted_string_value2
         )
-        if _has_unescaped_backslash:
+        # Incomplete JSON (unclosed braces) is the most common real cause and must be
+        # checked first — otherwise the quote heuristic mislabels it and sends the model
+        # hunting for a phantom unescaped quote (observed death-loop).
+        if _brace_imbalance(raw) > 0:
+            _prose_thought = t("parse.incomplete_json", raw=raw[:300])
+            _prose_error_type = "incomplete_json"
+        elif _has_unescaped_backslash:
             _prose_thought = t("parse.backslash_error", raw=raw[:300])
             _prose_error_type = "unescaped_backslash"
         elif _has_unquoted_string_value2:

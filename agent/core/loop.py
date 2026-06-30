@@ -882,6 +882,10 @@ def run(
             action = parse_response(raw_response)
             if action.type != ActionType.ERROR:
                 state.meta.pop("json_parse_retry", None)
+                # 成功解析 → 清零通用格式错误断路器计数（与下方 C1/C2 配套）。
+                state.meta.pop("_fmt_err_streak", None)
+                state.meta.pop("_identical_err_streak", None)
+                state.meta.pop("_last_error_hash", None)
 
             if hooks.on_thought and action.thought:
                 hooks.on_thought(action.thought)
@@ -1055,6 +1059,20 @@ def run(
                     streak = 0
                     state.meta["_json_fail_streak"] = 0
 
+                # C1：通用格式错误连续计数——任何 error_type 都累计（不止 json-parse/截断），
+                # 否则像 unescaped_string_quote / incomplete_json 这类错误的死循环无人看管。
+                fmt_streak = int(state.meta.get("_fmt_err_streak", 0)) + 1
+                state.meta["_fmt_err_streak"] = fmt_streak
+
+                # C2：逐字相同输出检测——模型连续吐出完全相同的内容，重试必然得到相同结果，
+                # 是死循环最强信号，应立即升级而非继续重试。存哈希而非全文，避免 meta 膨胀。
+                _cur_raw = (raw_response if isinstance(raw_response, str) else str(raw_response)).strip()
+                _cur_hash = hashlib.md5(_cur_raw.encode("utf-8", "ignore")).hexdigest()
+                _prev_hash = state.meta.get("_last_error_hash")
+                identical = int(state.meta.get("_identical_err_streak", 0)) + 1 if _prev_hash is not None and _cur_hash == _prev_hash else 0
+                state.meta["_identical_err_streak"] = identical
+                state.meta["_last_error_hash"] = _cur_hash
+
                 # 运行时补丁：识别错误类型并写入 runtime_patches
                 _apply_runtime_patch(raw_response, action, state, llm, hooks=hooks)
 
@@ -1069,6 +1087,22 @@ def run(
                 else:
                     overload_hint = ""
 
+                # C1/C2 断路器提示：相同输出（最强信号）优先；否则任意格式错误连续超限也升级。
+                if identical >= 2:
+                    loop_break = (
+                        f"\n\n⛔ 你已连续 {identical + 1} 次输出逐字完全相同的内容——重试只会得到相同结果。"
+                        "立刻彻底改变策略：换一个工具、把任务拆成更小步骤、或调用 compress_context 重置上下文。"
+                        "严禁再输出相同内容。"
+                    )
+                elif not overload_hint and fmt_streak > retry_max:
+                    loop_break = (
+                        f"\n\n⛔ 循环检测：已连续 {fmt_streak} 次输出格式错误。停止原样重试，改变输出方式："
+                        "逐字段检查所有字符串与括号是否完整闭合（尤其 args 嵌套对象后的最外层 }），"
+                        "缩短内容，或换用 run_python 分块写文件。"
+                    )
+                else:
+                    loop_break = ""
+
                 _append_short_term(
                     state,
                     {
@@ -1078,6 +1112,7 @@ def run(
                             "只输出 JSON，不要额外文本；如需调用工具，请尽量让 args 简短（例如把长代码放在多行字符串中或拆步）。"
                             f"错误详情: {error_msg}"
                             + overload_hint
+                            + loop_break
                         ),
                     },
                 )

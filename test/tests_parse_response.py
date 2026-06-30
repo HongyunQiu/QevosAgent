@@ -32,6 +32,21 @@ def main():
         "```json\n{\"thought\":\"x\",\"action\":\"done\",\"final_answer\":\"ok\"}\n```",
     )
 
+    # 4) Missing outer closing brace — the death-loop case (run 20260630-151151):
+    #    model drops the outer } after a nested args object. Must recover via the
+    #    dependency-free balanced-completion repair, even without json_repair.
+    assert_ok(
+        "missing_outer_brace",
+        '{\n"thought": "check proxy",\n"action": "tool_call",\n"tool": "shell",\n'
+        '"args": {"command": "curl -s http://127.0.0.1:7897 && echo ok",\n"timeout": 10\n}',
+    )
+
+    # 5) Dangling unterminated string + missing closers — balanced completion closes both.
+    assert_ok(
+        "dangling_string",
+        '{"thought":"x","action":"tool_call","tool":"shell","args":{"command":"echo hello',
+    )
+
     print("OK")
 
 

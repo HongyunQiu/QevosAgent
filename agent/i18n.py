@@ -381,6 +381,13 @@ _STRINGS: dict[str, dict[str, str]] = {
             '  正确: {"thought": "描述为\\"the open-source code\\"，这是重名"}\n'
             "原始输出(截断): {raw}"
         ),
+        "parse.incomplete_json": (
+            "JSON 不完整：缺少闭合的大括号/中括号（不是引号问题）。\n"
+            "原因：对象或数组没有正确闭合——常见于 args 里嵌套了对象时漏写最外层的 }。\n"
+            "请逐字段检查括号配对：每个 {{ 都要有对应的 }}，每个 [ 都要有对应的 ]，"
+            "尤其确认 args 嵌套对象之后补齐了最外层的 }。请重新输出完整的 JSON。\n"
+            "原始输出(截断): {raw}"
+        ),
         "parse.prose_with_json": (
             "你的上一条输出是纯文本（其中虽包含 JSON 片段，但不包含 thought / action 字段）。\n"
             "无论任务是否完成，都必须通过 JSON 格式输出，不能直接输出纯文本。\n"
@@ -936,6 +943,14 @@ Before calling action='done', you MUST complete the following two steps:
             "Error example:\n"
             '  Wrong:  {{"thought": "described as "the open-source code", which is a name conflict"}}\n'
             '  Correct: {{"thought": "described as \\"the open-source code\\", which is a name conflict"}}\n'
+            "Raw output (truncated): {raw}"
+        ),
+        "parse.incomplete_json": (
+            "Incomplete JSON: missing closing brace/bracket (this is NOT a quote problem).\n"
+            "Cause: an object or array was not properly closed — commonly the outer }} is dropped "
+            "after a nested object inside args.\n"
+            "Check bracket pairing field by field: every {{ needs a matching }}, every [ needs a matching ]; "
+            "in particular make sure the outer }} is added after the nested args object. Re-emit the complete JSON.\n"
             "Raw output (truncated): {raw}"
         ),
         "parse.prose_with_json": (
