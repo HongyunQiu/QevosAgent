@@ -217,6 +217,13 @@ def format_probe_summary(probe: dict) -> str:
 def main():
     _team_api_instance = None  # 提前初始化，确保 finally 块安全访问
     ensure_env_defaults()
+    # 依赖自检：缺失第三方库（尤其 json_repair）会导致诡异故障（如格式错误死循环），
+    # 启动时即响亮告警，避免静默降级。自检本身绝不阻断启动。
+    try:
+        from agent.runtime.depcheck import check_dependencies
+        check_dependencies()
+    except Exception:
+        pass
     from agent.i18n import t  # import after env defaults so QEVOS_LANG from .env is visible
     probe = probe_openai_configuration()
     print(format_probe_summary(probe))

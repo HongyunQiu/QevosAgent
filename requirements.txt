@@ -6,3 +6,5 @@ json-repair
 ddgs
 Pillow
 opencv-python
+httpx
+paramiko
