@@ -4004,7 +4004,10 @@ async function appEditorOpen(id) {
   const close = () => back.remove();
   back.querySelector('.app-modal-x').addEventListener('click', close);
   back.querySelector('#appEdCancel').addEventListener('click', close);
-  back.addEventListener('click', e => { if (e.target === back) close(); });
+  // 仅当按下也在遮罩上时才算点背景关闭，避免从输入框拖选文字松手落到遮罩上误关。
+  let appEdDownOnBack = false;
+  back.addEventListener('mousedown', e => { appEdDownOnBack = (e.target === back); });
+  back.addEventListener('click', e => { if (e.target === back && appEdDownOnBack) close(); appEdDownOnBack = false; });
   back.querySelector('#appEdSave').addEventListener('click', async () => {
     const name = back.querySelector('#appEdName').value.trim();
     if (!name) { alert('请填写名称'); return; }
@@ -4061,7 +4064,10 @@ function appOpenRunModal(id, token) {
   const close = () => { delete gAppRuns[token]; back.remove(); };
   back.querySelector('.app-modal-x').addEventListener('click', close);
   back.querySelector('#appOutClose').addEventListener('click', close);
-  back.addEventListener('click', e => { if (e.target === back) close(); });
+  // 仅当按下也在遮罩上时才算点背景关闭，避免从输出区拖选文字松手落到遮罩上误关。
+  let appOutDownOnBack = false;
+  back.addEventListener('mousedown', e => { appOutDownOnBack = (e.target === back); });
+  back.addEventListener('click', e => { if (e.target === back && appOutDownOnBack) close(); appOutDownOnBack = false; });
 
   const CAP = 200000;
   const appendTo = (pre, lbl, text) => {
@@ -5511,7 +5517,10 @@ async function openDirPicker() {
           <button class="dp-btn dp-btn-primary" id="dpOpen">Open</button>
         </div>
       </div>`;
-    modal.addEventListener('click', (e) => { if (e.target === modal) close(null); });
+    // 仅当按下也在遮罩上时才算点背景关闭，避免从路径输入框拖选文字松手落到遮罩上误关。
+    let dpDownOnModal = false;
+    modal.addEventListener('mousedown', (e) => { dpDownOnModal = (e.target === modal); });
+    modal.addEventListener('click', (e) => { if (e.target === modal && dpDownOnModal) close(null); dpDownOnModal = false; });
     document.body.appendChild(modal);
 
     const $path = modal.querySelector('#dpPath');
@@ -5965,7 +5974,14 @@ fetch('/api/version').then(r => r.json()).then(d => {
 
   document.getElementById('setClose').addEventListener('click', closeSettings);
   document.getElementById('setCancel').addEventListener('click', closeSettings);
-  modal.addEventListener('click', e => { if (e.target === modal) closeSettings(); });
+  // 只在「按下」也落在遮罩上时才算点背景关闭。否则从输入框里拖选文字、
+  // 松手时落到遮罩上会被合成为一次 target=modal 的 click，导致面板误关闭。
+  let setMouseDownOnBackdrop = false;
+  modal.addEventListener('mousedown', e => { setMouseDownOnBackdrop = (e.target === modal); });
+  modal.addEventListener('click', e => {
+    if (e.target === modal && setMouseDownOnBackdrop) closeSettings();
+    setMouseDownOnBackdrop = false;
+  });
 
   // ── Probe current tab's endpoint ──────────────────────────────────
   document.getElementById('setBtnTest').addEventListener('click', async () => {
