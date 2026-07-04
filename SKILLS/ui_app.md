@@ -83,6 +83,17 @@ enabled: true
 - frontmatter 新字段 `skill`/`entry`/`root` 均可选，缺省即退化成"纯前端 UI App"。
 - 面板运行在 sandbox iframe(`allow-scripts allow-same-origin allow-forms`)，内部 JS 可直接 `fetch('/api/...')`。
 
+### 需要 npm / 是一整个前端工程(React/Vue/Vite)?
+
+区分**构建期 vs 运行期**:npm 几乎只在**构建期**用来把源码打包成 `dist/`(纯静态，**不含 node_modules**)；**运行期是纯静态、零 npm**。所以:
+
+- **你(Agent)可以自己 `npm install && npm run build`**——在有 node/npm 的机器上，这就是预期路径。装的包只在源码工作区、构建完即弃。
+- **只 ship / 注册构建产物 `dist/`**，源码工程(package.json/node_modules/src)留在开发工作区，**绝不 commit、绝不进 `apps/`、绝不进 `app-data/`**。
+- **打包用相对 base**(`vite build --base=./`)，否则资源路径挂在 `/api/app/:id/...` 下会 404。
+- `qevos` 桥与框架无关：打包后的代码直接调 `window.qevos.readFile(...)` 即可。
+- 平台若尚未支持"指向 dist 的静态服务"，见 `doc/interactive-app.md` §7.5（v1 项）；未支持前先用内联 HTML + vendored 轻量库。
+- 运行时真需要常驻 node 服务(SSR/自带 server)→ **不支持**(UI App 无自己的后端)，属未来 sidecar。
+
 ---
 
 ## 2. 面板侧 API：`qevos` 桥(写进你生成的 HTML 里)
@@ -177,6 +188,7 @@ my-flow/                    ← project root
 - [ ] 几何/视图与语义是否**分文件**(`.qevos/view.json` vs `flow.md`)？
 - [ ] 结构化事件走 `qevos.emit`/`panel-event`，**没塞进 `/api/inject`**？
 - [ ] 文件路径都是 **root 相对**、没有绝对路径句柄？
-- [ ] 要纯本地：库是否 vendor 进项目、**没拉 CDN**？
+- [ ] 要纯本地：库是否 vendor 进项目 / 或走构建产物 `dist/`、**没拉 CDN**？
+- [ ] 工程型 App：只注册了 `dist/`、**node_modules 没入库/没进 apps 或 app-data**？相对 base?
 
 > 设计动机与平台内部改动见 `doc/interactive-app.md`（维护者向）。本 skill 是 Agent 侧操作契约，自包含。

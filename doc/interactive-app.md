@@ -208,6 +208,40 @@ qevos.onPush(cb)             // ← web_show / WS 推送
 
 ---
 
+## 7.5 构建型 UI App(需要 npm 的前端工程)
+
+内联 HTML 只够轻量档;当 App 本身是**一整个前端工程**(React/Vue/Vite + node_modules + 构建步骤)时:
+
+### 核心区分:构建期 vs 运行期
+- 90% 的"需要 npm"是**构建期**的:`npm run build` 把源码打包成 `dist/`(纯静态,**不含 node_modules**)。
+- **运行期是纯静态、零 npm**。所以问题的真身是"如何存放/服务构建产物 `dist/`",不是"运行时跑 npm"。
+
+### 模型扩展:App 源码工程 ≠ App 运行产物
+> `runtime: web` 的面板内容,可以是**内联 HTML**(轻量),也可以指向一个**构建好的静态目录 `dist/`**(工程)。
+> 平台只服务静态产物,永不碰源码工程。
+
+- **源码工程**(package.json / node_modules / vite.config / src)住在开发工作区(如 `app-src/<id>/`,**gitignore、不打包、不入库**)。
+- 注册进 App 的是 `dist/`。
+- 平台侧增量(v1+):一个**限定在该 app dist 目录内的静态路由**(照 `run-file-raw` 的 MIME + 路径穿越防护),并把 `qevos` 桥注入 `dist/index.html`。
+- **打包 base 必须相对**(`vite build --base=./`),否则 `/assets/...` 挂在 `/api/app/:id/...` 下会 404。
+
+### 构建在哪儿跑 / Agent 能否自己装
+- **有工具链的机器(开发机 / 授权阶段)**:Agent 有 shell,**自己 `npm install && npm run build` 就是预期路径**。装的包在源码工作区、构建完即弃、**不 ship**。
+- **打包后的用户机**:默认**没有** node/npm(Electron 内含 node 但不暴露为 `node`/`npm` 命令;当前只 bundle 了 Python)。所以默认策略是 **App 预构建、只 ship `dist/`**,用户机零 npm。
+- 若要让 Agent **在任何机器**上都能构建,需给它一个到处都在的 node 工具链,两条实现路(见下)。
+
+### 让 node 工具链到处可用(可选,若要一等支持)
+1. **`ELECTRON_RUN_AS_NODE`**:Electron 二进制本就内含完整 node,置 `ELECTRON_RUN_AS_NODE=1` 后 `process.execPath` 即纯 node;再 bundle `npm-cli.js` 即得 npm。零额外体积,但 node 版本被 Electron 锁死、**原生模块(node-gyp)编译易碎**——只适合纯静态前端,当轻量兜底。
+2. **bundle 独立 node(推荐,和现有 Python 对称)**:新增 `setup_node.js` 拉官方 node 到 `vendor/node`(镜像 `setup_python.js`)→ electron-builder `extraResources`/asarUnpack(二进制**必须在 asar 外**)→ [main.js `EMBEDDED_PYTHON`](../desktop/main.js) 同构解析出 `EMBEDDED_NODE`,并把 `vendor/node` **prepend 进 spawn 子进程的 PATH**,Agent `npm` 即到处可用。代价:每平台 +40–70MB。省体积可改**首次用时懒下载**到 `userData/vendor/node`(构建期在线、运行期本地)。
+
+### 纯本地约束的调和
+`npm install` 拉 registry = **构建期在线**(在开发/授权机上),**运行期纯静态=纯本地**——与产品本身"npm+CI 构建、发布纯本地包"一致。**铁律:node/node_modules/工具链永不入库、永不 ship,只有 `dist/` 进产物。**
+
+### 例外:运行期真需要 node 服务(SSR / 自带 server)
+按设计**不支持**(UI App 无自己的后端 server,§0.5)。落到未来的**受管 sidecar**逃生梯,少数、需显式声明。绝大多数前端工程 SPA/静态化即可,无需 SSR。
+
+---
+
 ## 8. 明确不做(避免过度约束)
 
 - ❌ 不建独立于 App 的第二套"UI App 管理系统"——复用 `apps/` 这套。
@@ -223,7 +257,8 @@ qevos.onPush(cb)             // ← web_show / WS 推送
 
 - **v0(打通闭环)**:D1 + D2 + D4;`project_root` 先固定为某工作目录;桥先内联少量 fetch。
   产出:一个能开面板、能双向结构化通信的最小 UI App。
-- **v1(工程化)**:D3(root 参数化多项目)+ D5(完整 `qevos` 桥)+ marker/`.qevos` 约定;
+- **v1(工程化)**:D3(root 参数化多项目)+ D5(完整 `qevos` 桥)+ marker/`.qevos` 约定
+  + **构建型 App 支持**(dist 静态路由 + 桥注入 index.html,见 §7.5);
   以 flowchart App 为第一个完整样例,之后 UI App 照此模板复制。**仍为纯独立**,不接 Agent。
 - **v2(接 Agent,待子 Agent 落地)**:在已保留的 `emit`/`panel_events`/`panel_poll` 缝上,
   接"用户显式触发 → 召唤一次性子 Agent run → 处理 → 回推面板"路径;`onPush` 实装。前置=子 Agent。

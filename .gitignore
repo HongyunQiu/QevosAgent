@@ -39,6 +39,8 @@ raw_memory.ndjson
 
 # UI App (runtime:web) per-app project data — runtime state, not source
 app-data/
+# UI App 源码工程工作区（含 node_modules；只 ship 构建产物 dist/，源码不入库）
+app-src/
 
 # Misc
 .DS_Store
