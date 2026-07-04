@@ -3911,6 +3911,9 @@ function renderAppsGrid() {
 const gAppRuns = {};
 
 async function runApp(id, card) {
+  // UI App (runtime: web): open an interactive panel tab instead of running a script.
+  const app = gApps.find(a => a.id === id);
+  if (app && app.runtime === 'web') { openAppPanel(app); return; }
   if (card.classList.contains('running')) return;
   card.classList.add('running');
   const token = 'apprun_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -3925,6 +3928,42 @@ async function runApp(id, card) {
   } finally {
     card.classList.remove('running');
   }
+}
+
+// Open a UI App (runtime: web) as a closeable center tab hosting its panel.
+// The panel HTML is served (with the qevos bridge injected) at /api/app/:id/panel.
+function openAppPanel(app) {
+  const tabId = 'app-' + app.id;
+  if (document.getElementById('ctab-' + tabId)) { setCenterTab(tabId); return; }
+
+  const strip = document.querySelector('.center-tab-strip');
+  const gap   = strip.querySelector('#ctab-addDir') || strip.querySelector('.bar-gap');
+  const panel = document.querySelector('.events-panel');
+
+  const btn = document.createElement('button');
+  btn.className = 'center-tab'; btn.id = 'ctab-' + tabId;
+  btn.innerHTML = '<span>' + esc((app.icon || '📦') + ' ' + (app.name || app.id)) +
+    '</span> <span class="ctab-close" title="Close">✕</span>';
+  btn.querySelector('.ctab-close').addEventListener('click', e => { e.stopPropagation(); closeAppPanel(tabId); });
+  btn.addEventListener('click', () => setCenterTab(tabId));
+  strip.insertBefore(btn, gap);
+
+  const pane = document.createElement('div');
+  pane.className = 'center-pane'; pane.id = 'cpane-' + tabId;
+  const frame = document.createElement('iframe');
+  frame.src = '/api/app/' + encodeURIComponent(app.id) + '/panel';
+  frame.style.cssText = 'border:0;width:100%;height:100%;flex:1;background:var(--bg)';
+  pane.appendChild(frame);
+  panel.appendChild(pane);
+
+  setCenterTab(tabId);
+}
+
+function closeAppPanel(tabId) {
+  const wasActive = gCenterTab === tabId;
+  document.getElementById('ctab-' + tabId)?.remove();
+  document.getElementById('cpane-' + tabId)?.remove();
+  if (wasActive) setCenterTab('events');
 }
 
 async function appDelete(id, name) {
@@ -3990,7 +4029,7 @@ async function appEditorOpen(id) {
         '</div>' +
         '<div class="app-fg"><label>描述</label><input type="text" id="appEdDesc" value="' + esc(f.description) + '" placeholder="一句话说明这个程序做什么"></div>' +
         '<div class="app-fg"><label>运行时</label><select id="appEdRt">' +
-          ['python','powershell','shell'].map(rt => '<option value="'+rt+'"'+(f.runtime===rt?' selected':'')+'>'+rt+'</option>').join('') +
+          ['python','powershell','shell','web'].map(rt => '<option value="'+rt+'"'+(f.runtime===rt?' selected':'')+'>'+rt+'</option>').join('') +
         '</select></div>' +
         '<div class="app-fg"><label>脚本</label><textarea class="app-script-ta" id="appEdScript" spellcheck="false" placeholder="print(\'hi\')"></textarea></div>' +
       '</div>' +

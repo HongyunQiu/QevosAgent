@@ -422,6 +422,9 @@ const AGENT_DIR       = path.resolve(process.env.AGENT_DIR       || path.join(__
 const SKILLS_DIR      = path.resolve(process.env.SKILLS_DIR      || path.join(AGENT_DIR, 'SKILLS'));
 const CRONS_DIR       = path.resolve(process.env.CRONS_DIR       || path.join(AGENT_DIR, 'crons'));
 const APPS_DIR        = path.resolve(process.env.APPS_DIR        || path.join(AGENT_DIR, 'apps'));
+// Per-app project data dir for `runtime: web` UI Apps (files a panel reads/writes,
+// plus its .qevos/panel_events.jsonl event log). v0: one folder per app id.
+const APP_DATA_DIR    = path.resolve(process.env.APP_DATA_DIR    || path.join(AGENT_DIR, 'app-data'));
 const CRONS_HISTORY   = path.join(CRONS_DIR, '.history.jsonl');
 const CRONS_PENDING   = path.join(CRONS_DIR, '.pending.json');
 const MEMORY_CONCEPT  = path.resolve(process.env.AGENT_CONCEPT   || path.join(AGENT_DIR, 'memory_macro.md'));
@@ -1221,11 +1224,12 @@ function parseCronFile(content) {
 }
 
 // ── Apps: parse + execute ────────────────────────────────────────────────
-const APP_RUNTIMES = ['python', 'powershell', 'shell'];
+const APP_RUNTIMES = ['python', 'powershell', 'shell', 'web'];
 
 /** Parse an app file: YAML-ish frontmatter + script body. */
 function parseAppFile(content) {
-  const meta = { name: '', icon: '📦', description: '', runtime: 'shell', enabled: true, timeout: 120 };
+  const meta = { name: '', icon: '📦', description: '', runtime: 'shell', enabled: true, timeout: 120,
+                 skill: '', entry: '', root: '' };  // skill/entry/root: UI App (runtime:web) extras, all optional
   let body = content;
   const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (m) {
@@ -1256,6 +1260,35 @@ function parseAppFile(content) {
   }
   if (!APP_RUNTIMES.includes(meta.runtime)) meta.runtime = 'shell';
   return { meta, body: body.replace(/^\s+/, '') };
+}
+
+/**
+ * The `qevos` bridge injected into every UI App panel (runtime: web).
+ * Minimal v0 surface: readFile / writeFile (scoped to the app's project dir),
+ * emit (structured events → panel_events.jsonl), onPush (stub, wired in v1).
+ * See SKILLS/ui_app.md for the authoring contract.
+ */
+function qevosBridgeScript(appId) {
+  const A = JSON.stringify(appId);
+  return `<script>(function(){
+  var APP=${A};
+  var enc=function(p){return String(p).split('/').map(encodeURIComponent).join('/');};
+  window.qevos={
+    _app:APP,
+    readFile:async function(rel){var r=await fetch('/api/app-file/'+encodeURIComponent(APP)+'/'+enc(rel));var j=await r.json();return j.content;},
+    writeFile:async function(rel,content){var r=await fetch('/api/app-file/'+encodeURIComponent(APP)+'/'+enc(rel),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:String(content)})});return await r.json();},
+    emit:async function(event,data){var r=await fetch('/api/panel-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app:APP,event:event,data:data||{}})});return await r.json();},
+    onPush:function(cb){(window.__qevosPush=window.__qevosPush||[]).push(cb);}  /* v1: server→panel realtime */
+  };
+})();</script>`;
+}
+
+/** Prepend the bridge <script> into an app's HTML body (into <head> if present). */
+function buildPanelHtml(appId, html) {
+  const bridge = qevosBridgeScript(appId);
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, m => m + bridge);
+  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, m => m + bridge);
+  return bridge + html;
 }
 
 /**
@@ -2149,6 +2182,11 @@ const server = http.createServer(async (req, res) => {
     try { const raw = await readBody(req); if (raw) token = (JSON.parse(raw).token) || ''; } catch {}
     try {
       const { meta, body } = parseAppFile(readText(fp) || '');
+      // UI App: don't spawn a script — tell the frontend to open a panel.
+      if (meta.runtime === 'web') {
+        json(200, { panel: true, id, name: meta.name || id, icon: meta.icon || '📦' });
+        return;
+      }
       const r = await runAppScript(meta, body, token);
       broadcastConsole('system', `▶ Run app: ${meta.name || id} → exit ${r.code}${r.timedOut ? ' (timeout)' : ''}`);
       json(200, r);
@@ -2187,6 +2225,70 @@ const server = http.createServer(async (req, res) => {
       if (!fs.existsSync(fp)) { json(404, { error: 'app not found' }); return; }
       fs.unlinkSync(fp);
       json(200, { ok: true, id });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── UI App (runtime: web) panel + project I/O + event bypass ───────────────
+  // GET  /api/app/:id/panel      — serve the app's HTML body with the qevos bridge
+  // GET  /api/app-file/:id/*     — read a file in the app's project dir (root-scoped)
+  // POST /api/app-file/:id/*     — write a file in the app's project dir
+  // POST /api/panel-event        — append a structured event to panel_events.jsonl
+
+  // GET /api/app/:id/panel
+  const appPanelMatch = req.url.match(/^\/api\/app\/([^/?]+)\/panel$/);
+  if (req.method === 'GET' && appPanelMatch) {
+    const id = decodeURIComponent(appPanelMatch[1]).replace(/\.md$/, '');
+    const fp = path.join(APPS_DIR, id + '.md');
+    if (!fs.existsSync(fp)) { res.writeHead(404); res.end('app not found'); return; }
+    try {
+      const { meta, body } = parseAppFile(readText(fp) || '');
+      if (meta.runtime !== 'web') { res.writeHead(400); res.end('not a UI App'); return; }
+      const html = buildPanelHtml(id, body);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+      res.end(html);
+    } catch (e) { res.writeHead(500); res.end(String(e)); }
+    return;
+  }
+
+  // GET/POST /api/app-file/:id/*  (confined to APP_DATA_DIR/<id>/)
+  const appFileMatch = req.url.match(/^\/api\/app-file\/([^/]+)\/(.+)/);
+  if (appFileMatch && (req.method === 'GET' || req.method === 'POST')) {
+    const id      = decodeURIComponent(appFileMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const rootDir = path.resolve(path.join(APP_DATA_DIR, id));
+    const relFile = decodeURIComponent(appFileMatch[2]);
+    const fullPath = path.resolve(path.join(rootDir, relFile));
+    const rel = path.relative(rootDir, fullPath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) { json(403, { error: 'forbidden' }); return; }
+    if (req.method === 'GET') {
+      try { json(200, { content: fs.readFileSync(fullPath, 'utf8') }); }
+      catch (e) {
+        if (e.code === 'ENOENT') { json(200, { content: null, exists: false }); return; }
+        json(500, { error: String(e) });
+      }
+      return;
+    }
+    try {
+      const { content } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, content, 'utf8');
+      json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // POST /api/panel-event
+  if (req.method === 'POST' && req.url === '/api/panel-event') {
+    try {
+      const { app, event, data } = JSON.parse(await readBody(req));
+      const id = String(app || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+      if (!id || !event) { json(400, { error: 'app and event required' }); return; }
+      const qdir = path.join(APP_DATA_DIR, id, '.qevos');
+      fs.mkdirSync(qdir, { recursive: true });
+      const line = JSON.stringify({ ts: Date.now(), event: String(event), data: data || {} }) + '\n';
+      fs.appendFileSync(path.join(qdir, 'panel_events.jsonl'), line, 'utf8');
+      json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }

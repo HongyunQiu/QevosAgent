@@ -37,6 +37,9 @@ fdtd_output*/
 runs/
 raw_memory.ndjson
 
+# UI App (runtime:web) per-app project data — runtime state, not source
+app-data/
+
 # Misc
 .DS_Store
 

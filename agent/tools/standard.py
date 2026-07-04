@@ -2637,6 +2637,50 @@ def tool_read_skill(state: AgentState, name: str) -> ToolResult:
         return ToolResult(success=False, output=None, error=str(e))
 
 
+# ── UI App 面板事件（runtime:web 的结构化事件旁路）────────────────────────────
+# 面板经 qevos.emit(...) 把结构化事件追加到 app-data/<app>/.qevos/panel_events.jsonl。
+# Agent 用 panel_poll 读取这些事件来处理"需要智能"的操作，改写项目文件后由面板重渲染。
+# 详见 SKILLS/ui_app.md。
+_APP_DATA_DIR = Path(__file__).parent.parent.parent / "app-data"
+
+
+def _app_data_dir() -> Path:
+    return Path(os.environ.get("APP_DATA_DIR", str(_APP_DATA_DIR)))
+
+
+def tool_panel_poll(state: AgentState, app: str, since: float = None, consume: bool = False) -> ToolResult:
+    """读取某 UI App 面板发来的结构化事件（panel_events.jsonl）。
+
+    app:     App id（apps/<id>.md 的 id，也是 app-data/<id>/ 目录名）。
+    since:   （可选）只返回 ts 大于该毫秒时间戳的事件，用于增量轮询。
+    consume: （可选）读取后清空事件日志；增量轮询请改用 since，不要 consume。
+    """
+    app_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(app or ""))
+    if not app_id:
+        return ToolResult(success=False, output=None, error="app 必填")
+    fp = _app_data_dir() / app_id / ".qevos" / "panel_events.jsonl"
+    if not fp.exists():
+        return ToolResult(success=True, output={"app": app_id, "events": [], "count": 0})
+    try:
+        events = []
+        for line in fp.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if since is not None and ev.get("ts", 0) <= since:
+                continue
+            events.append(ev)
+        if consume:
+            fp.write_text("", encoding="utf-8")
+        return ToolResult(success=True, output={"app": app_id, "events": events, "count": len(events)})
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+
 # ── APP 工具（用户态可执行程序，陈列在 Dashboard 的 Apps Tab）─────────────────
 # 一个 app = apps/<id>.md：YAML frontmatter（name/icon/description/runtime/enabled）
 # + 脚本正文。点击即跑、不启动 Agent。Dashboard 后端用同样的格式解析执行。
@@ -3841,6 +3885,21 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description="运行一个已注册的可执行程序（按 id 或名称），直接执行其脚本并返回输出。",
             args_schema={"name": "程序 id 或名称（apps/ 目录下的文件名，不含 .md 后缀）"},
             fn=tool_run_app,
+        ),
+        ToolSpec(
+            name="panel_poll",
+            description=(
+                "读取某 UI App（runtime:web）面板经 qevos.emit 发来的结构化事件。"
+                "用于 Agent-UI App：面板把'需要智能'的操作（如逻辑校验、语义生成）发成事件，"
+                "你用本工具取出、处理、改写项目文件（app-data/<app>/），面板随后重渲染。"
+                "增量轮询用 since（上次最大 ts），不要用 consume。详见 SKILLS/ui_app.md。"
+            ),
+            args_schema={
+                "app": "App id（apps/<id>.md 的 id）",
+                "since": "（可选）只返回 ts 大于该毫秒时间戳的事件",
+                "consume": "（可选）读取后清空事件日志；增量轮询请改用 since",
+            },
+            fn=tool_panel_poll,
         ),
     ]
     tools = {s.name: s for s in specs}
