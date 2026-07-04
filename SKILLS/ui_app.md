@@ -180,6 +180,39 @@ my-flow/                    ← project root
 
 ---
 
+## 6. 自测 UI App(构建后必做,别自己摸索——照此做)
+
+造完/改完 UI App **必须自动验证一遍**。**不要**临时发明测试办法:用下面这套现成组合。
+这是**构建期的 Agent→App 自动化**(你在开发时给自己写测试),与"App 纯独立、不驱动 Agent"**不冲突**——
+方向和时机都不同,App 运行时仍不依赖你。
+
+**用什么(全是现成的,零新工具)**：
+- **控制 + 读 UI** → `web_interact`(`new_tab`/`click`/`fill`/`eval`/`get_html`/`screenshot`/`key_*`/`scroll`)。
+  面板就是个 URL,指过去即可。详见 `doc/browser-automation.md`。
+- **断言结果** → **优先读文件态**(你的文件工具读 `app-data/<id>/`)+ `panel_poll` 读事件;DOM/视觉用 `get_html`/`screenshot` 兜。
+
+**配方**：
+1. 取端口:面板 URL = `http://127.0.0.1:$DASHBOARD_PORT/api/app/<id>/panel`(用 shell `echo $DASHBOARD_PORT` 或 `run_python` 读 `os.environ`)。
+2. 开**独立自动化视图**(别去驱动用户正看的页签):
+   `web_interact(action="new_tab", display_id="uitest", payload={"url": "…/api/app/<id>/panel"})`
+3. 驱动:`web_interact(action="click"/"fill"/"eval", display_id="uitest", payload={...})`。
+4. **断言(按稳健度排序)**：
+   | 优先级 | 通道 | 怎么做 |
+   |---|---|---|
+   | 1（最稳） | 文件态 | 读 `app-data/<id>/flow.md`、`.qevos/view.json`,校验内容 |
+   | 2 | 事件 | `panel_poll('<id>')` 校验发出的事件 |
+   | 3 | DOM/视觉 | `web_interact` `get_html` / `eval` 读 DOM / `screenshot` 留证 |
+
+   **优先文件态断言**——确定性、无渲染时序、比扒 DOM 稳得多(文件即状态的红利)。
+
+**可选:埋语义探针**(想要比扒 DOM 更干净的状态断言时才做):在面板里暴露
+`window.qevosTest = { getState(){ return … }, /* … */ }`,然后 `web_interact(action="eval", payload={"code":"JSON.stringify(qevosTest.getState())"})` 取用。
+opt-in,不是必需;不埋也能靠 DOM + 文件态测。
+
+**注意**：自动化视图与用户视图共享 `app-data/<id>/` 文件;测试时一般用户没在用,先不做隔离。
+
+---
+
 ## 检查清单(造 App 前自检)
 
 - [ ] **App 在零 Agent 下能开、能做完基线功能**？(近期硬约束，绝不能依赖 Agent)
@@ -190,5 +223,6 @@ my-flow/                    ← project root
 - [ ] 文件路径都是 **root 相对**、没有绝对路径句柄？
 - [ ] 要纯本地：库是否 vendor 进项目 / 或走构建产物 `dist/`、**没拉 CDN**？
 - [ ] 工程型 App：只注册了 `dist/`、**node_modules 没入库/没进 apps 或 app-data**？相对 base?
+- [ ] **造完已用 §6 那套(`web_interact` 驱动 + 文件态断言)自测过**？
 
 > 设计动机与平台内部改动见 `doc/interactive-app.md`（维护者向）。本 skill 是 Agent 侧操作契约，自包含。

@@ -253,6 +253,21 @@ qevos.onPush(cb)             // ← web_show / WS 推送
 
 ---
 
+## 7.6 自测 UI App(Agent 构建期自动化)
+
+Agent 造完 UI App 要能自测。**全部复用现有能力,不建新自动化栈**:
+
+- **控制 + 观察** → `web_interact`(`new_tab`/`click`/`fill`/`eval`/`get_html`/`screenshot`…,见 [doc/browser-automation.md](browser-automation.md))。面板就是 URL(`/api/app/<id>/panel`),开成一个**独立自动化视图**驱动。
+- **断言** → **优先文件态**(读 `app-data/<id>/`)+ `panel_poll`(事件)+ DOM/视觉兜底。文件即状态 → 大部分断言从后端可观测,比扒 DOM 稳。
+- **方向说明**:这是**构建期 Agent→App**,由正在造 App 的 Agent 驱动;不制造运行时 App→Agent 依赖,与 §5.1 的"App 纯独立"不冲突。
+- **可选探针**:App 暴露 `window.qevosTest = { getState() … }`,Agent `eval` 调用做语义断言。opt-in。
+- Agent 侧操作配方见 [SKILLS/ui_app.md](../SKILLS/ui_app.md) §6。
+
+> 唯一值得考虑的新增(可选便利,非必需):一个薄工具 `open_app_panel(id)`——解析动态 `DASHBOARD_PORT`
+> + 调 `web_interact new_tab`,免去 Agent 手拼 URL。是 `web_interact` 的封装,不是新能力。列 v1 可选项。
+
+---
+
 ## 9. 分期建议
 
 - **v0(打通闭环)**:D1 + D2 + D4;`project_root` 先固定为某工作目录;桥先内联少量 fetch。
