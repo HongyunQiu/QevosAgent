@@ -221,9 +221,9 @@ qevos.onPush(cb)             // ← web_show / WS 推送
 > 平台只服务静态产物,永不碰源码工程。
 
 - **源码工程**(package.json / node_modules / vite.config / src)住在开发工作区(如 `app-src/<id>/`,**gitignore、不打包、不入库**)。
-- 注册进 App 的是 `dist/`。
-- 平台侧增量(v1+):一个**限定在该 app dist 目录内的静态路由**(照 `run-file-raw` 的 MIME + 路径穿越防护),并把 `qevos` 桥注入 `dist/index.html`。
-- **打包 base 必须相对**(`vite build --base=./`),否则 `/assets/...` 挂在 `/api/app/:id/...` 下会 404。
+- 注册进 App 的是构建产物,放 **`apps-dist/<id>/`**(gitignore)。
+- **已实现(v1)**:`APPS_DIST_DIR`([server.js](../dashboard/server.js));`/api/app/:id/panel` 若发现 `apps-dist/<id>/index.html` 则服务它(否则回退内联正文),并注入 `<base href="/api/app/<id>/">` + `qevos` 桥;`GET /api/app/:id/*` 静态服务 `apps-dist/<id>/` 资源(MIME + 路径穿越防护)。
+- **打包 base 必须相对**(`vite build` 配 `base: './'`),资源 `./assets/…` 经 `<base>` 解析到 `/api/app/:id/`;绝对 `/assets` 仍 404。
 
 ### 构建在哪儿跑 / Agent 能否自己装
 - **有工具链的机器(开发机 / 授权阶段)**:Agent 有 shell,**自己 `npm install && npm run build` 就是预期路径**。装的包在源码工作区、构建完即弃、**不 ship**。
@@ -273,7 +273,7 @@ Agent 造完 UI App 要能自测。**全部复用现有能力,不建新自动化
 - **v0(打通闭环)**:D1 + D2 + D4;`project_root` 先固定为某工作目录;桥先内联少量 fetch。
   产出:一个能开面板、能双向结构化通信的最小 UI App。
 - **v1(工程化)**:D3(root 参数化多项目)+ D5(完整 `qevos` 桥)+ marker/`.qevos` 约定
-  + **构建型 App 支持**(dist 静态路由 + 桥注入 index.html,见 §7.5);
+  + **构建型 App 支持 ✅ 已完成**(`apps-dist/<id>/` 静态服务 + `<base>`/桥注入,见 §7.5);
   以 flowchart App 为第一个完整样例,之后 UI App 照此模板复制。**仍为纯独立**,不接 Agent。
 - **v2(接 Agent,待子 Agent 落地)**:在已保留的 `emit`/`panel_events`/`panel_poll` 缝上,
   接"用户显式触发 → 召唤一次性子 Agent run → 处理 → 回推面板"路径;`onPush` 实装。前置=子 Agent。

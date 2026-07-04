@@ -425,6 +425,11 @@ const APPS_DIR        = path.resolve(process.env.APPS_DIR        || path.join(AG
 // Per-app project data dir for `runtime: web` UI Apps (files a panel reads/writes,
 // plus its .qevos/panel_events.jsonl event log). v0: one folder per app id.
 const APP_DATA_DIR    = path.resolve(process.env.APP_DATA_DIR    || path.join(AGENT_DIR, 'app-data'));
+// Built static bundle for a UI App that is a frontend project (React/Vue/Vite):
+// apps-dist/<id>/index.html + assets/…. If present, the panel serves this instead
+// of the inline HTML body. Runtime is pure-static; source project & node_modules
+// live elsewhere and are never shipped here. See doc/interactive-app.md §7.5.
+const APPS_DIST_DIR   = path.resolve(process.env.APPS_DIST_DIR   || path.join(AGENT_DIR, 'apps-dist'));
 const CRONS_HISTORY   = path.join(CRONS_DIR, '.history.jsonl');
 const CRONS_PENDING   = path.join(CRONS_DIR, '.pending.json');
 const MEMORY_CONCEPT  = path.resolve(process.env.AGENT_CONCEPT   || path.join(AGENT_DIR, 'memory_macro.md'));
@@ -1283,12 +1288,16 @@ function qevosBridgeScript(appId) {
 })();</script>`;
 }
 
-/** Prepend the bridge <script> into an app's HTML body (into <head> if present). */
-function buildPanelHtml(appId, html) {
-  const bridge = qevosBridgeScript(appId);
-  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, m => m + bridge);
-  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, m => m + bridge);
-  return bridge + html;
+/**
+ * Inject the qevos bridge (and, for dist bundles, a <base> tag so relative asset
+ * paths resolve under /api/app/<id>/) into an app's HTML, preferring <head>.
+ * baseHref is set only when serving a built dist/ index.html.
+ */
+function buildPanelHtml(appId, html, baseHref) {
+  const inject = (baseHref ? `<base href="${baseHref}">` : '') + qevosBridgeScript(appId);
+  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, m => m + inject);
+  if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, m => m + inject);
+  return inject + html;
 }
 
 /**
@@ -1602,6 +1611,13 @@ const MIME = {
   '.svg':  'image/svg+xml',
   '.mp4':  'video/mp4',
   '.webm': 'video/webm',
+  '.mjs':  'application/javascript; charset=utf-8',
+  '.map':  'application/json',
+  '.wasm': 'application/wasm',
+  '.woff':  'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf':   'font/ttf',
+  '.otf':   'font/otf',
 };
 
 function readBody(req) {
@@ -2230,7 +2246,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── UI App (runtime: web) panel + project I/O + event bypass ───────────────
-  // GET  /api/app/:id/panel      — serve the app's HTML body with the qevos bridge
+  // GET  /api/app/:id/panel      — serve the panel HTML (dist/index.html if built, else inline body) + bridge
+  // GET  /api/app/:id/*          — serve a built dist asset (apps-dist/<id>/*)
   // GET  /api/app-file/:id/*     — read a file in the app's project dir (root-scoped)
   // POST /api/app-file/:id/*     — write a file in the app's project dir
   // POST /api/panel-event        — append a structured event to panel_events.jsonl
@@ -2244,10 +2261,38 @@ const server = http.createServer(async (req, res) => {
     try {
       const { meta, body } = parseAppFile(readText(fp) || '');
       if (meta.runtime !== 'web') { res.writeHead(400); res.end('not a UI App'); return; }
-      const html = buildPanelHtml(id, body);
+      // Built frontend project? Serve apps-dist/<id>/index.html; else the inline body.
+      const distIndex = path.join(APPS_DIST_DIR, id, 'index.html');
+      let html, baseHref;
+      if (fs.existsSync(distIndex)) {
+        html = fs.readFileSync(distIndex, 'utf8');
+        baseHref = `/api/app/${encodeURIComponent(id)}/`;  // so relative assets resolve here
+      } else {
+        html = body;
+      }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-      res.end(html);
+      res.end(buildPanelHtml(id, html, baseHref));
     } catch (e) { res.writeHead(500); res.end(String(e)); }
+    return;
+  }
+
+  // GET /api/app/:id/*  — static asset from the built dist bundle (apps-dist/<id>/…).
+  // Placed after /panel (which returns first) so it never shadows it.
+  const appAssetMatch = req.url.match(/^\/api\/app\/([^/]+)\/(.+)/);
+  if (req.method === 'GET' && appAssetMatch && appAssetMatch[2] !== 'panel') {
+    const id      = decodeURIComponent(appAssetMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const rootDir = path.resolve(path.join(APPS_DIST_DIR, id));
+    const relFile = decodeURIComponent(appAssetMatch[2].split('?')[0]);
+    const fullPath = path.resolve(path.join(rootDir, relFile));
+    const rel = path.relative(rootDir, fullPath);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) { res.writeHead(403); res.end('forbidden'); return; }
+    try {
+      const ext  = path.extname(fullPath).toLowerCase();
+      const mime = MIME[ext] || 'application/octet-stream';
+      const data = fs.readFileSync(fullPath);
+      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+      res.end(data);
+    } catch (e) { res.writeHead(e.code === 'ENOENT' ? 404 : 500); res.end(String(e)); }
     return;
   }
 

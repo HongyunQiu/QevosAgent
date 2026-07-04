@@ -88,10 +88,12 @@ enabled: true
 区分**构建期 vs 运行期**:npm 几乎只在**构建期**用来把源码打包成 `dist/`(纯静态，**不含 node_modules**)；**运行期是纯静态、零 npm**。所以:
 
 - **你(Agent)可以自己 `npm install && npm run build`**——在有 node/npm 的机器上，这就是预期路径。装的包只在源码工作区、构建完即弃。
-- **只 ship / 注册构建产物 `dist/`**，源码工程(package.json/node_modules/src)留在开发工作区，**绝不 commit、绝不进 `apps/`、绝不进 `app-data/`**。
-- **打包用相对 base**(`vite build --base=./`)，否则资源路径挂在 `/api/app/:id/...` 下会 404。
-- `qevos` 桥与框架无关：打包后的代码直接调 `window.qevos.readFile(...)` 即可。
-- 平台若尚未支持"指向 dist 的静态服务"，见 `doc/interactive-app.md` §7.5（v1 项）；未支持前先用内联 HTML + vendored 轻量库。
+- **平台已支持构建产物(v1)**：把构建输出放到 **`apps-dist/<id>/`**(需有 `index.html`)。此时 `apps/<id>.md`
+  只保留 frontmatter(`runtime: web` + name/icon…，正文可空/仅 fallback)；面板会**自动服务 `apps-dist/<id>/index.html`
+  + `assets/…`**,并注入 `<base>` 与 `qevos` 桥。源码工程放开发工作区(如 `app-src/<id>/`)。
+- **打包用相对 base**(Vite:`base: './'`),资源写成 `./assets/…`;`<base>` 会把它们解析到 `/api/app/<id>/` 下。绝对 `/assets` 仍会 404。
+- **产物与源码分离**:`apps-dist/<id>/` 是产物(gitignore、可 ship);源码 / node_modules **绝不 commit、绝不进 `apps/`/`app-data/`**。
+- `qevos` 桥与框架无关：打包后的代码直接调 `window.qevos.readFile(...)` 即可(桥已注入进 `index.html`)。
 - 运行时真需要常驻 node 服务(SSR/自带 server)→ **不支持**(UI App 无自己的后端)，属未来 sidecar。
 
 ---

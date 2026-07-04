@@ -41,6 +41,8 @@ raw_memory.ndjson
 app-data/
 # UI App 源码工程工作区（含 node_modules；只 ship 构建产物 dist/，源码不入库）
 app-src/
+# UI App 构建产物（工程型 App 的 dist/；本地/运行时产物，不入库）
+apps-dist/
 
 # Misc
 .DS_Store
