@@ -10,6 +10,11 @@
 > 状态：本 skill 描述**目标契约**。若下列端点/桥尚未落地，以 `doc/interactive-app.md` 的分期为准，
 > 先确认 `runtime:web` 分支与文件/事件端点已实现再据此造 App。
 
+> ⚠️ **近期硬约束(必读)**：UI App 目前必须做成**纯独立应用**——只用"面板内确定性"
+> (读写项目文件 + 前端逻辑)完成一切基线功能。**"需要 Agent 智能"这一档暂不接入**
+> (等子 Agent 落地后再接，见 §5)。**绝不要设计任何"没有 Agent 就完不成"的流程**：
+> Agent 不是常驻的，硬指望它会导致"以为要 Agent 介入却没 Agent → 失败"。
+
 ---
 
 ## ⛔ 先读:别把它当标准 Web 前后台(最重要的护栏)
@@ -48,13 +53,14 @@ LLM 极易顺手 scaffold 一个 Express/Flask 后端 + 数据库 + 鉴权——
 
 ## App 三档(共用现有 App 系统：`apps/*.md`)
 
-| 档 | runtime | 点击行为 |
-|---|---|---|
-| 脚本 App | `shell`/`python`/`powershell` | 跑一次子进程看输出(旧能力，不在本 skill 范围) |
-| **UI App** | `web` | 开 HTML 面板，读写项目文件夹，纯前端工具即可 |
-| **Agent-UI App** | `web` + `skill:` | 面板 + 背后领域 skill，结构化事件唤醒 Agent |
+| 档 | runtime | 点击行为 | 状态 |
+|---|---|---|---|
+| 脚本 App | `shell`/`python`/`powershell` | 跑一次子进程看输出(旧能力，不在本 skill 范围) | ✅ |
+| **UI App** | `web` | 开 HTML 面板，读写项目文件夹，纯前端工具即可 | ✅ 当前形态 |
+| **Agent-UI App** | `web` + `skill:` | 面板 + 背后领域 skill，结构化事件唤醒 Agent | 🔒 预留，未接入(待子 Agent) |
 
-**心智模型**：App(`apps/xxx.md`) = 可复用工具(编辑器)；项目文件夹 = 一份文档。一个 App 开多个项目文件夹。
+**当前只做 UI App(纯独立)**。`skill:` 字段可以先写上作预留，但**其事件近期不会被自动处理**——
+不要依赖它。心智模型：App(`apps/xxx.md`) = 可复用工具(编辑器)；项目文件夹 = 一份文档。一个 App 开多个项目文件夹。
 
 ---
 
@@ -88,15 +94,16 @@ enabled: true
 const md = await qevos.readFile('flow.md');
 await qevos.writeFile('.qevos/view.json', JSON.stringify(state));
 
-// 发结构化事件唤醒 Agent（需要"智能"的操作走这里）
+// 发结构化事件（🔒 当前为惰性日志：写入 panel_events.jsonl，但近期没有自动消费方，
+// 不保证被处理。可当自身遥测/状态用；勿把基线功能建在它"会被 Agent 处理"的假设上）
 qevos.emit('review_flow', { focus: 'approval' });
 
-// 接收 Agent 回推（Agent 改完文件后让面板重渲染 / 高亮等）
-qevos.onPush(msg => { /* 重新读文件并重绘 */ });
+// onPush：🔒 预留(Agent→面板实时回推)，当前为 no-op 桩，勿依赖
+qevos.onPush(msg => { /* v1(子 Agent 后) */ });
 ```
 
 若桥未加载，等价的原始端点(退化用)：
-`GET/POST` 项目文件端点(root 相对) · `POST /api/panel-event`(追加事件) · WS 推送(`qevos.onPush` 底层)。
+`GET/POST` 项目文件端点(root 相对) · `POST /api/panel-event`(追加事件)。
 **不要**用 `/api/inject` 传结构化数据——那是把消息当"用户聊天文本"，会污染上下文，只用于自然语言。
 
 ---
@@ -121,44 +128,51 @@ my-flow/                    ← project root
 
 ## 4. 编辑分级路由(决定卡不卡、贵不贵)
 
-| 操作类型 | 走哪 | 例 |
-|---|---|---|
-| 客户端确定性 | 面板 `qevos.writeFile` 直写 | 拖坐标、连线、删除、轻计算 |
-| **服务端确定性重计算** | 后端原生工具，**不过 LLM**(未来 `qevos.invoke`；现阶段用脚本 App 兜底) | 大图自动布局、批量校验、渲染高清导出、跑外部 CLI |
-| 需要智能 | `qevos.emit` → Agent + 领域 skill → 改 MD | "这个流程有没有逻辑漏洞"、根据描述生成节点、语义优化建议 |
-| 自然语言 | 现有 inject 通道 | "把审批步骤拆成两步" |
+| 操作类型 | 走哪 | 状态 | 例 |
+|---|---|---|---|
+| 客户端确定性 | 面板 `qevos.writeFile` 直写 | ✅ 当前 | 拖坐标、连线、删除、轻计算 |
+| **服务端确定性重计算** | 后端原生工具，**不过 LLM**(未来 `qevos.invoke`；现阶段用脚本 App 兜底) | ◻ 部分(脚本 App) | 大图自动布局、批量校验、渲染高清导出、跑外部 CLI |
+| 需要智能 | 召唤一次性 Agent run 处理 → 改 MD | 🔒 预留，未接入(待子 Agent) | "这个流程有没有逻辑漏洞"、根据描述生成节点 |
+| 自然语言 | 现有 inject 通道 | ◻ 仅当用户显式对主 Agent 说 | "把审批步骤拆成两步" |
 
-**两条铁律**：
+**铁律**：
 1. 不要让每次拖拽都过一次 LLM——客户端确定性编辑必须本地直写文件。
-2. **确定性重计算(布局/校验/导出)不是"智能"**,别塞给 Agent/LLM——它该是被调用的**工具**,不是 LLM 推理。
+2. **确定性重计算(布局/校验/导出)不是"智能"**,别塞给 Agent/LLM——它该是被调用的**工具**。
+3. **近期只用第一档(+脚本 App 兜第二档)完成一切基线功能**。第三/四档暂不接入,**App 不得依赖它们**。
 
 ---
 
-## 5. Agent 侧运行时(处理事件)
+## 5. Agent 侧运行时 —— 🔒 预留，未接入(待子 Agent)
 
-- 事件从 `qevos.emit` 落到 `panel_events.jsonl`；用 `panel_poll` 工具读取(工具自带说明)。
-- Agent-UI 档：App 的 `skill:` 字段指明领域 skill(如 `flowchart`)——`read_skill` 载入它来跑领域逻辑
-  (解析结构 / 校验 / 生成节点)，改 `flow.md`。
-- 改完后让面板刷新：`web_show` 回推新内容 / 触发 `qevos.onPush`。
+**当前不要接 Agent。** 原因:没有子 Agent 隔离时,面板召唤 Agent 会和用户正在跑的**主 Agent 抢
+运行时**(争 run 槽、混上下文、注入错对象)。故"智能档"只保留基座、不接入,等子 Agent(独立 run /
+上下文 / 生命周期)完成后再接。这是接入的**前置条件**,见 [[sub-agent]]。
+
+已存在的**惰性预留缝**(能写能读,但近期无自动消费方):
+- `qevos.emit` → `panel_events.jsonl`;`panel_poll` 工具可**被动**读取。
+- `panel_poll` **只在用户显式要求主 Agent 去看面板时才用,勿主动轮询**——主动 poll = 扰动主 Agent。
+
+**接入后(未来)**会是:用户显式触发 → 召唤一次性 Agent run(seeded 项目 + 事件)→ 读事件、改 `flow.md`
+→ 回推面板 → run 结束;App 与该 run 无绑定。现在**不实现**这条路径。
 
 ---
 
-## 端到端配方(流程图样例)
+## 端到端配方(流程图样例，当前=纯独立)
 
-1. 造 App：写 `apps/flowchart.md`(`runtime: web`, `skill: flowchart`, 正文/entry 是图编辑器 HTML)。
+1. 造 App：写 `apps/flowchart.md`(`runtime: web`, 正文/entry 是图编辑器 HTML)。
 2. 面板加载后 `qevos.readFile('flow.md')` → 渲染成图(节点 + 连线)。
 3. 用户拖节点/连线 → `qevos.writeFile('.qevos/view.json' 或 'flow.md')`(确定性、实时)。
-4. 用户点「检查逻辑」→ `qevos.emit('review_flow', …)` → Agent 被唤醒、`panel_poll` 读到、
-   载入 `flowchart` skill 分析、改 `flow.md`。
-5. Agent → `web_show` 回推 / `qevos.onPush` 重渲染，高亮有问题的节点/路径。
+4. 结构化/重计算类操作 → 面板内直算或脚本 App 兜底(不过 Agent)。
+5. (🔒 未接入)"用 AI 检查/生成"这类智能功能,等子 Agent 后再加;当前不要在 App 里放依赖 Agent 的按钮。
 
-新增代码几乎为零：**前端 HTML + 文件约定 + 领域 skill**，其余复用平台基座。
+新增代码几乎为零：**前端 HTML + 文件约定**,其余复用平台基座。
 
 ---
 
 ## 检查清单(造 App 前自检)
 
-- [ ] 我在写**前端 + 文件读写 + skill**，而不是一个后端 server？
+- [ ] **App 在零 Agent 下能开、能做完基线功能**？(近期硬约束，绝不能依赖 Agent)
+- [ ] 我在写**前端 + 文件读写**，而不是一个后端 server？
 - [ ] 确定性交互是否**本地直写文件**、没过 LLM？
 - [ ] 几何/视图与语义是否**分文件**(`.qevos/view.json` vs `flow.md`)？
 - [ ] 结构化事件走 `qevos.emit`/`panel-event`，**没塞进 `/api/inject`**？

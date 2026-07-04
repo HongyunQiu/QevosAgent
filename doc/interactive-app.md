@@ -57,8 +57,8 @@ node 服务托管的是**通用基座**(渲染面 + 文件 API + 事件总线 + 
 | 档 | runtime | 点击行为 | 状态载体 | 现状 |
 |---|---|---|---|---|
 | 脚本 App | `shell`/`python`/`powershell` | 跑一次子进程,看输出 | 无 | ✅ 已有 |
-| **UI App** | `web` | 开 HTML 面板,读写项目文件夹(纯前端工具即可) | 项目文件夹 | 🆕 |
-| **Agent-UI App** | `web` + `skill:` | 面板 + 背后挂 skill,结构化事件唤醒 Agent | 项目文件夹 | 🆕 |
+| **UI App** | `web` | 开 HTML 面板,读写项目文件夹(纯前端工具即可) | 项目文件夹 | ✅ v0 当前形态 |
+| **Agent-UI App** | `web` + `skill:` | 面板 + 背后挂 skill,(未来)结构化事件召唤 Agent | 项目文件夹 | 🔒 预留,未接入(待子 Agent,见 §5.1) |
 
 后两档复用同一个 `apps/*.md`,只是 `runtime: web`、正文放 HTML(或 `entry` 指向入口文件)。
 
@@ -162,23 +162,35 @@ qevos.onPush(cb)             // ← web_show / WS 推送
 
 事件就是自由 `{ event, data }`。对面是 LLM,能理解松散结构;**把协议钉死才是过度约束**。
 
-| 方向 | 载体 | 示例 |
-|---|---|---|
-| 面板 → Agent | `panel_events.jsonl` | `{"event":"review_flow","data":{"focus":"approval"}}` |
-| Agent → 面板 | `web_show` 回推 / `qevos.onPush` | 重渲染、高亮问题节点/路径 |
-| 用户自然语言 → Agent | 现有 `/api/inject` | "把审批步骤拆成两步" |
+| 方向 | 载体 | 状态 | 示例 |
+|---|---|---|---|
+| 面板 → Agent | `panel_events.jsonl`(惰性日志) | 🔒 写得进,近期无自动消费方 | `{"event":"review_flow","data":{"focus":"approval"}}` |
+| Agent → 面板 | `web_show` 回推 / `qevos.onPush` | 🔒 `onPush` 当前为桩 | 重渲染、高亮问题节点/路径 |
+| 用户自然语言 → Agent | 现有 `/api/inject` | ◻ 仅用户显式 | "把审批步骤拆成两步" |
+
+### 5.1 Agent 耦合:近期"保留能力、不接入"
+
+**决策**:UI App 近期做成**纯独立应用**,不接 Agent。原因:尚无子 Agent 隔离时,面板召唤 Agent
+会和用户正在跑的**主 Agent 抢运行时**(争 run 槽 / 混上下文 / 注入错对象)。故:
+
+- `emit` / `panel_events.jsonl` / `panel_poll` 作为**惰性预留缝**保留(能写能被动读),但**不建自动消费 / 召唤路径**。
+- `panel_poll` 仅供主 Agent 在**用户显式要求**时被动读取,**不主动轮询**(主动 poll = 扰动主 Agent)。
+- 接入的**前置条件是子 Agent**(独立 run / 上下文 / 生命周期);完成后再在这条已存在的缝上接"召唤"路径,零返工。
+
+**由此,测出的"App 以为要 Agent 却没 Agent 而失败"从构造上消除**:App 不得依赖 Agent,基线功能必须零 Agent 可完成。
 
 ---
 
 ## 6. 编辑分级路由(决定卡不卡、贵不贵)
 
 1. **客户端确定性**(拖坐标、连线、删除)→ 面板 `qevos.writeFile('.qevos/view.json' / 'flow.md')`
-   → **零 LLM、低延迟**。
-2. **服务端确定性重计算**(大图布局、批量校验、高清导出)→ 后端原生工具,**不过 LLM**(未来 `qevos.invoke`,现用脚本 App 兜底)。
-3. **需要智能**(逻辑校验、语义生成)→ `qevos.emit(...)` → 写事件 → Agent `panel_poll` → skill 处理 → 改 MD。
-4. **自然语言** → 现有 inject 通道。
+   → **零 LLM、低延迟**。【✅ 当前】
+2. **服务端确定性重计算**(大图布局、批量校验、高清导出)→ 后端原生工具,**不过 LLM**(未来 `qevos.invoke`,现用脚本 App 兜底)。【◻ 部分】
+3. **需要智能**(逻辑校验、语义生成)→ 召唤一次性 Agent run 处理 → 改 MD。【🔒 预留,未接入,待子 Agent — 见 §5.1】
+4. **自然语言** → 现有 inject 通道。【◻ 仅用户显式对主 Agent】
 
 > 关键:确定性重计算不是"智能",别塞给 LLM——它是被调用的工具。见 [SKILLS/ui_app.md](../SKILLS/ui_app.md) §4。
+> **近期只用第①档(+脚本 App 兜②)完成一切基线功能;③④暂不接入,App 不得依赖。**
 
 无此分级,每拖一根线都过一次 Opus,又慢又烧钱。
 
@@ -189,9 +201,8 @@ qevos.onPush(cb)             // ← web_show / WS 推送
 1. 点 `flowchart` App 卡 → 选/带项目 root(`my-flow/`)→ D1 返回面板信息 → D2 打开面板页签。
 2. 面板加载 `panel.html`,`qevos.readFile('flow.md')` 渲染成图(节点 + 连线)。
 3. 用户拖节点/连线 → `qevos.writeFile('.qevos/view.json' 或 'flow.md')`(确定性、实时)。
-4. 用户点「检查逻辑」→ `qevos.emit('review_flow',{...})` → `panel_events.jsonl` → Agent 被唤醒、
-   `panel_poll` 读到、用 skill 分析、改 `flow.md`。
-5. Agent 改完 → `web_show` 回推 / `qevos.onPush` 重渲染,高亮问题节点/路径。
+4. 结构化/重计算类 → 面板内直算或脚本 App 兜底(不过 Agent)。
+5. 🔒(未接入,待子 Agent)"用 AI 检查/生成":未来经召唤一次性 run 处理并回推面板;当前不做、App 不放依赖 Agent 的按钮。
 
 全程新增代码:**一个 append 端点 + 一个 poll 工具 + 一个中心页签 + 一个 root 文件端点 + 30 行桥**;其余全是复用。
 
@@ -203,8 +214,8 @@ qevos.onPush(cb)             // ← web_show / WS 推送
 - ❌ frontmatter 不搞复杂 schema,新字段(`skill`/`entry`/`root`)全可选,缺省退化成普通 UI App。
 - ❌ 不建写入归属锁 / patch 协议——靠 §3「几何与语义分文件」天然免冲突。
 - ❌ 不建 project 级存储子系统——项目就是磁盘上一个文件夹,天然跨会话持久。
-- ❌ 不强制 Agent——UI App 可纯前端(第二档),挂 skill 只是第三档可选升级。
-- ❌ 不发明新实时协议——WS 推 + Agent 改完 `web_show` 回推即闭环。
+- ❌ 不强制 Agent——**近期 UI App 一律纯独立**;挂 skill 的"智能档"是**预留、未接入**(待子 Agent)。
+- ❌ 近期不建"召唤 Agent / 自动消费事件"路径——避免和主 Agent 抢运行时(见 §5.1)。
 
 ---
 
@@ -213,7 +224,9 @@ qevos.onPush(cb)             // ← web_show / WS 推送
 - **v0(打通闭环)**:D1 + D2 + D4;`project_root` 先固定为某工作目录;桥先内联少量 fetch。
   产出:一个能开面板、能双向结构化通信的最小 UI App。
 - **v1(工程化)**:D3(root 参数化多项目)+ D5(完整 `qevos` 桥)+ marker/`.qevos` 约定;
-  以 flowchart App 为第一个完整样例,之后 UI App 照此模板复制。
+  以 flowchart App 为第一个完整样例,之后 UI App 照此模板复制。**仍为纯独立**,不接 Agent。
+- **v2(接 Agent,待子 Agent 落地)**:在已保留的 `emit`/`panel_events`/`panel_poll` 缝上,
+  接"用户显式触发 → 召唤一次性子 Agent run → 处理 → 回推面板"路径;`onPush` 实装。前置=子 Agent。
 
 > 纪律:凡改到 Core 的地方,优先做成**缺省 no-op 的扩展点**(对齐
 > [doc/pro-extension-points.md](pro-extension-points.md)),让 PRO 叠加不冲突。

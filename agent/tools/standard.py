@@ -3889,10 +3889,10 @@ def get_standard_tools() -> dict[str, ToolSpec]:
         ToolSpec(
             name="panel_poll",
             description=(
-                "读取某 UI App（runtime:web）面板经 qevos.emit 发来的结构化事件。"
-                "用于 Agent-UI App：面板把'需要智能'的操作（如逻辑校验、语义生成）发成事件，"
-                "你用本工具取出、处理、改写项目文件（app-data/<app>/），面板随后重渲染。"
-                "增量轮询用 since（上次最大 ts），不要用 consume。详见 SKILLS/ui_app.md。"
+                "被动读取某 UI App（runtime:web）面板经 qevos.emit 写入的结构化事件日志。"
+                "⚠️ 近期为预留能力：面板与 Agent 尚未接入（待子 Agent），"
+                "**仅在用户显式要求你去查看某面板时才调用，切勿主动/循环轮询面板**——"
+                "主动轮询会扰动主 Agent 运行。是只读操作，不会触发任何面板动作。详见 SKILLS/ui_app.md。"
             ),
             args_schema={
                 "app": "App id（apps/<id>.md 的 id）",
