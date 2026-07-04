@@ -1268,24 +1268,27 @@ function parseAppFile(content) {
 }
 
 /**
- * The `qevos` bridge injected into every UI App panel (runtime: web).
- * Minimal v0 surface: readFile / writeFile (scoped to the app's project dir),
- * emit (structured events → panel_events.jsonl), onPush (stub, wired in v1).
- * See SKILLS/ui_app.md for the authoring contract.
+ * Injected into every UI App panel (runtime: web): a tiny config shim + a <script>
+ * tag loading the real bridge module (dashboard/public/qevos-bridge.js). The module
+ * self-configures from window.__QEVOS__.app. Keeping the SDK in a served file (not an
+ * inline string) makes it maintainable/versionable. See SKILLS/ui_app.md.
  */
 function qevosBridgeScript(appId) {
-  const A = JSON.stringify(appId);
-  return `<script>(function(){
-  var APP=${A};
-  var enc=function(p){return String(p).split('/').map(encodeURIComponent).join('/');};
-  window.qevos={
-    _app:APP,
-    readFile:async function(rel){var r=await fetch('/api/app-file/'+encodeURIComponent(APP)+'/'+enc(rel));var j=await r.json();return j.content;},
-    writeFile:async function(rel,content){var r=await fetch('/api/app-file/'+encodeURIComponent(APP)+'/'+enc(rel),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:String(content)})});return await r.json();},
-    emit:async function(event,data){var r=await fetch('/api/panel-event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({app:APP,event:event,data:data||{}})});return await r.json();},
-    onPush:function(cb){(window.__qevosPush=window.__qevosPush||[]).push(cb);}  /* v1: server→panel realtime */
-  };
-})();</script>`;
+  return `<script>window.__QEVOS__={app:${JSON.stringify(appId)}};</script>` +
+         `<script src="/qevos-bridge.js"></script>`;
+}
+
+// ── UI App panel push (server → panel, over SSE) ────────────────────────────
+// onPush's transport. v1 producer: notify open panels when a project file is
+// written via the API (multi-instance sync / external-edit refresh). Agent-driven
+// pushes are v2 (待子 Agent). Keyed by app id → set of open SSE responses.
+const panelStreams = new Map();
+
+function pushToPanel(appId, msg) {
+  const set = panelStreams.get(appId);
+  if (!set || !set.size) return;
+  const line = 'data: ' + JSON.stringify(msg) + '\n\n';
+  for (const res of set) { try { res.write(line); } catch { /* dropped */ } }
 }
 
 /**
@@ -2296,12 +2299,57 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET/POST /api/app-file/:id/*  (confined to APP_DATA_DIR/<id>/)
+  // GET /api/app-stream/:id  — SSE channel for qevos.onPush (server → panel)
+  const appStreamMatch = req.url.match(/^\/api\/app-stream\/([^/?]+)/);
+  if (req.method === 'GET' && appStreamMatch) {
+    const id = decodeURIComponent(appStreamMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+    res.write(': connected\n\n');
+    let set = panelStreams.get(id);
+    if (!set) { set = new Set(); panelStreams.set(id, set); }
+    set.add(res);
+    const ka = setInterval(() => { try { res.write(': ka\n\n'); } catch { /* closed */ } }, 25000);
+    req.on('close', () => {
+      clearInterval(ka);
+      set.delete(res);
+      if (!set.size) panelStreams.delete(id);
+    });
+    return;  // keep open — do NOT end
+  }
+
+  // GET /api/app-files/:id[?dir=]  — recursive file list in the app's project dir
+  const appFilesMatch = req.url.match(/^\/api\/app-files\/([^/?]+)/);
+  if (req.method === 'GET' && appFilesMatch) {
+    const id      = decodeURIComponent(appFilesMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const rootDir = path.resolve(path.join(APP_DATA_DIR, id));
+    const sub     = new URL(req.url, 'http://x').searchParams.get('dir') || '';
+    const startDir = path.resolve(path.join(rootDir, sub));
+    const relStart = path.relative(rootDir, startDir);
+    if (relStart.startsWith('..') || path.isAbsolute(relStart)) { json(403, { error: 'forbidden' }); return; }
+    const files = [];
+    (function walk(dir) {
+      let entries; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const abs = path.join(dir, e.name);
+        const rp  = path.relative(rootDir, abs).replace(/\\/g, '/');
+        if (e.isDirectory()) { files.push({ path: rp, type: 'dir' }); walk(abs); }
+        else { let size = 0; try { size = fs.statSync(abs).size; } catch {} files.push({ path: rp, type: 'file', size }); }
+      }
+    })(startDir);
+    json(200, { files });
+    return;
+  }
+
+  // GET/POST/DELETE /api/app-file/:id/*  (confined to APP_DATA_DIR/<id>/)
   const appFileMatch = req.url.match(/^\/api\/app-file\/([^/]+)\/(.+)/);
-  if (appFileMatch && (req.method === 'GET' || req.method === 'POST')) {
+  if (appFileMatch && (req.method === 'GET' || req.method === 'POST' || req.method === 'DELETE')) {
     const id      = decodeURIComponent(appFileMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
     const rootDir = path.resolve(path.join(APP_DATA_DIR, id));
-    const relFile = decodeURIComponent(appFileMatch[2]);
+    const relFile = decodeURIComponent(appFileMatch[2].split('?')[0]);
     const fullPath = path.resolve(path.join(rootDir, relFile));
     const rel = path.relative(rootDir, fullPath);
     if (rel.startsWith('..') || path.isAbsolute(rel)) { json(403, { error: 'forbidden' }); return; }
@@ -2313,11 +2361,20 @@ const server = http.createServer(async (req, res) => {
       }
       return;
     }
+    if (req.method === 'DELETE') {
+      try { fs.unlinkSync(fullPath); pushToPanel(id, { type: 'file-changed', path: relFile, deleted: true }); json(200, { ok: true }); }
+      catch (e) {
+        if (e.code === 'ENOENT') { json(200, { ok: true, existed: false }); return; }
+        json(500, { error: String(e) });
+      }
+      return;
+    }
     try {
       const { content } = JSON.parse(await readBody(req));
       if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
       fs.writeFileSync(fullPath, content, 'utf8');
+      pushToPanel(id, { type: 'file-changed', path: relFile });  // notify open panels
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;

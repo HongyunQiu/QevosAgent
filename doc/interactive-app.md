@@ -144,17 +144,18 @@ my-flow/                    ← project root(持久,cwd 轴)
 - Agent 侧薄工具 `panel_poll(display_id?)` 读这个 jsonl(或复用现有 file-read)。约 20 行。
 - **作用**:事件走旁路、保持结构化、**不污染聊天上下文**(区别于 `/api/inject` 把消息当用户文本)。
 
-### D5. `qevos` 桥(可选薄糖,不是框架)
-注入面板 ~30 行,省掉每个 App 重写 fetch:
+### D5. `qevos` 桥 —— ✅ 已实现(v1,模块化 SDK)
+不再是内联字符串:抽成**服务的模块** [`dashboard/public/qevos-bridge.js`](../dashboard/public/qevos-bridge.js),
+面板由 server 注入 `<script>window.__QEVOS__={app}</script><script src="/qevos-bridge.js">`,模块自配置。
 
-```js
-qevos.emit(event, data)      // → POST /api/panel-event
-qevos.readFile(relpath)      // → GET  项目文件端点
-qevos.writeFile(relpath, s)  // → POST 项目文件端点
-qevos.onPush(cb)             // ← web_show / WS 推送
-```
+- **文件 API**:`readFile/writeFile/readJSON/writeJSON/exists/remove/list`(root-scoped 到 `app-data/<id>/`)。
+- **`emit`**:结构化事件(惰性日志),不变。
+- **`onPush(cb)`**:server→面板 **SSE** 通道(`GET /api/app-stream/:id`),返回退订函数。
+  v1 生产者:文件经 API 写/删时推 `{type:'file-changed',path}`(多实例同步/外部编辑刷新);Agent 主动回推仍 v2。
+- 新增后端:`GET /api/app-stream/:id`(SSE)、`GET /api/app-files/:id`(列目录)、`DELETE /api/app-file/:id/*`;
+  `POST /api/app-file` 写成功后 `pushToPanel()` 通知开着的面板。
 
-故意做成**可选薄工具**而非必须遵守的协议——App 想直接 fetch 也行。
+仍是**可选**:App 想直接 fetch 也行,但桥已默认注入、直接用即可。
 
 ---
 
@@ -272,8 +273,8 @@ Agent 造完 UI App 要能自测。**全部复用现有能力,不建新自动化
 
 - **v0(打通闭环)**:D1 + D2 + D4;`project_root` 先固定为某工作目录;桥先内联少量 fetch。
   产出:一个能开面板、能双向结构化通信的最小 UI App。
-- **v1(工程化)**:D3(root 参数化多项目)+ D5(完整 `qevos` 桥)+ marker/`.qevos` 约定
-  + **构建型 App 支持 ✅ 已完成**(`apps-dist/<id>/` 静态服务 + `<base>`/桥注入,见 §7.5);
+- **v1(工程化)**:D5(完整 `qevos` 桥)✅ + 构建型 App 支持 ✅(见 §7.5);
+  尚余 D3(root 参数化多项目)+ marker/`.qevos` 约定;
   以 flowchart App 为第一个完整样例,之后 UI App 照此模板复制。**仍为纯独立**,不接 Agent。
 - **v2(接 Agent,待子 Agent 落地)**:在已保留的 `emit`/`panel_events`/`panel_poll` 缝上,
   接"用户显式触发 → 召唤一次性子 Agent run → 处理 → 回推面板"路径;`onPush` 实装。前置=子 Agent。

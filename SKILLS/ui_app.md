@@ -100,23 +100,28 @@ enabled: true
 
 ## 2. 面板侧 API：`qevos` 桥(写进你生成的 HTML 里)
 
-面板 HTML 里用下面这套与宿主/Agent 通信。**这是你要嵌进去的客户端接口，照抄**：
+`qevos` 桥由平台**自动注入**面板(外部模块 `/qevos-bridge.js`,你**不用手写**,直接调 `window.qevos.*`):
 
 ```js
-// 读写项目文件夹（相对 project root；确定性编辑走这里，零 LLM、实时）
-const md = await qevos.readFile('flow.md');
-await qevos.writeFile('.qevos/view.json', JSON.stringify(state));
+// —— 文件 API（相对 project root；确定性编辑走这里，零 LLM、实时）——
+const md   = await qevos.readFile('flow.md');          // string | null
+await       qevos.writeFile('flow.md', md);            // {ok}
+const view = await qevos.readJSON('.qevos/view.json');  // 解析后的对象 | null
+await       qevos.writeJSON('.qevos/view.json', state); // 美化写入
+const ok   = await qevos.exists('flow.md');            // boolean
+await       qevos.remove('scratch.txt');               // 删除
+const files= await qevos.list('.qevos');               // [{path,type,size}] 递归
 
-// 发结构化事件（🔒 当前为惰性日志：写入 panel_events.jsonl，但近期没有自动消费方，
-// 不保证被处理。可当自身遥测/状态用；勿把基线功能建在它"会被 Agent 处理"的假设上）
-qevos.emit('review_flow', { focus: 'approval' });
+// —— 结构化事件（🔒 惰性日志：写入 panel_events.jsonl，近期无自动消费方，不保证被处理；
+//     可当自身遥测/状态；勿把基线功能建在"会被 Agent 处理"上）——
+await qevos.emit('review_flow', { focus: 'approval' });
 
-// onPush：🔒 预留(Agent→面板实时回推)，当前为 no-op 桩，勿依赖
-qevos.onPush(msg => { /* v1(子 Agent 后) */ });
+// —— onPush（server→面板推送，SSE；已可用）——
+//   当前生产者：项目文件经 API 被写/删时推 {type:'file-changed',path}（多实例同步/外部编辑刷新）。
+//   "Agent 主动回推" 仍 🔒 v2（待子 Agent）。返回取消订阅函数。
+const off = qevos.onPush(msg => { if (msg.type==='file-changed') reloadFrom(msg.path); });
 ```
 
-若桥未加载，等价的原始端点(退化用)：
-`GET/POST` 项目文件端点(root 相对) · `POST /api/panel-event`(追加事件)。
 **不要**用 `/api/inject` 传结构化数据——那是把消息当"用户聊天文本"，会污染上下文，只用于自然语言。
 
 ---
