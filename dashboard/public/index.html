@@ -3930,20 +3930,28 @@ async function runApp(id, card) {
   }
 }
 
+// Stable short id from a root path (has slashes/colons → not a valid element id).
+function _appRootHash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); }
+function _appBaseName(p) { return String(p).replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p; }
+
 // Open a UI App (runtime: web) as a closeable center tab hosting its panel.
 // The panel HTML is served (with the qevos bridge injected) at /api/app/:id/panel.
-function openAppPanel(app) {
-  const tabId = 'app-' + app.id;
+// root (optional): a project folder anywhere on disk (v1 ②). Same app + different
+// root = separate tabs (separate documents); same app + same root = focus existing.
+function openAppPanel(app, root) {
+  root = root || '';
+  const tabId = 'app-' + app.id + (root ? '-' + _appRootHash(root) : '');
   if (document.getElementById('ctab-' + tabId)) { setCenterTab(tabId); return; }
 
   const strip = document.querySelector('.center-tab-strip');
   const gap   = strip.querySelector('#ctab-addDir') || strip.querySelector('.bar-gap');
   const panel = document.querySelector('.events-panel');
 
+  const label = (app.icon || '📦') + ' ' + (app.name || app.id) + (root ? ' · ' + _appBaseName(root) : '');
   const btn = document.createElement('button');
   btn.className = 'center-tab'; btn.id = 'ctab-' + tabId;
-  btn.innerHTML = '<span>' + esc((app.icon || '📦') + ' ' + (app.name || app.id)) +
-    '</span> <span class="ctab-close" title="Close">✕</span>';
+  if (root) btn.title = root;
+  btn.innerHTML = '<span>' + esc(label) + '</span> <span class="ctab-close" title="Close">✕</span>';
   btn.querySelector('.ctab-close').addEventListener('click', e => { e.stopPropagation(); closeAppPanel(tabId); });
   btn.addEventListener('click', () => setCenterTab(tabId));
   strip.insertBefore(btn, gap);
@@ -3951,12 +3959,29 @@ function openAppPanel(app) {
   const pane = document.createElement('div');
   pane.className = 'center-pane'; pane.id = 'cpane-' + tabId;
   const frame = document.createElement('iframe');
-  frame.src = '/api/app/' + encodeURIComponent(app.id) + '/panel';
+  frame.src = '/api/app/' + encodeURIComponent(app.id) + '/panel' + (root ? '?root=' + encodeURIComponent(root) : '');
   frame.style.cssText = 'border:0;width:100%;height:100%;flex:1;background:var(--bg)';
   pane.appendChild(frame);
   panel.appendChild(pane);
 
   setCenterTab(tabId);
+}
+
+// Open a project folder (anywhere on disk): resolve its qevos.project.json marker
+// to pick the right App, then open that App's panel scoped to the folder.
+async function openProject(rootPath) {
+  if (!rootPath) return;
+  try {
+    const r = await fetch('/api/app-project?root=' + encodeURIComponent(rootPath)).then(x => x.json());
+    if (!r.app) { alert('该文件夹缺少 qevos.project.json 或未声明 app：\n' + (r.root || rootPath)); return; }
+    const app = (gApps || []).find(a => a.id === r.app) || { id: r.app, name: r.app, icon: '📁' };
+    openAppPanel(app, r.root);
+  } catch (e) { alert('打开项目失败: ' + e.message); }
+}
+
+function promptOpenProject() {
+  const p = prompt('输入项目文件夹的绝对路径（含 qevos.project.json）：');
+  if (p && p.trim()) openProject(p.trim());
 }
 
 function closeAppPanel(tabId) {

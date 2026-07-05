@@ -2648,17 +2648,23 @@ def _app_data_dir() -> Path:
     return Path(os.environ.get("APP_DATA_DIR", str(_APP_DATA_DIR)))
 
 
-def tool_panel_poll(state: AgentState, app: str, since: float = None, consume: bool = False) -> ToolResult:
+def tool_panel_poll(state: AgentState, app: str, since: float = None, consume: bool = False,
+                    root: str = None) -> ToolResult:
     """读取某 UI App 面板发来的结构化事件（panel_events.jsonl）。
 
     app:     App id（apps/<id>.md 的 id，也是 app-data/<id>/ 目录名）。
     since:   （可选）只返回 ts 大于该毫秒时间戳的事件，用于增量轮询。
     consume: （可选）读取后清空事件日志；增量轮询请改用 since，不要 consume。
+    root:    （可选）项目文件夹绝对路径；给了则读 <root>/.qevos/，否则 app-data/<id>/。
     """
     app_id = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(app or ""))
     if not app_id:
         return ToolResult(success=False, output=None, error="app 必填")
-    fp = _app_data_dir() / app_id / ".qevos" / "panel_events.jsonl"
+    if root and os.path.isabs(str(root)):
+        base = Path(str(root))
+    else:
+        base = _app_data_dir() / app_id
+    fp = base / ".qevos" / "panel_events.jsonl"
     if not fp.exists():
         return ToolResult(success=True, output={"app": app_id, "events": [], "count": 0})
     try:
@@ -3898,6 +3904,7 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "app": "App id（apps/<id>.md 的 id）",
                 "since": "（可选）只返回 ts 大于该毫秒时间戳的事件",
                 "consume": "（可选）读取后清空事件日志；增量轮询请改用 since",
+                "root": "（可选）项目文件夹绝对路径；给了则读 <root>/.qevos/，否则 app-data/<id>/",
             },
             fn=tool_panel_poll,
         ),

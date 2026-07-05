@@ -132,11 +132,12 @@ my-flow/                    ← project root(持久,cwd 轴)
 - Electron 下也可继续走 `web_show → /api/open-view → WebContentsView`([server.js:2635](../dashboard/server.js) /
   [main.js:170](../desktop/main.js));页签托管是浏览器模式与"平级 UX"所需。纯前端拼装,不动后端。约 30 行。
 
-### D3. 文件端点从 run 级放大到 root 级
-- 现 `/api/run-file/:runId/*` 只认 run_dir。新增(或泛化)一个接受 `{root, relpath}` 的项目文件端点,
-  **限制在 root 内**(path-traversal 防护)。约 20 行。
-- **v0 想更省**:先令 `project_root = 固定工作目录 / cwd`,`marker` 与 `.qevos/` 都是普通文件、
-  无需后端支持;等有"多项目切换"再把 root 参数化。
+### D3. 文件端点 root 参数化(多项目 root)—— ✅ 已实现(v1 ②)
+- `resolveAppBase(id, root)`([server.js](../dashboard/server.js)):有绝对 `root` → 那个文件夹(磁盘任意处);否则 `app-data/<id>/`。
+- `/api/app-file`、`/api/app-files`、`/api/app-stream`、`/api/panel-event` 全部接受 `root`(query 或 body),**限制在 root 内**(path-traversal 防护);SSE/push 按 base 目录键,同项目多实例同步。
+- 面板:`/api/app/:id/panel?root=<abs>` → 注入 `window.__QEVOS__.root`;桥把 root 透传到每次调用,暴露 `qevos.root`。
+- **打开项目流**:`GET /api/app-project?root=<abs>` 读文件夹的 `qevos.project.json` marker → 得到 `app` → 前端 `openProject()`/`openAppPanel(app, root)`(同 app 不同 root = 不同页签)。
+- `panel_poll(app, root?)` 也认 root。**"编辑器 vs 文档"就此兑现:一个 App 打开磁盘任意位置的多份文档。**
 
 ### D4. 结构化事件旁路(唯一必须的新原语)
 - `POST /api/panel-event`:追加 `{ts,event,data,display_id}` 到 `run_dir/panel_events.jsonl`
@@ -281,9 +282,8 @@ Agent 造完 UI App 要能自测。**全部复用现有能力,不建新自动化
 
 - **v0(打通闭环)**:D1 + D2 + D4;`project_root` 先固定为某工作目录;桥先内联少量 fetch。
   产出:一个能开面板、能双向结构化通信的最小 UI App。
-- **v1(工程化)**:D5(完整 `qevos` 桥)✅ + 构建型 App 支持 ✅(见 §7.5);
-  尚余 D3(root 参数化多项目)+ marker/`.qevos` 约定;
-  以 flowchart App 为第一个完整样例,之后 UI App 照此模板复制。**仍为纯独立**,不接 Agent。
+- **v1(工程化)✅ 完成**:D5(完整 `qevos` 桥)+ 构建型 App(dist,§7.5)+ D3(root 参数化多项目 + marker「打开项目」);
+  以 flowchart App 为第一个完整样例,之后 UI App 照此模板复制。**全程纯独立**,不接 Agent。
 - **v2(接 Agent,待子 Agent 落地)**:在已保留的 `emit`/`panel_events`/`panel_poll` 缝上,
   接"用户显式触发 → 召唤一次性子 Agent run → 处理 → 回推面板"路径;`onPush` 实装。前置=子 Agent。
 

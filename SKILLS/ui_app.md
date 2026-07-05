@@ -147,6 +147,13 @@ my-flow/                    ← project root
 **分文件 = 免费解决写入冲突**：几何/视图放 `.qevos/view.json`(面板高频直写)，语义放 `flow.md`(Agent 写)，
 两边各写各的文件 → 无需锁、无需 patch 协议。拖节点只脏 `view.json`，不碰 MD。
 
+**多项目 root（v1 ②，已实现）**：一个 App = 编辑器，项目文件夹 = 文档,可在**磁盘任意位置**(含 QevosAgent 之外)。
+- 默认(无 root)→ 读写 `app-data/<id>/`(该 App 的默认文档)。
+- 打开任意文件夹:文件夹放 `qevos.project.json`(至少 `{"app":"<id>"}`)→ 前端 `openProject('<绝对路径>')`
+  经 `/api/app-project` 解析出 App → 以该文件夹为 root 打开面板。
+- 面板侧**透明**:`qevos.*` 全部自动带上 root(桥从 `window.__QEVOS__.root` 读),`qevos.root` 可查;
+  你写 App **不用关心 root**,永远用相对路径调 `qevos.readFile/writeFile`。
+
 ---
 
 ## 4. 编辑分级路由(决定卡不卡、贵不贵)

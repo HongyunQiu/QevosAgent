@@ -1273,9 +1273,21 @@ function parseAppFile(content) {
  * self-configures from window.__QEVOS__.app. Keeping the SDK in a served file (not an
  * inline string) makes it maintainable/versionable. See SKILLS/ui_app.md.
  */
-function qevosBridgeScript(appId) {
-  return `<script>window.__QEVOS__={app:${JSON.stringify(appId)}};</script>` +
+function qevosBridgeScript(appId, root) {
+  const cfg = root ? { app: appId, root } : { app: appId };
+  return `<script>window.__QEVOS__=${JSON.stringify(cfg)};</script>` +
          `<script src="/qevos-bridge.js"></script>`;
+}
+
+/**
+ * The base dir a panel's file/event I/O is confined to.
+ * `root` (an absolute path) → that folder (a project anywhere on disk, v1 ②);
+ * otherwise the per-app data dir app-data/<id>/ (v0 default). Callers still
+ * path-traversal-guard the relative file within the returned base.
+ */
+function resolveAppBase(id, root) {
+  if (root && path.isAbsolute(String(root))) return path.resolve(String(root));
+  return path.resolve(path.join(APP_DATA_DIR, id));
 }
 
 // ── UI App panel push (server → panel, over SSE) ────────────────────────────
@@ -1296,8 +1308,8 @@ function pushToPanel(appId, msg) {
  * paths resolve under /api/app/<id>/) into an app's HTML, preferring <head>.
  * baseHref is set only when serving a built dist/ index.html.
  */
-function buildPanelHtml(appId, html, baseHref) {
-  const inject = (baseHref ? `<base href="${baseHref}">` : '') + qevosBridgeScript(appId);
+function buildPanelHtml(appId, html, baseHref, root) {
+  const inject = (baseHref ? `<base href="${baseHref}">` : '') + qevosBridgeScript(appId, root);
   if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, m => m + inject);
   if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, m => m + inject);
   return inject + html;
@@ -2255,8 +2267,8 @@ const server = http.createServer(async (req, res) => {
   // POST /api/app-file/:id/*     — write a file in the app's project dir
   // POST /api/panel-event        — append a structured event to panel_events.jsonl
 
-  // GET /api/app/:id/panel
-  const appPanelMatch = req.url.match(/^\/api\/app\/([^/?]+)\/panel$/);
+  // GET /api/app/:id/panel[?root=]
+  const appPanelMatch = req.url.match(/^\/api\/app\/([^/?]+)\/panel(?:\?|$)/);
   if (req.method === 'GET' && appPanelMatch) {
     const id = decodeURIComponent(appPanelMatch[1]).replace(/\.md$/, '');
     const fp = path.join(APPS_DIR, id + '.md');
@@ -2264,6 +2276,8 @@ const server = http.createServer(async (req, res) => {
     try {
       const { meta, body } = parseAppFile(readText(fp) || '');
       if (meta.runtime !== 'web') { res.writeHead(400); res.end('not a UI App'); return; }
+      // Optional project root (a folder anywhere on disk); default = app-data/<id>/.
+      const root = new URL(req.url, 'http://x').searchParams.get('root') || '';
       // Built frontend project? Serve apps-dist/<id>/index.html; else the inline body.
       const distIndex = path.join(APPS_DIST_DIR, id, 'index.html');
       let html, baseHref;
@@ -2274,7 +2288,7 @@ const server = http.createServer(async (req, res) => {
         html = body;
       }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-      res.end(buildPanelHtml(id, html, baseHref));
+      res.end(buildPanelHtml(id, html, baseHref, root));
     } catch (e) { res.writeHead(500); res.end(String(e)); }
     return;
   }
@@ -2282,7 +2296,7 @@ const server = http.createServer(async (req, res) => {
   // GET /api/app/:id/*  — static asset from the built dist bundle (apps-dist/<id>/…).
   // Placed after /panel (which returns first) so it never shadows it.
   const appAssetMatch = req.url.match(/^\/api\/app\/([^/]+)\/(.+)/);
-  if (req.method === 'GET' && appAssetMatch && appAssetMatch[2] !== 'panel') {
+  if (req.method === 'GET' && appAssetMatch && appAssetMatch[2].split('?')[0] !== 'panel') {
     const id      = decodeURIComponent(appAssetMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
     const rootDir = path.resolve(path.join(APPS_DIST_DIR, id));
     const relFile = decodeURIComponent(appAssetMatch[2].split('?')[0]);
@@ -2299,34 +2313,38 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /api/app-stream/:id  — SSE channel for qevos.onPush (server → panel)
+  // GET /api/app-stream/:id[?root=]  — SSE channel for qevos.onPush (server → panel).
+  // Keyed by the resolved base dir so panels editing the same project sync.
   const appStreamMatch = req.url.match(/^\/api\/app-stream\/([^/?]+)/);
   if (req.method === 'GET' && appStreamMatch) {
-    const id = decodeURIComponent(appStreamMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const id   = decodeURIComponent(appStreamMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
+    const root = new URL(req.url, 'http://x').searchParams.get('root') || '';
+    const key  = resolveAppBase(id, root);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
     });
     res.write(': connected\n\n');
-    let set = panelStreams.get(id);
-    if (!set) { set = new Set(); panelStreams.set(id, set); }
+    let set = panelStreams.get(key);
+    if (!set) { set = new Set(); panelStreams.set(key, set); }
     set.add(res);
     const ka = setInterval(() => { try { res.write(': ka\n\n'); } catch { /* closed */ } }, 25000);
     req.on('close', () => {
       clearInterval(ka);
       set.delete(res);
-      if (!set.size) panelStreams.delete(id);
+      if (!set.size) panelStreams.delete(key);
     });
     return;  // keep open — do NOT end
   }
 
-  // GET /api/app-files/:id[?dir=]  — recursive file list in the app's project dir
+  // GET /api/app-files/:id[?dir=&root=]  — recursive file list in the project dir
   const appFilesMatch = req.url.match(/^\/api\/app-files\/([^/?]+)/);
   if (req.method === 'GET' && appFilesMatch) {
     const id      = decodeURIComponent(appFilesMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
-    const rootDir = path.resolve(path.join(APP_DATA_DIR, id));
-    const sub     = new URL(req.url, 'http://x').searchParams.get('dir') || '';
+    const qs      = new URL(req.url, 'http://x').searchParams;
+    const rootDir = resolveAppBase(id, qs.get('root') || '');
+    const sub     = qs.get('dir') || '';
     const startDir = path.resolve(path.join(rootDir, sub));
     const relStart = path.relative(rootDir, startDir);
     if (relStart.startsWith('..') || path.isAbsolute(relStart)) { json(403, { error: 'forbidden' }); return; }
@@ -2344,11 +2362,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET/POST/DELETE /api/app-file/:id/*  (confined to APP_DATA_DIR/<id>/)
+  // GET/POST/DELETE /api/app-file/:id/*[?root=]  (confined to the resolved base dir)
   const appFileMatch = req.url.match(/^\/api\/app-file\/([^/]+)\/(.+)/);
   if (appFileMatch && (req.method === 'GET' || req.method === 'POST' || req.method === 'DELETE')) {
     const id      = decodeURIComponent(appFileMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
-    const rootDir = path.resolve(path.join(APP_DATA_DIR, id));
+    const rootDir = resolveAppBase(id, new URL(req.url, 'http://x').searchParams.get('root') || '');
     const relFile = decodeURIComponent(appFileMatch[2].split('?')[0]);
     const fullPath = path.resolve(path.join(rootDir, relFile));
     const rel = path.relative(rootDir, fullPath);
@@ -2362,7 +2380,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'DELETE') {
-      try { fs.unlinkSync(fullPath); pushToPanel(id, { type: 'file-changed', path: relFile, deleted: true }); json(200, { ok: true }); }
+      try { fs.unlinkSync(fullPath); pushToPanel(rootDir, { type: 'file-changed', path: relFile, deleted: true }); json(200, { ok: true }); }
       catch (e) {
         if (e.code === 'ENOENT') { json(200, { ok: true, existed: false }); return; }
         json(500, { error: String(e) });
@@ -2374,24 +2392,36 @@ const server = http.createServer(async (req, res) => {
       if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
       fs.writeFileSync(fullPath, content, 'utf8');
-      pushToPanel(id, { type: 'file-changed', path: relFile });  // notify open panels
+      pushToPanel(rootDir, { type: 'file-changed', path: relFile });  // notify open panels of this project
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }
 
-  // POST /api/panel-event
+  // POST /api/panel-event   body: { app, event, data, root? }
   if (req.method === 'POST' && req.url === '/api/panel-event') {
     try {
-      const { app, event, data } = JSON.parse(await readBody(req));
+      const { app, event, data, root } = JSON.parse(await readBody(req));
       const id = String(app || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
       if (!id || !event) { json(400, { error: 'app and event required' }); return; }
-      const qdir = path.join(APP_DATA_DIR, id, '.qevos');
+      const qdir = path.join(resolveAppBase(id, root || ''), '.qevos');
       fs.mkdirSync(qdir, { recursive: true });
       const line = JSON.stringify({ ts: Date.now(), event: String(event), data: data || {} }) + '\n';
       fs.appendFileSync(path.join(qdir, 'panel_events.jsonl'), line, 'utf8');
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // GET /api/app-project?root=<abs>  — resolve a project folder's marker (qevos.project.json)
+  // → { app, marker, root }. Used by the "open project" flow to pick the right App.
+  if (req.method === 'GET' && req.url.startsWith('/api/app-project')) {
+    const root = new URL(req.url, 'http://x').searchParams.get('root') || '';
+    if (!root || !path.isAbsolute(root)) { json(400, { error: 'absolute root required' }); return; }
+    const abs = path.resolve(root);
+    let marker = null;
+    try { marker = JSON.parse(fs.readFileSync(path.join(abs, 'qevos.project.json'), 'utf8')); } catch {}
+    json(200, { root: abs, app: (marker && marker.app) || null, marker });
     return;
   }
 
