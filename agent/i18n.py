@@ -185,11 +185,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "sys.format_header":  "## 输出格式（严格遵守，必须是合法 JSON）",
         "sys.thought_hint":   "你当前的推理过程，分析情况、决定下一步",
         "sys.rigor_patch": (
-            "## 本轮 thought 严密度要求\n"
-            "撰写 thought 字段时，必须分三段推理：\n"
+            "## 本轮 thought 严密度要求（双思考模式）\n"
+            "撰写 thought 字段时，必须经历「先立后破」两轮思考：\n"
             "①【观察】先客观复述上一步结果中实际看到的关键事实（可引用原文片段），不要脑补或跳步；\n"
-            "②【推断】基于观察给出解释，并指出依据哪条事实；\n"
-            "③【决策】据此决定下一步。\n"
+            "②【推断】基于观察给出初步结论，并指出依据哪条事实；\n"
+            "③【质疑】对上述推断主动唱反调：是否有被忽略的现象？是否存在其他解释？"
+            "最不确定的一步是哪一步？若能推翻，就修正推断；\n"
+            "④【决策】综合以上，给出经得起质疑的下一步。\n"
             "若观察与预期不符，先承认现象再修正假设。"
         ),
         "sys.note_field":     '  "scratchpad_note": "（可选）对上一步工具结果的1-2条关键新发现，将自动追加草稿本，每条<=40字",',
@@ -743,12 +745,15 @@ Tip: just type / to pause; enter the full command then press Enter.
         "sys.format_header":  "## Output format (strictly required — must be valid JSON)",
         "sys.thought_hint":   "Your current reasoning: analyse the situation and decide the next step",
         "sys.rigor_patch": (
-            "## Thought rigor requirement for this turn\n"
-            "When writing the thought field, reason in three parts:\n"
-            "(1) [Observe] first state objectively the key facts you actually see in the last "
+            "## Thought rigor requirement for this turn (dual-thinking mode)\n"
+            "When writing the thought field, go through two passes — first build, then break:\n"
+            "(1) [Observe] state objectively the key facts you actually see in the last "
             "result (quote snippets when useful); do not assume or skip steps;\n"
-            "(2) [Infer] give an interpretation grounded in those facts, naming which fact it rests on;\n"
-            "(3) [Decide] choose the next step accordingly.\n"
+            "(2) [Infer] give an initial conclusion grounded in those facts, naming which fact it rests on;\n"
+            "(3) [Challenge] play devil's advocate against that inference: any overlooked "
+            "phenomenon? any alternative explanation? which step are you least sure of? "
+            "if it can be refuted, revise the inference;\n"
+            "(4) [Decide] synthesize the above into a next step that survives the challenge.\n"
             "If the observation contradicts your expectation, acknowledge the phenomenon first, "
             "then revise the hypothesis."
         ),
