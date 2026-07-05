@@ -96,6 +96,11 @@ enabled: true
 - `qevos` 桥与框架无关：打包后的代码直接调 `window.qevos.readFile(...)` 即可(桥已注入进 `index.html`)。
 - 运行时真需要常驻 node 服务(SSR/自带 server)→ **不支持**(UI App 无自己的后端)，属未来 sidecar。
 
+**代码管理 / git**（运行时绑 QevosAgent，但源码是独立仓库，两者不冲突）：
+- **App 源码 = 一个独立 git 仓库**：放 `app-src/<id>/`（被 QevosAgent 忽略 → 可直接 `git init`，无嵌套/submodule 冲突），或磁盘任意位置。**不要**做成 QevosAgent 的 submodule。
+- 部署 = 构建输出到 `apps-dist/<id>/` + 写 `apps/<id>.md`。QevosAgent 只收**产物**，源码/`node_modules` 不入主库。
+- 三层各自的版本：① 源码(`app-src/`)→ 自己的仓库；② 产物(`apps-dist/`)→ 忽略、可重生、不 git；③ 数据/文档(项目 root)→ 可选，用户项目也能各自 git。
+
 ---
 
 ## 2. 面板侧 API：`qevos` 桥(写进你生成的 HTML 里)

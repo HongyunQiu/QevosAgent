@@ -241,6 +241,14 @@ my-flow/                    ← project root(持久,cwd 轴)
 ### 例外:运行期真需要 node 服务(SSR / 自带 server)
 按设计**不支持**(UI App 无自己的后端 server,§0.5)。落到未来的**受管 sidecar**逃生梯,少数、需显式声明。绝大多数前端工程 SPA/静态化即可,无需 SSR。
 
+### 代码管理 / git(源码独立仓库)
+运行时绑 QevosAgent(面板靠 `qevos` 桥 + 宿主),但**源码可独立 git**,两者不冲突。因为 `app-src/`、
+`apps-dist/`、`app-data/` 都被 QevosAgent `.gitignore` → 在其中 `git init` 是**独立仓库,无嵌套/submodule 冲突**。
+
+- **App 源码工程 = 一个独立仓库**:放 `app-src/<id>/`(方便)或磁盘任意位置(最干净,因 QevosAgent 只需产物)。**不做 submodule**(避免与开源/PRO 主仓库耦合)。
+- **产物 = 部署**:build → `apps-dist/<id>/` + 写 `apps/<id>.md`;主库只收产物,源码/`node_modules` 不入库。
+- 三层 VCS:① `app-src/`→ 自有仓库;② `apps-dist/`→ 忽略、可重生、不 git;③ 数据/文档(项目 root)→ v1 ② 后位置自由,用户项目也可各自 git。
+
 ---
 
 ## 8. 明确不做(避免过度约束)
