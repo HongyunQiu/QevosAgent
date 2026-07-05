@@ -5488,18 +5488,16 @@ function _showCtxMenu(x, y, items) {
 function onRunContextMenu(e, runId) {
   e.preventDefault();
   e.stopPropagation();
-  const running   = !!(gState && gState.agentAlive);  // 是否有任务正在运行
-  const summaries = (gState && gState.runSummaries) || {};
-  const label     = summaries[runId] || fmtRunId(runId);
+  const running = !!(gState && gState.agentAlive);  // 是否有任务正在运行
   const items = [];
   if (running) {
     items.push({ label: '▶ 继续进行该任务', disabled: true });
     items.push({ label: '✎ 基于这项任务…', disabled: true });
     items.push({ sep: true });
-    items.push({ label: '⇢ 参考这项任务中的信息', action: () => injectGoal(`参考「${label}」任务中的信息，`, false) });
+    items.push({ label: '⇢ 参考这项任务中的信息', action: () => injectGoal(`参考「${runId}」任务中的信息，`, false) });
   } else {
-    items.push({ label: '▶ 继续进行该任务', action: () => injectGoal(`继续进行「${label}」任务`, true)  });
-    items.push({ label: '✎ 基于这项任务…', action: () => injectGoal(`基于「${label}」任务，`,   false) });
+    items.push({ label: '▶ 继续进行该任务', action: () => injectGoal(`继续进行「${runId}」任务`, true)  });
+    items.push({ label: '✎ 基于这项任务…', action: () => injectGoal(`基于「${runId}」任务，`,   false) });
   }
   _showCtxMenu(e.clientX, e.clientY, items);
 }
