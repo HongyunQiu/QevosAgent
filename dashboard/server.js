@@ -2425,6 +2425,39 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/runs-index  — build a searchable index over RUNS_DIR (platform data).
+  // Deterministic server-side compute (NO Agent/LLM). Used by the Runs 搜索 UI App's
+  // "制作索引" button; the app caches the returned index in its own project dir.
+  if (req.method === 'POST' && req.url === '/api/runs-index') {
+    try {
+      // The most search-relevant human text per run; kept lean so the whole index
+      // stays browser-friendly even with hundreds of runs.
+      const INDEX_FILES = ['scratchpad.md', 'final_answer.md', 'reflection.md', 'progress_log.md'];
+      const PER_FILE_CAP = 5000, PER_RUN_CAP = 9000;
+      const index = [];
+      let dirs = [];
+      try {
+        dirs = fs.readdirSync(RUNS_DIR, { withFileTypes: true })
+          .filter(e => e.isDirectory()).map(e => e.name).sort().reverse();  // newest first (timestamp names)
+      } catch {}
+      for (const dir of dirs) {
+        const parts = [];
+        let total = 0;
+        for (const fn of INDEX_FILES) {
+          let txt;
+          try { txt = fs.readFileSync(path.join(RUNS_DIR, dir, fn), 'utf8'); } catch { continue; }
+          if (txt.length > PER_FILE_CAP) txt = txt.slice(0, PER_FILE_CAP);
+          parts.push(`=== ${fn} ===\n${txt}`);
+          total += txt.length;
+          if (total > PER_RUN_CAP) break;
+        }
+        if (parts.length) index.push({ dir, content: parts.join('\n') });
+      }
+      json(200, { index, count: index.length });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
   // ── GET /api/skills  — list all skill files ───────────────────────────────
   if (req.method === 'GET' && req.url === '/api/skills') {
     try {
