@@ -250,7 +250,13 @@ body.large-font .app {
   transform-origin: top left;
   width: calc(100vw / 1.5);
   height: calc(100dvh / 1.5);
+  /* 大字体模式下左右栏收窄至 80%，给中间区域更多空间 */
+  grid-template-columns: 184px 1fr 248px;
 }
+/* 收窄后 stat 单元更挤，缩小内边距与数值字号，避免 "100 / 100" 折行 */
+body.large-font .stat-cell { padding: 6px 8px; }
+body.large-font .stat-val { font-size: 13px; }
+body.large-font .stat-val.muted { font-size: 12px; }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────── */
 .sidebar {
@@ -278,7 +284,7 @@ body.large-font .app {
   display: flex; flex-direction: column; gap: 2px;
 }
 .stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-val { font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--text); line-height: 1; }
+.stat-val { font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--text); line-height: 1; white-space: nowrap; }
 .stat-val.blue   { color: var(--blue); }
 .stat-val.green  { color: var(--green); }
 .stat-val.orange { color: var(--orange); }
@@ -289,7 +295,7 @@ body.large-font .app {
 .goal-row-label { font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
 .goal-rundir { color: var(--muted); word-break: break-all; }
 .rundir-copy {
-  flex-shrink: 0; width: 18px; height: 18px; padding: 0;
+  flex-shrink: 0; margin-left: auto; width: 18px; height: 18px; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid var(--border); border-radius: 50%;
   background: var(--bg3); color: var(--muted); cursor: pointer;
@@ -1446,7 +1452,6 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
   <!-- ── Sidebar ────────────────────────────────────────────────── -->
   <aside class="sidebar">
-    <div class="section-head">Metrics</div>
     <div class="stat-grid">
       <div class="stat-cell">
         <div class="stat-lbl">Iteration</div>
@@ -1468,7 +1473,6 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
     <div class="goal-box">
       <div class="goal-row">
-        <span class="goal-row-label">Run Dir:</span>
         <span class="goal-rundir" id="goalRunDir">—</span>
         <button class="rundir-copy" id="goalRunDirCopy" type="button" title="复制序号" onclick="copyRunDir()" hidden>
           <svg class="ic-copy" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
@@ -2757,7 +2761,7 @@ function renderRunsList(runs, activeId) {
     const delBtn = gRunsEditMode
       ? `<button class="run-del" type="button" title="删除此 run" onclick="deleteRun(event,'${r}')">🗑</button>`
       : '';
-    return `<div class="${cls}" onclick="selectRun('${r}')">
+    return `<div class="${cls}" onclick="selectRun('${r}')" oncontextmenu="onRunContextMenu(event,'${r}')">
       <div class="run-dot ${isLive ? 'active' : ''}"></div>
       <span class="run-id" title="${summary ? timestamp + ' — ' + esc(summary) : timestamp}">${hlText(label, gRunSearch)}</span>
       ${tag}
@@ -5473,6 +5477,40 @@ function _showCtxMenu(x, y, items) {
     document.addEventListener('click', _hideCtxMenu, true);
     document.addEventListener('scroll', _hideCtxMenu, true);
   }, 0);
+}
+
+// ── Runs list right-click: 继续 / 基于 / 参考 该任务 ─────────────────────────
+// 前提：没有任务在跑时才能"继续/基于"（会启动新任务）。有任务在跑时这两项灰掉，
+// 改为"参考这项任务中的信息"——注入到输入栏、不自动发送，供用户补充后发给运行中的 agent。
+//   ▶ 继续进行该任务   → 注入"继续进行「任务」任务"并自动 Send
+//   ✎ 基于这项任务…    → 注入"基于「任务」任务，"，不发送，光标停末尾等续写
+//   ⇢ 参考这项任务中的信息 → 注入"参考「任务」任务中的信息，"，不发送
+function onRunContextMenu(e, runId) {
+  e.preventDefault();
+  e.stopPropagation();
+  const running   = !!(gState && gState.agentAlive);  // 是否有任务正在运行
+  const summaries = (gState && gState.runSummaries) || {};
+  const label     = summaries[runId] || fmtRunId(runId);
+  const items = [];
+  if (running) {
+    items.push({ label: '▶ 继续进行该任务', disabled: true });
+    items.push({ label: '✎ 基于这项任务…', disabled: true });
+    items.push({ sep: true });
+    items.push({ label: '⇢ 参考这项任务中的信息', action: () => injectGoal(`参考「${label}」任务中的信息，`, false) });
+  } else {
+    items.push({ label: '▶ 继续进行该任务', action: () => injectGoal(`继续进行「${label}」任务`, true)  });
+    items.push({ label: '✎ 基于这项任务…', action: () => injectGoal(`基于「${label}」任务，`,   false) });
+  }
+  _showCtxMenu(e.clientX, e.clientY, items);
+}
+
+function injectGoal(text, autoSend) {
+  const input = document.getElementById('cmdInput');
+  if (!input) return;
+  input.value = text;
+  input.focus();
+  try { input.setSelectionRange(text.length, text.length); } catch {}
+  if (autoSend) sendCmd();
 }
 
 function onDirTreeContextMenu(id, e) {
