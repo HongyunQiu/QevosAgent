@@ -869,6 +869,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
   overflow-x:auto; overflow-y:hidden; scrollbar-width:none;
 }
 .center-tab-strip::-webkit-scrollbar { display:none; }
+.center-tab-strip.dragging { cursor:grabbing; user-select:none; }
 /* 标签本身不参与压缩，保持原宽，靠 strip 横向滚动查看 */
 .center-tab { flex-shrink:0; }
 .center-tab {
@@ -5865,6 +5866,35 @@ function toggleMobileRightPanel() {
     strip.scrollLeft += delta;
     e.preventDefault();
   }, { passive: false });
+
+  // 按住鼠标左右拖拽滚动（横向溢出时）。拖动超过阈值才算拖拽，
+  // 并抑制随后的 click，避免误切换标签。
+  let dragging = false, moved = false, startX = 0, startScroll = 0;
+  strip.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || strip.scrollWidth <= strip.clientWidth) return;
+    dragging = true; moved = false;
+    startX = e.clientX; startScroll = strip.scrollLeft;
+  });
+  strip.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    if (!moved && Math.abs(dx) > 4) {
+      moved = true;
+      strip.setPointerCapture(e.pointerId);
+      strip.classList.add('dragging');
+    }
+    if (moved) { strip.scrollLeft = startScroll - dx; e.preventDefault(); }
+  });
+  const endDrag = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    if (moved) { try { strip.releasePointerCapture(e.pointerId); } catch {} strip.classList.remove('dragging'); }
+  };
+  strip.addEventListener('pointerup', endDrag);
+  strip.addEventListener('pointercancel', endDrag);
+  strip.addEventListener('click', (e) => {
+    if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; }
+  }, true);
 })();
 
 // ── Font size toggle ──────────────────────────────────────────────────────
