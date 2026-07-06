@@ -5853,6 +5853,20 @@ function toggleMobileRightPanel() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
+// 让中间标签栏支持鼠标滚轮横向滚动：桌面上的纵向滚轮 → 横向 scrollLeft，
+// 否则横向溢出时（如大字体模式）右侧标签/按钮没有滚动条也滚不动。
+(function enableCenterStripWheelScroll() {
+  const strip = document.querySelector('.center-tab-strip');
+  if (!strip) return;
+  strip.addEventListener('wheel', (e) => {
+    if (strip.scrollWidth <= strip.clientWidth) return;   // 没溢出就不接管
+    const delta = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (!delta) return;
+    strip.scrollLeft += delta;
+    e.preventDefault();
+  }, { passive: false });
+})();
+
 // ── Font size toggle ──────────────────────────────────────────────────────
 function toggleFontSize() {
   const large = document.body.classList.toggle('large-font');
