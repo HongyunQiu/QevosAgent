@@ -1068,17 +1068,9 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
   border-right:1px solid var(--border); padding:6px 0;
   background:var(--bg2);
 }
-/* 目录树折叠头：桌面隐藏，仅窄屏显示（见媒体查询）。点击三角收起/展开下方目录树 */
-.files-tree-head {
-  display:none; align-items:center; gap:7px;
-  padding:7px 14px; font-size:11px; font-weight:600;
-  color:var(--muted); background:var(--bg2);
-  border-bottom:1px solid var(--border);
-  cursor:pointer; flex-shrink:0; white-space:nowrap; overflow:hidden;
-  user-select:none;
-}
-.files-tree-head .tree-head-label { overflow:hidden; text-overflow:ellipsis; }
-.files-tree-head .tree-caret {
+/* 目录树折叠三角：加在工具栏的开始时间/目录名左侧，仅窄屏显示（见媒体查询） */
+.tree-caret-toggle {
+  display:none; align-items:center; cursor:pointer; user-select:none;
   font-size:9px; color:var(--muted); flex-shrink:0; transition:transform 0.15s;
 }
 .files-content { flex:1; overflow:hidden; display:flex; flex-direction:column; }
@@ -1394,10 +1386,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     width: 100%; height: 150px; flex-shrink: 0;
     border-right: none; border-bottom: 1px solid var(--border);
   }
-  /* 窄屏：显示折叠头，可收起目录树以获得沉浸式浏览 */
-  .files-tree-head { display: flex; }
-  .files-body.tree-collapsed .files-tree { display: none; }
-  .files-body.tree-collapsed .tree-caret { transform: rotate(-90deg); }
+  /* 窄屏：显示折叠三角，可收起目录树以获得沉浸式浏览 */
+  .tree-caret-toggle { display: inline-flex; }
+  .center-pane.tree-collapsed .files-tree { display: none; }
+  .center-pane.tree-collapsed .tree-caret-toggle { transform: rotate(-90deg); }
 
   /* Skills & Crons: stack list above editor instead of side-by-side */
   .skills-body { flex-direction: column; }
@@ -1759,6 +1751,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     <!-- Run Files pane -->
     <div class="center-pane" id="cpane-files">
       <div class="files-toolbar">
+        <span class="tree-caret-toggle" onclick="toggleFilesTree(this)" title="收起/展开目录树">▾</span>
         <span class="agents-title" id="filesRunLabel">No run selected</span>
         <div class="bar-gap"></div>
         <button class="icon-btn" onclick="refreshFilesTab()">↺ Refresh</button>
@@ -1769,10 +1762,6 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
         <button class="icon-btn" id="filesDownloadBtn" onclick="downloadCurrentFile()" disabled title="Download current file">↓ Download</button>
       </div>
       <div class="files-body">
-        <div class="files-tree-head" onclick="toggleFilesTree(this)">
-          <span class="tree-caret">▾</span>
-          <span class="tree-head-label" id="filesTreeHeadLabel">No run selected</span>
-        </div>
         <div class="files-tree" id="filesTree">
           <div class="files-empty">Select a run from the sidebar</div>
         </div>
@@ -4929,26 +4918,23 @@ async function saveEpisodic() {
   } catch (e) { toast('✗ Network error: ' + e.message); }
 }
 
-// 窄屏：点击折叠头的三角，收起/展开下方目录树（沉浸式浏览）
-function toggleFilesTree(headEl) {
-  const body = headEl.closest('.files-body');
-  if (body) body.classList.toggle('tree-collapsed');
+// 窄屏：点击工具栏三角，收起/展开该面板的目录树（沉浸式浏览）
+function toggleFilesTree(caretEl) {
+  const pane = caretEl.closest('.center-pane');
+  if (pane) pane.classList.toggle('tree-collapsed');
 }
 
 // ── Run Files ─────────────────────────────────────────────────────────────
 async function loadRunFiles() {
   const runId = gViewRunId;
   const label = document.getElementById('filesRunLabel');
-  const head  = document.getElementById('filesTreeHeadLabel');
   const tree  = document.getElementById('filesTree');
   if (!runId) {
     label.textContent = 'No run selected';
-    if (head) head.textContent = 'No run selected';
     tree.innerHTML = '<div class="files-empty">Select a run from the sidebar</div>';
     return;
   }
   label.textContent = fmtRunId(runId);
-  if (head) head.textContent = '🕐 ' + fmtRunId(runId);
   tree.innerHTML = '<div class="files-empty">Loading…</div>';
   try {
     const data = await fetch('/api/run-files/' + encodeURIComponent(runId)).then(r => r.json());
@@ -5243,7 +5229,8 @@ let gDirTabState = {};  // {id: {content, filePath, rawUrl, preview, editMode, c
 function _dirPaneHTML(id, label, dirPath) {
   return `
   <div class="files-toolbar">
-    <span class="agents-title" title="${esc(dirPath)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px">${esc(label)}</span>
+    <span class="tree-caret-toggle" onclick="toggleFilesTree(this)" title="收起/展开目录树">▾</span>
+    <span class="agents-title" id="${id}-dirLabel" title="${esc(dirPath)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px">${esc(label)}</span>
     <div class="bar-gap"></div>
     <button class="icon-btn" onclick="reloadDirTab('${id}')">↺ Refresh</button>
     <button class="icon-btn active" id="${id}-renderBtn" onclick="toggleDirPreview('${id}')">◈ Preview</button>
@@ -5253,10 +5240,6 @@ function _dirPaneHTML(id, label, dirPath) {
     <button class="icon-btn" id="${id}-dlBtn" disabled onclick="downloadDirFile('${id}')">↓ Download</button>
   </div>
   <div class="files-body">
-    <div class="files-tree-head" onclick="toggleFilesTree(this)">
-      <span class="tree-caret">▾</span>
-      <span class="tree-head-label" id="${id}-treeHeadLabel">${esc(label)}</span>
-    </div>
     <div class="files-tree" id="${id}-tree" oncontextmenu="onDirTreeContextMenu('${id}', event)"><div class="files-empty">Loading…</div></div>
     <div class="files-content">
       <div class="files-content-path" id="${id}-pathBar" style="display:none"></div>
@@ -5333,8 +5316,11 @@ async function reloadDirTab(id) {
 async function loadDirTabFiles(id, dirPath) {
   const s = gDirTabState[id];
   if (s) s.currentDir = dirPath;
-  const head = document.getElementById(id + '-treeHeadLabel');
-  if (head) head.textContent = '📁 ' + (dirPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || dirPath);
+  const dirLabel = document.getElementById(id + '-dirLabel');
+  if (dirLabel) {
+    dirLabel.textContent = dirPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || dirPath;
+    dirLabel.title = dirPath;
+  }
   const tree = document.getElementById(id + '-tree');
   if (!tree) return;
   tree.innerHTML = '<div class="files-empty">Loading…</div>';
