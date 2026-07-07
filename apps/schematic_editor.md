@@ -82,7 +82,11 @@ enabled: true
 
   /* ── 右侧标签页面板 ── */
   #right-panel { width: 320px; border-left: 1px solid #21262d; background: #161b22; flex-shrink: 0; display: flex; flex-direction: column; }
+  #right-expand { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 90; background: #161b22; border: 1px solid #30363d; border-right: none; border-radius: 8px 0 0 8px; padding: 14px 5px; cursor: pointer; color: #58a6ff; font-size: 12px; display: none; writing-mode: vertical-lr; letter-spacing: 2px; }
+  #right-expand:hover { background: #1c2129; }
   #right-tabs { display: flex; border-bottom: 1px solid #21262d; flex-shrink: 0; }
+  #right-tabs .tab-collapse { flex: 0 0 26px; text-align: center; padding: 8px 0; color: #6e7681; cursor: pointer; font-size: 12px; border-bottom: 2px solid transparent; }
+  #right-tabs .tab-collapse:hover { color: #58a6ff; }
   #right-tabs .tab { flex: 1; text-align: center; padding: 8px 4px; font-size: 12px; color: #6e7681; cursor: pointer; border-bottom: 2px solid transparent; }
   #right-tabs .tab:hover { color: #c9d1d9; }
   #right-tabs .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; font-weight: 600; }
@@ -139,6 +143,10 @@ enabled: true
   .np-entry .ref { color: #f0c674; font-weight: 600; min-width: 44px; }
   .np-entry .pin { color: #c9d1d9; min-width: 56px; }
   .np-entry .extra { color: #6e7681; font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── 悬停网络连线图浮窗 ── */
+  #hover-topo { display: none; position: fixed; z-index: 300; background: #161b22f5; border: 1px solid #30363d; border-radius: 10px; box-shadow: 0 8px 32px #000000aa; padding: 8px 10px 4px; pointer-events: none; }
+  #hover-topo .ht-hint { color: #6e7681; font-size: 10px; text-align: right; padding: 2px 2px 3px; }
 </style>
 </head>
 <body>
@@ -200,6 +208,7 @@ enabled: true
       <div class="tab" data-tab="global">全局</div>
       <div class="tab" data-tab="erc">检查 <span class="cnt" id="erc-cnt"></span></div>
       <div class="tab" data-tab="topo">拓扑</div>
+      <div class="tab-collapse" id="right-collapse" title="收起面板">⇥</div>
     </div>
     <div class="tab-body active" id="tab-nets">
       <div class="tab-list" id="net-list"><div class="empty-hint">选择器件后显示本文件网络</div></div>
@@ -217,6 +226,12 @@ enabled: true
     </div>
   </div>
 </div>
+
+<!-- 右侧面板收起后的展开把手 -->
+<div id="right-expand" title="展开面板">◀ 面板</div>
+
+<!-- 悬停网络连线图浮窗 -->
+<div id="hover-topo"></div>
 
 <!-- 网络详情悬浮面板 -->
 <div id="net-popup">
@@ -264,6 +279,7 @@ let currentFile = null;         // 当前打开的 md 相对路径
 let fileList = [];              // [{path}] 项目内全部 md
 let docs = {};                  // path -> 解析后的文档对象
 let netIndex = {};              // scope+' '+net -> [{file,ref,pin,pinName,type,value}]
+let refMeta = {};               // scope+'::'+ref -> {pinCount,value} 用于悬停图符号大小
 let scopes = new Set();         // 项目内出现过的目录作用域
 let ercIssues = [];
 let selectedNet = null;         // 当前高亮网络（原始名，不含scope）
@@ -288,6 +304,8 @@ function isRealNet(net) {
   return !!net && net !== 'NC' && net !== 'N.C' && net !== 'N.C.' &&
          !net.startsWith('unconnected') && !isPlaceholder(net);
 }
+// 拓扑视图里忽略的网络（连接数巨大、无观看价值）
+function isIgnoredNet(net) { return net === 'GND'; }
 
 // ── 网络颜色（哈希取色）──
 const COLORS = [
@@ -484,7 +502,7 @@ function sectionLabel(sec, doc) {
 // ═══════════════════════════════════════════════════════════
 
 function rebuildIndex() {
-  netIndex = {}; scopes = new Set(); ercIssues = [];
+  netIndex = {}; refMeta = {}; scopes = new Set(); ercIssues = [];
   const refSeen = {};   // scope::ref -> [file]
 
   for (const [file, doc] of Object.entries(docs)) {
@@ -509,6 +527,7 @@ function rebuildIndex() {
         for (const row of sec.instances.rows) {
           const rk = scope + '::' + row.ref;
           (refSeen[rk] = refSeen[rk] || []).push(file);
+          refMeta[rk] = { pinCount: nCols, value: row.value };
           for (const pc of sec.instances.pinCols) {
             const net = pc.col < row.cells.length ? row.cells[pc.col] : '';
             if (isPlaceholder(net)) {
@@ -527,6 +546,7 @@ function rebuildIndex() {
       } else if (pins.length) {
         // ── 单实例器件 / 模块接口 ──
         const ref = sec.ref || doc.title || file.replace(/\.md$/, '');
+        refMeta[scope + '::' + ref] = { pinCount: pins.length, value: sec.name };
         if (sec.kind === 'device' && sec.ref) {
           const rk = scope + '::' + sec.ref;
           (refSeen[rk] = refSeen[rk] || []).push(file);
@@ -863,6 +883,13 @@ function buildPinTable(pt, sec) {
       if (e.target === netTd) return;
       if (isRealNet(pin.net)) highlightNet(pin.net);
     });
+    // 悬停 → 该引脚网络的连线图
+    tr.addEventListener('mouseenter', e => {
+      const doc = docs[currentFile];
+      const centerRef = sec.ref || (doc && doc.title) || '';
+      showHoverTopo(() => buildHoverGraph(centerRef, sectionLabel(sec, doc || {}), [{ pin: pin.pin, name: pin.name, net: pin.net }]), e);
+    });
+    tr.addEventListener('mouseleave', hideHoverTopoSoon);
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
@@ -910,6 +937,17 @@ function buildInstTable(sec, si) {
       renderInstanceTopology(sec, row);
       switchTab('topo');
     });
+    // 悬停 → 该实例全部引脚的连线图
+    tr.addEventListener('mouseenter', e => {
+      showHoverTopo(() => {
+        const pins2 = it.pinCols.map(pc => ({
+          pin: pc.pin, name: (pinByNo[pc.pin] || {}).name || '',
+          net: pc.col < row.cells.length ? row.cells[pc.col] : ''
+        }));
+        return buildHoverGraph(row.ref, row.ref + (row.value ? ' ' + row.value : ''), pins2);
+      }, e);
+    });
+    tr.addEventListener('mouseleave', hideHoverTopoSoon);
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
@@ -981,9 +1019,22 @@ function scheduleSave(file) {
 function switchTab(name) {
   document.querySelectorAll('#right-tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tab-body').forEach(b => b.classList.toggle('active', b.id === 'tab-' + name));
+  // 切标签时如面板被收起则自动展开
+  const rp = $('right-panel');
+  if (rp.style.display === 'none') { rp.style.display = 'flex'; $('right-expand').style.display = 'none'; }
 }
 document.querySelectorAll('#right-tabs .tab').forEach(t => {
   t.addEventListener('click', () => switchTab(t.dataset.tab));
+});
+
+// ── 右侧面板收起 / 展开 ──
+$('right-collapse').addEventListener('click', () => {
+  $('right-panel').style.display = 'none';
+  $('right-expand').style.display = 'block';
+});
+$('right-expand').addEventListener('click', () => {
+  $('right-panel').style.display = 'flex';
+  $('right-expand').style.display = 'none';
 });
 
 // ── 网络（当前文件）──
@@ -1138,7 +1189,7 @@ function drawPinNetTopology(pins, title, showGlobal) {
     (netGroups[p.net] = netGroups[p.net] || []).push(i);
   });
   const railNets = Object.keys(netGroups).filter(n =>
-    netGroups[n].length >= 2 && (!filterText || n.toLowerCase().includes(filterText)));
+    !isIgnoredNet(n) && netGroups[n].length >= 2 && (!filterText || n.toLowerCase().includes(filterText)));
 
   const pinX = 96, railX0 = 116, railStep = 13, labelX = 120;
   const posY = i => top + i * rowH + 8;
@@ -1244,6 +1295,176 @@ function applyFocus(focus) {
     if (tr) { tr.scrollIntoView({ block: 'center' }); tr.classList.add('flash'); setTimeout(() => tr.classList.remove('flash'), 1700); }
   }
 }
+
+// ═══════════════════════════════════════════════════════════
+//  悬停网络连线图浮窗
+//  行 hover → 中心器件 → 网络 → 对端器件 的连线图（忽略 GND）
+// ═══════════════════════════════════════════════════════════
+
+const hoverTopo = $('hover-topo');
+let htShowTimer = null, htHideTimer = null;
+
+function isSmallRef(scope, ref) {
+  const m = refMeta[scope + '::' + ref];
+  if (m && m.pinCount) return m.pinCount <= 4;
+  return /^(R|C|L|D|FB|FU|TP|F|Y|X)\d/i.test(ref);
+}
+function isEditingCell() {
+  const a = document.activeElement;
+  return a && a.classList && a.classList.contains('net-cell');
+}
+
+// 收集一行的图数据：centerRef 的若干引脚 → 各自网络 → 网络上其它引脚
+function buildHoverGraph(centerRef, centerLabel, pins) {
+  const scope = scopeOf(currentFile || '');
+  const nets = [];
+  for (const p of pins) {
+    if (!isRealNet(p.net) || isIgnoredNet(p.net)) continue;
+    let g = nets.find(n => n.net === p.net);
+    if (!g) {
+      const all = netIndex[netKey(scope, p.net)] || [];
+      g = { net: p.net, color: getNetColor(p.net), pins: [], others: [], total: all.length };
+      // 对端：去掉中心器件自己的引脚
+      g.others = all.filter(e => e.ref !== centerRef);
+      nets.push(g);
+    }
+    g.pins.push(p);
+  }
+  return { centerRef, centerLabel, scope, nets };
+}
+
+function renderHoverGraph(data) {
+  const MAXF = 10;                       // 每个网络最多画的对端数
+  const rowH = 20, netLabelH = 15, bandGap = 8, topPad = 26;
+  const bands = data.nets.map(g => {
+    const shown = g.others.slice(0, MAXF);
+    const extra = g.others.length - shown.length;
+    const rows = Math.max(1, shown.length + (extra > 0 ? 1 : 0));
+    return { g, shown, extra, h: netLabelH + rows * rowH + 4 };
+  });
+  const H = topPad + bands.reduce((s, b) => s + b.h + bandGap, 0) + 2;
+  const W = 470;
+  const cx = 10, cw = 116;              // 中心器件框
+  const hubX = 196, nodeX = 244;        // 网络汇点 / 对端列
+  const centerSmall = isSmallRef(data.scope, data.centerRef);
+  const cH = centerSmall ? 22 : 38;
+  const cyCenter = topPad + (H - topPad) / 2 - 4;
+
+  let s = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block">`;
+  // 标题
+  s += `<text x="8" y="15" fill="#58a6ff" font-size="12" font-weight="700">${esc(data.centerLabel)}</text>`;
+
+  // 先画边（在节点下层）
+  let y = topPad;
+  const hubYs = [];
+  bands.forEach((b, bi) => {
+    const rows = Math.max(1, b.shown.length + (b.extra > 0 ? 1 : 0));
+    const hubY = y + netLabelH + (rows * rowH) / 2 - rowH / 2 + 10;
+    hubYs.push(hubY);
+    // 中心 → 汇点
+    const srcY = cyCenter - (bands.length - 1) * 6 + bi * 12;
+    s += `<path d="M${cx + cw},${srcY} C${cx + cw + 34},${srcY} ${hubX - 34},${hubY} ${hubX - 5},${hubY}" fill="none" stroke="${b.g.color}" stroke-width="1.6" opacity="0.8"/>`;
+    // 引脚号标在边起点
+    const pinTxt = b.g.pins.map(p => p.pin).join(',');
+    s += `<text x="${cx + cw + 4}" y="${srcY - 4}" fill="#adbac7" font-size="9">脚${esc(pinTxt)}</text>`;
+    // 汇点 → 各对端
+    b.shown.forEach((e2, j) => {
+      const ny = y + netLabelH + j * rowH + 10;
+      s += `<path d="M${hubX + 5},${hubY} C${hubX + 26},${hubY} ${nodeX - 22},${ny} ${nodeX},${ny}" fill="none" stroke="${b.g.color}" stroke-width="1.1" opacity="0.55"/>`;
+    });
+    if (b.extra > 0) {
+      const ny = y + netLabelH + b.shown.length * rowH + 10;
+      s += `<path d="M${hubX + 5},${hubY} C${hubX + 26},${hubY} ${nodeX - 22},${ny} ${nodeX},${ny}" fill="none" stroke="${b.g.color}" stroke-width="1.1" opacity="0.3" stroke-dasharray="3 3"/>`;
+    }
+    y += b.h + bandGap;
+  });
+
+  // 中心器件节点
+  s += `<rect x="${cx}" y="${cyCenter - cH / 2}" width="${cw}" height="${cH}" rx="5" fill="#1f6feb22" stroke="#58a6ff" stroke-width="1.3"/>`;
+  if (centerSmall) {
+    s += `<text x="${cx + cw / 2}" y="${cyCenter + 4}" fill="#f0c674" font-size="11" font-weight="700" text-anchor="middle">${esc(data.centerRef)}</text>`;
+  } else {
+    s += `<text x="${cx + cw / 2}" y="${cyCenter - 3}" fill="#f0c674" font-size="12" font-weight="700" text-anchor="middle">${esc(data.centerRef)}</text>`;
+    let nm = data.centerLabel.replace(data.centerRef, '').trim();
+    if (nm.length > 16) nm = nm.slice(0, 15) + '…';
+    if (nm) s += `<text x="${cx + cw / 2}" y="${cyCenter + 12}" fill="#6e7681" font-size="9" text-anchor="middle">${esc(nm)}</text>`;
+  }
+
+  // 网络汇点 + 对端节点
+  y = topPad;
+  bands.forEach((b, bi) => {
+    const g = b.g;
+    const hubY = hubYs[bi];
+    // 网络名标签
+    let netTxt = g.net.length > 26 ? g.net.slice(0, 24) + '…' : g.net;
+    s += `<text x="${hubX}" y="${y + 9}" fill="${g.color}" font-size="10" font-weight="600" text-anchor="middle">${esc(netTxt)} · ${g.total}脚</text>`;
+    s += `<circle cx="${hubX}" cy="${hubY}" r="4" fill="${g.color}" stroke="#0d1117" stroke-width="1.5"/>`;
+    // 对端节点
+    b.shown.forEach((e2, j) => {
+      const ny = y + netLabelH + j * rowH + 10;
+      const small = isSmallRef(data.scope, e2.ref);
+      const meta = refMeta[data.scope + '::' + e2.ref] || {};
+      if (small) {
+        const label = `${e2.ref}.${e2.pin}`;
+        const w = Math.max(34, label.length * 5.6 + 10);
+        s += `<rect x="${nodeX}" y="${ny - 7.5}" width="${w}" height="15" rx="7" fill="#21262d" stroke="#30363d"/>`;
+        s += `<text x="${nodeX + w / 2}" y="${ny + 3}" fill="#adbac7" font-size="9" text-anchor="middle">${esc(label)}</text>`;
+        let vv = e2.value || meta.value || '';
+        if (vv.length > 12) vv = vv.slice(0, 11) + '…';
+        if (vv) s += `<text x="${nodeX + w + 5}" y="${ny + 3}" fill="#6e7681" font-size="9">${esc(vv)}</text>`;
+      } else {
+        let label = `${e2.ref}.${e2.pin}`;
+        if (e2.pinName) label += ' ' + e2.pinName;
+        if (label.length > 20) label = label.slice(0, 19) + '…';
+        const w = Math.max(60, label.length * 6.4 + 12);
+        s += `<rect x="${nodeX}" y="${ny - 9}" width="${w}" height="18" rx="4" fill="#1c2129" stroke="#58a6ff66" stroke-width="1"/>`;
+        s += `<text x="${nodeX + 6}" y="${ny + 3.5}" fill="#c9d1d9" font-size="10">${esc(label)}</text>`;
+        let vv = e2.value || (refMeta[data.scope + '::' + e2.ref] || {}).value || '';
+        if (vv && vv !== e2.ref) {
+          if (vv.length > 14) vv = vv.slice(0, 13) + '…';
+          s += `<text x="${nodeX + w + 5}" y="${ny + 3.5}" fill="#6e7681" font-size="9">${esc(vv)}</text>`;
+        }
+      }
+    });
+    if (b.extra > 0) {
+      const ny = y + netLabelH + b.shown.length * rowH + 10;
+      s += `<text x="${nodeX}" y="${ny + 3}" fill="#6e7681" font-size="10" font-style="italic">… 还有 ${b.extra} 个引脚</text>`;
+    }
+    y += b.h + bandGap;
+  });
+
+  s += '</svg>';
+  hoverTopo.innerHTML = s + '<div class="ht-hint">已忽略 GND / 未连接</div>';
+}
+
+function showHoverTopo(build, evt) {
+  clearTimeout(htShowTimer); clearTimeout(htHideTimer);
+  if (isEditingCell()) return;
+  htShowTimer = setTimeout(() => {
+    const data = build();
+    if (!data.nets.length) { hideHoverTopo(); return; }
+    renderHoverGraph(data);
+    hoverTopo.style.display = 'block';
+    const rect = hoverTopo.getBoundingClientRect();
+    let x = evt.clientX + 18, y2 = evt.clientY + 16;
+    if (x + rect.width > window.innerWidth - 8) x = Math.max(8, evt.clientX - rect.width - 14);
+    if (y2 + rect.height > window.innerHeight - 8) y2 = Math.max(50, window.innerHeight - rect.height - 8);
+    hoverTopo.style.left = x + 'px';
+    hoverTopo.style.top = y2 + 'px';
+  }, 200);
+}
+function hideHoverTopo() {
+  clearTimeout(htShowTimer);
+  hoverTopo.style.display = 'none';
+}
+function hideHoverTopoSoon() {
+  clearTimeout(htShowTimer);
+  clearTimeout(htHideTimer);
+  htHideTimer = setTimeout(hideHoverTopo, 120);
+}
+// 滚动/点击时收起，避免位置漂移或压住弹窗
+document.getElementById('detail-panel').addEventListener('scroll', hideHoverTopo);
+document.addEventListener('mousedown', hideHoverTopo);
 
 // ═══════════════════════════════════════════════════════════
 //  网络详情悬浮面板（全局视角，可跳转）
