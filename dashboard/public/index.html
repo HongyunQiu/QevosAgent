@@ -462,6 +462,23 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .ev-ask-user { background:rgba(227,179,65,0.06); border-left:3px solid var(--yellow); padding:8px 12px; }
 .ev-ask-user .ev-ask-label { font-size:11px; color:var(--yellow); font-weight:600; margin-bottom:4px; }
 .ev-ask-user .ev-ask-q { font-size:12.5px; color:var(--text); line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+/* Active state: this is the question the agent is currently blocked on. A whole-block
+   "breathing" background (same technique as the watcher/env-obs message) makes it the
+   live focal point in the log — the floating banner used to carry this signal, now the
+   event-log entry does, alongside the bottom input bar's awaiting variant. Border stays
+   at the base 3px so it stays visually uniform with the other events. */
+.ev-ask-user.ev-ask-active { animation:ask-breathe 3.2s ease-in-out infinite; }
+@keyframes ask-breathe {
+  0%, 100% { background:rgba(227,179,65,0.05); }
+  50%      { background:rgba(227,179,65,0.20); }
+}
+.ev-ask-user .ev-ask-await {
+  margin-top:6px; font-size:11px; font-weight:600; color:var(--yellow);
+  opacity:0.9; letter-spacing:0.2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ev-ask-user.ev-ask-active { animation:none; background:rgba(227,179,65,0.14); }
+}
 .ev-user-answer { padding:7px 12px; background:rgba(88,166,255,0.05); border-left:3px solid rgba(88,166,255,0.4); }
 .ev-user-answer .ev-body { font-size:11.5px; color:var(--blue); line-height:1.5; }
 
@@ -2845,16 +2862,19 @@ function updateCmdBarMode(data) {
     // Auto-focus for quick re-entry
     if (document.activeElement !== input) input.focus();
   } else if (awaiting) {
-    // Paused: agent is waiting for ask_user answer
-    const q = data.meta.awaiting_input;
+    // Paused: agent is waiting for ask_user answer.
+    // The question itself now lives in the event log (the active ev-ask-user entry
+    // carries the pulsing "awaiting" highlight), so we no longer float a banner
+    // above the input bar. The bottom input bar keeps its awaiting variant below
+    // as the persistent "it's your turn" signal that survives log scrolling.
     input.placeholder   = 'Type your answer here and press Enter…';
     input.className     = 'cmd-input awaiting';
     sendBtn.className   = 'cmd-send awaiting';
     sendBtn.textContent = 'Answer';
     cmdbar.classList.add('awaiting');
     cmdbar.classList.remove('nostop-idle');
-    bannerQ.textContent = q;
-    applyAskBanner(banner, 'ask-banner visible', 'ask:' + q);
+    banner.className    = 'ask-banner';   // keep hidden — banner is nostop-idle-only now
+    gAskBannerKey = null;                 // next nostop-idle prompt counts as new → re-expands
     // Auto-focus so user can type immediately
     if (document.activeElement !== input) input.focus();
   } else {
@@ -2879,6 +2899,10 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = []) {
 
   // Detect pending tool call and manage stream buffer
   const pendingCall = getActivePendingToolCall(events);
+  // The ask_user the agent is currently blocked on = the pending tool_call when
+  // it's an ask_user. This entry gets the live "awaiting" highlight in the log,
+  // replacing the old floating banner above the input bar.
+  const activeAsk = (pendingCall && pendingCall.tool === 'ask_user') ? pendingCall : null;
   if (pendingCall) {
     if (gPendingToolIdx !== null && pendingCall.idx !== gPendingToolIdx) {
       // Switched to a different tool_call — reset buffer
@@ -2951,7 +2975,7 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = []) {
         }
         lastIter = iterNum;
       }
-      html += renderEvent(ev, goalHead);
+      html += renderEvent(ev, goalHead, ev === activeAsk);
     }
     // Append live streaming output after the pending tool_call
     if (pendingCall) {
@@ -3032,7 +3056,7 @@ function toggleGoal(btn) {
   btn.textContent = gGoalExpanded ? '▲ show less' : '▼ show more';
 }
 
-function renderEvent(ev, goalHead = '') {
+function renderEvent(ev, goalHead = '', isActiveAsk = false) {
   switch (ev.type) {
     case 'goal': {
       const full = (ev.text || '').trim();
@@ -3070,10 +3094,13 @@ function renderEvent(ev, goalHead = '') {
       if (ev.tool === 'ask_user') {
         const q = (ev.args && ev.args.question) || fmtArgs(ev.args || {});
         const thought = ev.thought ? `<div class="ev-mini-thought">💭 ${esc(ev.thought)}</div>` : '';
-        return `<div class="ev ev-ask-user">
+        const activeCls = isActiveAsk ? ' ev-ask-active' : '';
+        const awaitHint = isActiveAsk ? `<div class="ev-ask-await">${uiT('ask_user.awaiting')}</div>` : '';
+        return `<div class="ev ev-ask-user${activeCls}"${isActiveAsk ? ' id="evAskActive"' : ''}>
           ${thought}
           <div class="ev-ask-label">${uiT('ask_user.label')}</div>
           <div class="ev-ask-q">${esc(q)}</div>
+          ${awaitHint}
         </div>`;
       }
       const argsHL  = fmtArgsHL(ev.args || {});
