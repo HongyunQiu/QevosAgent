@@ -1302,6 +1302,14 @@ function pushToPanel(appId, msg) {
   const line = 'data: ' + JSON.stringify(msg) + '\n\n';
   for (const res of set) { try { res.write(line); } catch { /* dropped */ } }
 }
+function panelIsOpen(base) { const s = panelStreams.get(base); return !!(s && s.size); }
+
+// ── UI App panel control (Agent → panel, first-party, no CDP/debug flag) ─────
+// The Agent drives/inspects its own panels through the SAME SSE channel + a result
+// POST, so it works identically in Electron AND plain-browser mode without a
+// debug-launched browser. Correlated request→result by id. See SKILLS/ui_app.md §6.
+const panelCtlPending = new Map();  // id → { resolve, timer }
+let panelCtlSeq = 0;
 
 /**
  * Inject the qevos bridge (and, for dist bundles, a <base> tag so relative asset
@@ -2408,6 +2416,39 @@ const server = http.createServer(async (req, res) => {
       fs.mkdirSync(qdir, { recursive: true });
       const line = JSON.stringify({ ts: Date.now(), event: String(event), data: data || {} }) + '\n';
       fs.appendFileSync(path.join(qdir, 'panel_events.jsonl'), line, 'utf8');
+      json(200, { ok: true });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // POST /api/panel-control   body: { app, root?, action, args?, timeout? }
+  // Pushes a control command to the app's open panel(s) over SSE and awaits the
+  // result the panel posts back. No CDP / debug browser needed. Requires an open panel.
+  if (req.method === 'POST' && req.url === '/api/panel-control') {
+    try {
+      const { app, root, action, args, timeout } = JSON.parse(await readBody(req));
+      const id0 = String(app || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+      if (!id0 || !action) { json(400, { error: 'app and action required' }); return; }
+      const base = resolveAppBase(id0, root || '');
+      if (!panelIsOpen(base)) { json(409, { error: '该 App 的面板未打开（无 SSE 连接）；请先打开面板' }); return; }
+      const ctlId = 'ctl-' + Date.now() + '-' + (++panelCtlSeq);
+      const ms = Math.min(Math.max(parseInt(timeout, 10) || 8000, 500), 30000);
+      const result = await new Promise((resolve) => {
+        const timer = setTimeout(() => { panelCtlPending.delete(ctlId); resolve({ ok: false, error: '面板控制超时' }); }, ms);
+        panelCtlPending.set(ctlId, { resolve, timer });
+        pushToPanel(base, { type: '__ctl', id: ctlId, action: String(action), args: args || {} });
+      });
+      json(200, result);
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // POST /api/panel-control-result   body: { id, ok, result, error }  (panel → server)
+  if (req.method === 'POST' && req.url === '/api/panel-control-result') {
+    try {
+      const { id, ok, result, error } = JSON.parse(await readBody(req));
+      const p = panelCtlPending.get(id);
+      if (p) { clearTimeout(p.timer); panelCtlPending.delete(id); p.resolve({ ok: ok !== false, result, error }); }
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;

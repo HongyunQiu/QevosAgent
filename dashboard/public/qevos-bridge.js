@@ -62,9 +62,52 @@
       es.onmessage = function (e) {
         var msg;
         try { msg = JSON.parse(e.data); } catch (_) { msg = { raw: e.data }; }
+        if (msg && msg.type === '__ctl') { handleCtl(msg); return; }   // control, not an app push
         pushCbs.slice().forEach(function (cb) { try { cb(msg); } catch (_) {} });
       };
     } catch (_) { /* SSE unavailable — onPush stays inert */ }
+  }
+
+  // ── Agent → panel control (first-party automation; no CDP) ──
+  // The server pushes {type:'__ctl', id, action, args}; we run it against the real
+  // DOM and POST the result back, correlated by id. Works in Electron & browser alike.
+  function q(sel) { var el = document.querySelector(sel); if (!el) throw new Error('元素未找到: ' + sel); return el; }
+  function waitFor(sel, ms) {
+    return new Promise(function (res, rej) {
+      var t0 = Date.now();
+      (function chk() {
+        if (document.querySelector(sel)) return res(true);
+        if (Date.now() - t0 > (ms || 4000)) return rej(new Error('等待超时: ' + sel));
+        setTimeout(chk, 80);
+      })();
+    });
+  }
+  function runCtl(action, a) {
+    switch (action) {
+      case 'click':   { q(a.selector).click(); return true; }
+      case 'fill':    { var el = q(a.selector); el.focus(); el.value = a.value == null ? '' : String(a.value);
+                        el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; }
+      case 'value':   return q(a.selector).value;
+      case 'getText': return q(a.selector).textContent;
+      case 'getHtml': return (a.selector ? q(a.selector) : document.documentElement).outerHTML;
+      case 'exists':  return !!document.querySelector(a.selector);
+      case 'count':   return document.querySelectorAll(a.selector).length;
+      case 'waitFor': return waitFor(a.selector, a.timeout);
+      case 'eval':    return (0, eval)(a.code);   // expression; returns JSON-serializable value
+      default: throw new Error('未知控制动作: ' + action);
+    }
+  }
+  async function handleCtl(msg) {
+    var out = { id: msg.id, ok: true, result: null };
+    try { out.result = await runCtl(msg.action, msg.args || {}); }
+    catch (e) { out.ok = false; out.error = String((e && e.message) || e); }
+    try { JSON.stringify(out.result); } catch (_) { out.result = String(out.result); }  // keep serializable
+    try {
+      await fetch('/api/panel-control-result', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: out.id, ok: out.ok, result: out.result, error: out.error }),
+      });
+    } catch (_) { /* server gone */ }
   }
 
   window.qevos = {
@@ -110,4 +153,8 @@
       };
     },
   };
+
+  // Open the SSE stream at init so the panel is always reachable for Agent control
+  // (and file-changed pushes), even if the app never registers an onPush callback.
+  ensureStream();
 })();

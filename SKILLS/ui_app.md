@@ -205,30 +205,31 @@ my-flow/                    ← project root
 这是**构建期的 Agent→App 自动化**(你在开发时给自己写测试),与"App 纯独立、不驱动 Agent"**不冲突**——
 方向和时机都不同,App 运行时仍不依赖你。
 
-**用什么(全是现成的,零新工具)**：
-- **控制 + 读 UI** → `web_interact`(`new_tab`/`click`/`fill`/`eval`/`get_html`/`screenshot`/`key_*`/`scroll`)。
-  面板就是个 URL,指过去即可。详见 `doc/browser-automation.md`。
-- **断言结果** → **优先读文件态**(你的文件工具读 `app-data/<id>/`)+ `panel_poll` 读事件;DOM/视觉用 `get_html`/`screenshot` 兜。
+**控制面板 → 用 `panel_control`(默认,跨模式无标志)**，不要用 web_interact/CDP 碰自己的面板：
+- 面板是我们自己的代码(桥在里面),`panel_control` 经桥的 SSE 通道下发指令,**Electron 与普通浏览器一致、无需调试启动浏览器**。
+- action：`click`/`fill`/`value`/`getText`/`getHtml`/`exists`/`count`/`waitFor`/`eval`。
+- **前提:面板已打开**(有 SSE 连接)。未打开会报错——先让面板开着(桌面版可用 web_interact 开 WebContentsView;浏览器模式请开发者先开着该面板)。
+- `web_interact`/CDP **只留给外部非-UI-App 页面**,或需要**像素截图 / 无头渲染上下文**时(桥给不了图)。
+
+**断言 → 优先文件态**(你的文件工具读 `app-data/<id>/` 或 root)+ `panel_poll` 读事件;DOM 用 `panel_control` 的 `getText/getHtml/eval`。
 
 **配方**：
-1. 取端口:面板 URL = `http://127.0.0.1:$DASHBOARD_PORT/api/app/<id>/panel`(用 shell `echo $DASHBOARD_PORT` 或 `run_python` 读 `os.environ`)。
-2. 开**独立自动化视图**(别去驱动用户正看的页签):
-   `web_interact(action="new_tab", display_id="uitest", payload={"url": "…/api/app/<id>/panel"})`
-3. 驱动:`web_interact(action="click"/"fill"/"eval", display_id="uitest", payload={...})`。
-4. **断言(按稳健度排序)**：
+1. 确保面板打开且连着(桌面版 `web_interact new_tab` 指向 `…/api/app/<id>/panel`；浏览器模式用现开的面板)。
+2. 驱动:`panel_control(app="<id>", action="click", selector="#save")`、`panel_control(app, "fill", selector, value)`、`panel_control(app, "eval", code="…")`。
+3. **断言(按稳健度排序)**：
    | 优先级 | 通道 | 怎么做 |
    |---|---|---|
    | 1（最稳） | 文件态 | 读 `app-data/<id>/flow.md`、`.qevos/view.json`,校验内容 |
    | 2 | 事件 | `panel_poll('<id>')` 校验发出的事件 |
-   | 3 | DOM/视觉 | `web_interact` `get_html` / `eval` 读 DOM / `screenshot` 留证 |
+   | 3 | DOM | `panel_control(... action="getText"/"getHtml"/"eval")` 读 DOM |
+   | 4 | 像素截图（仅需要图时） | Electron `web_interact screenshot` |
 
    **优先文件态断言**——确定性、无渲染时序、比扒 DOM 稳得多(文件即状态的红利)。
 
 **可选:埋语义探针**(想要比扒 DOM 更干净的状态断言时才做):在面板里暴露
-`window.qevosTest = { getState(){ return … }, /* … */ }`,然后 `web_interact(action="eval", payload={"code":"JSON.stringify(qevosTest.getState())"})` 取用。
-opt-in,不是必需;不埋也能靠 DOM + 文件态测。
+`window.qevosTest = { getState(){ return … } }`,然后 `panel_control(app, "eval", code="JSON.stringify(qevosTest.getState())")` 取用。opt-in。
 
-**注意**：自动化视图与用户视图共享 `app-data/<id>/` 文件;测试时一般用户没在用,先不做隔离。
+**方向说明**:`panel_control` 是 **Agent→App**(操控/自测),不制造运行时 App→Agent 依赖,与"App 纯独立"不冲突。它也是 v2"Agent 副驾操控面板"的传输层。
 
 ---
 

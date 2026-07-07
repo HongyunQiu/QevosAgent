@@ -265,16 +265,22 @@ my-flow/                    ← project root(持久,cwd 轴)
 
 ## 7.6 自测 UI App(Agent 构建期自动化)
 
-Agent 造完 UI App 要能自测。**全部复用现有能力,不建新自动化栈**:
+Agent 造完 UI App 要能自测,也能按用户要求操控其正打开的面板。
 
-- **控制 + 观察** → `web_interact`(`new_tab`/`click`/`fill`/`eval`/`get_html`/`screenshot`…,见 [doc/browser-automation.md](browser-automation.md))。面板就是 URL(`/api/app/<id>/panel`),开成一个**独立自动化视图**驱动。
-- **断言** → **优先文件态**(读 `app-data/<id>/`)+ `panel_poll`(事件)+ DOM/视觉兜底。文件即状态 → 大部分断言从后端可观测,比扒 DOM 稳。
-- **方向说明**:这是**构建期 Agent→App**,由正在造 App 的 Agent 驱动;不制造运行时 App→Agent 依赖,与 §5.1 的"App 纯独立"不冲突。
-- **可选探针**:App 暴露 `window.qevosTest = { getState() … }`,Agent `eval` 调用做语义断言。opt-in。
-- Agent 侧操作配方见 [SKILLS/ui_app.md](../SKILLS/ui_app.md) §6。
+- **控制/读取 → `panel_control`(默认,✅ 已实现)**:面板是我们自己的代码(桥在里面),
+  `panel_control` 经桥的 **SSE 通道**下发指令、面板执行后 POST 回结果——**Electron 与普通浏览器一致,
+  无需 CDP/调试启动浏览器**。action:`click/fill/value/getText/getHtml/exists/count/waitFor/eval`。
+  端点:`POST /api/panel-control`(推 `{type:'__ctl',id,…}` 并等结果)+ `POST /api/panel-control-result`(面板回传);
+  桥 init 即开 SSE 以保证可达。前提:面板已打开(有 SSE 连接)。
+- **`web_interact`/CDP 降级为兜底**:只用于**外部非-UI-App 页面**,或需要**像素截图/无头渲染上下文**(桥给不了图)。
+  —— 这解决了"CDP 需调试浏览器,普通浏览器用户用不了"的短板。
+- **断言** → **优先文件态**(读 `app-data/<id>/` 或 root)+ `panel_poll`(事件)+ `panel_control` 读 DOM 兜底。
+- **方向说明**:`panel_control` 是 **Agent→App**(操控/自测),不制造运行时 App→Agent 依赖(与 §5.1 不冲突),
+  同时是 v2"Agent 副驾操控面板"的传输层。
+- 可选探针 `window.qevosTest`;Agent 侧配方见 [SKILLS/ui_app.md](../SKILLS/ui_app.md) §6。
 
-> 唯一值得考虑的新增(可选便利,非必需):一个薄工具 `open_app_panel(id)`——解析动态 `DASHBOARD_PORT`
-> + 调 `web_interact new_tab`,免去 Agent 手拼 URL。是 `web_interact` 的封装,不是新能力。列 v1 可选项。
+> 局限:`panel_control` 需要一个**活着的面板**(有 SSE)。无头冷启动(纯 CLI 部署、无任何面板打开)
+> 仍需渲染器:Electron 用 `web_interact`(WebContentsView,无标志);纯浏览器/CLI 则要求先开着面板,或退回文件态/端点级断言。
 
 ---
 

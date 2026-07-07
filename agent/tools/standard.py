@@ -2687,6 +2687,61 @@ def tool_panel_poll(state: AgentState, app: str, since: float = None, consume: b
         return ToolResult(success=False, output=None, error=str(e))
 
 
+def tool_panel_control(state: AgentState, app: str, action: str, selector: str = None,
+                       value: str = None, code: str = None, root: str = None,
+                       timeout: int = None) -> ToolResult:
+    """操控/检查一个已打开的 UI App 面板（第一方通道，无需 CDP/调试浏览器）。
+
+    通过面板自带的 qevos 桥下发指令，Electron 与普通浏览器模式完全一致；
+    要求该 App 的面板当前已打开（有 SSE 连接），否则返回错误。
+
+    action:
+      click    — 点击 selector 匹配的元素
+      fill     — 给 selector（input/textarea）填 value 并派发 input/change
+      value    — 读取 selector 的 value
+      getText  — 读取 selector 的 textContent
+      getHtml  — 读取 selector（或整页）的 outerHTML
+      exists   — selector 是否存在（bool）
+      count    — selector 匹配数量
+      waitFor  — 等待 selector 出现（timeout 毫秒）
+      eval     — 在面板内求值 code（表达式，返回可 JSON 序列化的值）
+    root: （可选）项目根绝对路径，同 openProject 的 root。
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    args = {}
+    if selector is not None: args["selector"] = selector
+    if value is not None:    args["value"] = value
+    if code is not None:     args["code"] = code
+    if timeout is not None:  args["timeout"] = timeout
+    body = {"app": str(app or ""), "action": str(action or ""), "args": args}
+    if root:    body["root"] = root
+    if timeout: body["timeout"] = timeout
+
+    port = os.environ.get("DASHBOARD_PORT", "8765")
+    try:
+        req = _ur.Request(
+            f"http://localhost:{port}/api/panel-control",
+            data=json.dumps(body, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=(int(timeout) / 1000 + 5) if timeout else 35) as resp:
+            result = json.loads(resp.read())
+    except _ue.HTTPError as e:
+        body_txt = e.read().decode(errors="replace")
+        try: err = json.loads(body_txt).get("error", body_txt)
+        except Exception: err = body_txt
+        return ToolResult(success=False, output=None, error=err)
+    except Exception as e:
+        return ToolResult(success=False, output=None, error=str(e))
+
+    if result.get("ok") is False:
+        return ToolResult(success=False, output=None, error=result.get("error") or "面板控制失败")
+    return ToolResult(success=True, output={"result": result.get("result")})
+
+
 # ── APP 工具（用户态可执行程序，陈列在 Dashboard 的 Apps Tab）─────────────────
 # 一个 app = apps/<id>.md：YAML frontmatter（name/icon/description/runtime/enabled）
 # + 脚本正文。点击即跑、不启动 Agent。Dashboard 后端用同样的格式解析执行。
@@ -3907,6 +3962,26 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "root": "（可选）项目文件夹绝对路径；给了则读 <root>/.qevos/，否则 app-data/<id>/",
             },
             fn=tool_panel_poll,
+        ),
+        ToolSpec(
+            name="panel_control",
+            description=(
+                "操控/检查一个已打开的 UI App（runtime:web）面板——第一方通道，"
+                "**无需 CDP/调试浏览器**，Electron 与普通浏览器模式一致。用于给 App 写自动化测试、"
+                "或按用户要求操控其正打开的面板。要求该 App 面板当前已打开。"
+                "断言优先仍读文件态（panel_poll/文件工具），本工具补 DOM 交互与读取。"
+                "action: click/fill/value/getText/getHtml/exists/count/waitFor/eval。"
+            ),
+            args_schema={
+                "app": "App id（apps/<id>.md 的 id）",
+                "action": "click|fill|value|getText|getHtml|exists|count|waitFor|eval",
+                "selector": "（多数 action 需要）CSS 选择器",
+                "value": "（fill 用）要填入的值",
+                "code": "（eval 用）在面板内求值的表达式，返回可 JSON 序列化的值",
+                "root": "（可选）项目文件夹绝对路径，同 openProject 的 root",
+                "timeout": "（可选）毫秒；waitFor 等待上限 / 整体超时",
+            },
+            fn=tool_panel_control,
         ),
     ]
     tools = {s.name: s for s in specs}
