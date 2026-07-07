@@ -82,6 +82,31 @@
       })();
     });
   }
+  // 面板自截图（DOM→图；非抓屏——浏览器禁止页面像素级截自己）。返回 {image: base64, mime}。
+  function ensureH2C() {
+    if (window.html2canvas) return Promise.resolve();
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script');
+      s.src = '/vendor/html2canvas.min.js';
+      s.onload = res; s.onerror = function () { rej(new Error('加载 html2canvas 失败')); };
+      document.head.appendChild(s);
+    });
+  }
+  async function screenshot(a) {
+    var target = (a && a.selector) ? q(a.selector) : document.body;
+    // canvas 应用捷径：像素级完美、无需 html2canvas
+    if (target.tagName === 'CANVAS') {
+      return { image: target.toDataURL('image/png').split(',')[1], mime: 'image/png' };
+    }
+    await ensureH2C();
+    var bg = getComputedStyle(document.body).backgroundColor;
+    var canvas = await window.html2canvas(target, {
+      backgroundColor: (bg && bg !== 'rgba(0, 0, 0, 0)') ? bg : '#0d1117',
+      scale: Math.min(window.devicePixelRatio || 1, 2), useCORS: true, logging: false,
+    });
+    var url = canvas.toDataURL('image/png');   // 跨域资源会 SecurityError（被 handleCtl 捕获回报）
+    return { image: url.split(',')[1], mime: 'image/png' };
+  }
   function runCtl(action, a) {
     switch (action) {
       case 'click':   { q(a.selector).click(); return true; }
@@ -93,6 +118,7 @@
       case 'exists':  return !!document.querySelector(a.selector);
       case 'count':   return document.querySelectorAll(a.selector).length;
       case 'waitFor': return waitFor(a.selector, a.timeout);
+      case 'screenshot': return screenshot(a);
       case 'eval':    return (0, eval)(a.code);   // expression; returns JSON-serializable value
       default: throw new Error('未知控制动作: ' + action);
     }

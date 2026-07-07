@@ -222,9 +222,10 @@ my-flow/                    ← project root
    | 1（最稳） | 文件态 | 读 `app-data/<id>/flow.md`、`.qevos/view.json`,校验内容 |
    | 2 | 事件 | `panel_poll('<id>')` 校验发出的事件 |
    | 3 | DOM | `panel_control(... action="getText"/"getHtml"/"eval")` 读 DOM |
-   | 4 | 像素截图（仅需要图时） | Electron `web_interact screenshot` |
+   | 4 | 看一眼面板图 | `panel_control(app, "screenshot")` —— DOM→PNG(内建 html2canvas),跨模式无标志,直接注入视觉。**是重绘非抓屏**：布局/文字够用,精细样式可能偏差；跨域资源会失败；canvas 应用则像素级完美 |
+   | 5 | 像素级留证（仅 Electron） | `web_interact screenshot`(WebContentsView `capturePage`，完美但仅 Electron) |
 
-   **优先文件态断言**——确定性、无渲染时序、比扒 DOM 稳得多(文件即状态的红利)。
+   **优先文件态断言**——确定性、无渲染时序、比扒 DOM 稳得多(文件即状态的红利);要"看一眼"用第 4 档,要像素级才用第 5 档。
 
 **可选:埋语义探针**(想要比扒 DOM 更干净的状态断言时才做):在面板里暴露
 `window.qevosTest = { getState(){ return … } }`,然后 `panel_control(app, "eval", code="JSON.stringify(qevosTest.getState())")` 取用。opt-in。

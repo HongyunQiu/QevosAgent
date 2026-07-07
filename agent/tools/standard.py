@@ -2689,7 +2689,7 @@ def tool_panel_poll(state: AgentState, app: str, since: float = None, consume: b
 
 def tool_panel_control(state: AgentState, app: str, action: str, selector: str = None,
                        value: str = None, code: str = None, root: str = None,
-                       timeout: int = None) -> ToolResult:
+                       timeout: int = None, inject: bool = True) -> ToolResult:
     """操控/检查一个已打开的 UI App 面板（第一方通道，无需 CDP/调试浏览器）。
 
     通过面板自带的 qevos 桥下发指令，Electron 与普通浏览器模式完全一致；
@@ -2704,20 +2704,25 @@ def tool_panel_control(state: AgentState, app: str, action: str, selector: str =
       exists   — selector 是否存在（bool）
       count    — selector 匹配数量
       waitFor  — 等待 selector 出现（timeout 毫秒）
+      screenshot — 把面板（或 selector 元素）DOM 渲染成 PNG。注意是"重绘非抓屏"，
+                   布局够用、精细样式可能有偏差；跨域资源会失败。inject=True 时图像直接注入上下文。
       eval     — 在面板内求值 code（表达式，返回可 JSON 序列化的值）
     root: （可选）项目根绝对路径，同 openProject 的 root。
     """
     import urllib.request as _ur
     import urllib.error as _ue
 
+    # screenshot 走 html2canvas，可能较慢；给更宽的默认超时。
+    eff_timeout = timeout if timeout is not None else (25000 if action == "screenshot" else None)
+
     args = {}
-    if selector is not None: args["selector"] = selector
-    if value is not None:    args["value"] = value
-    if code is not None:     args["code"] = code
-    if timeout is not None:  args["timeout"] = timeout
+    if selector is not None:     args["selector"] = selector
+    if value is not None:        args["value"] = value
+    if code is not None:         args["code"] = code
+    if eff_timeout is not None:  args["timeout"] = eff_timeout
     body = {"app": str(app or ""), "action": str(action or ""), "args": args}
-    if root:    body["root"] = root
-    if timeout: body["timeout"] = timeout
+    if root:        body["root"] = root
+    if eff_timeout: body["timeout"] = eff_timeout
 
     port = os.environ.get("DASHBOARD_PORT", "8765")
     try:
@@ -2727,7 +2732,7 @@ def tool_panel_control(state: AgentState, app: str, action: str, selector: str =
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with _ur.urlopen(req, timeout=(int(timeout) / 1000 + 5) if timeout else 35) as resp:
+        with _ur.urlopen(req, timeout=(int(eff_timeout) / 1000 + 5) if eff_timeout else 35) as resp:
             result = json.loads(resp.read())
     except _ue.HTTPError as e:
         body_txt = e.read().decode(errors="replace")
@@ -2739,7 +2744,19 @@ def tool_panel_control(state: AgentState, app: str, action: str, selector: str =
 
     if result.get("ok") is False:
         return ToolResult(success=False, output=None, error=result.get("error") or "面板控制失败")
-    return ToolResult(success=True, output={"result": result.get("result")})
+
+    res = result.get("result")
+    # screenshot + inject=True：把面板渲染图直接注入上下文，LLM 下一轮即可"看到"。
+    if action == "screenshot" and isinstance(res, dict) and res.get("image"):
+        if inject:
+            from ..core.llm import image_block as _image_block
+            return ToolResult(
+                success=True,
+                output=f"面板截图完成（app={app}，DOM 渲染，非像素抓屏）",
+                content_blocks=[_image_block(res["image"], res.get("mime") or "image/png")],
+            )
+        return ToolResult(success=True, output={"image_len": len(res["image"]), "mime": res.get("mime")})
+    return ToolResult(success=True, output={"result": res})
 
 
 # ── APP 工具（用户态可执行程序，陈列在 Dashboard 的 Apps Tab）─────────────────
@@ -3974,12 +3991,13 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             ),
             args_schema={
                 "app": "App id（apps/<id>.md 的 id）",
-                "action": "click|fill|value|getText|getHtml|exists|count|waitFor|eval",
-                "selector": "（多数 action 需要）CSS 选择器",
+                "action": "click|fill|value|getText|getHtml|exists|count|waitFor|screenshot|eval",
+                "selector": "（多数 action 需要；screenshot 可选，缺省截整个面板）CSS 选择器",
                 "value": "（fill 用）要填入的值",
                 "code": "（eval 用）在面板内求值的表达式，返回可 JSON 序列化的值",
                 "root": "（可选）项目文件夹绝对路径，同 openProject 的 root",
                 "timeout": "（可选）毫秒；waitFor 等待上限 / 整体超时",
+                "inject": "（screenshot 用，默认 true）把图像直接注入对话上下文供你直接查看",
             },
             fn=tool_panel_control,
         ),
