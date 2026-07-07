@@ -17,6 +17,15 @@ enabled: true
   html, body { height: 100%; overflow: hidden; }
   body { font: 13px -apple-system, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; flex-direction: column; }
 
+  /* ── 滚动条随暗色主题 ── */
+  * { scrollbar-width: thin; scrollbar-color: #30363d transparent; }   /* Firefox */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 5px; border: 2px solid #0d1117; }
+  ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  #sidebar ::-webkit-scrollbar-thumb, #right-panel ::-webkit-scrollbar-thumb { border-color: #161b22; }
+
   /* ── 顶部工具栏 ── */
   #toolbar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid #21262d; background: #161b22; flex-shrink: 0; height: 44px; }
   #toolbar .title { font-weight: 700; font-size: 15px; color: #58a6ff; margin-right: 8px; white-space: nowrap; }
