@@ -774,7 +774,9 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 /* Cmdbar highlight when awaiting input */
 .cmdbar.awaiting {
   border-top-color: rgba(227,179,65,0.55);
-  animation: cmdbar-ask-pulse 2.5s ease-in-out infinite;
+  /* 3.2s matches ev-ask-active + cmd-input-ask-breathe so all three ask_user
+     cues breathe in unison (same duration + easing → in phase). */
+  animation: cmdbar-ask-pulse 3.2s ease-in-out infinite;
 }
 @keyframes cmdbar-ask-pulse {
   0%,100% { border-top-color: rgba(227,179,65,0.35); }
@@ -782,10 +784,25 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 .cmd-input.awaiting {
   border-color: var(--yellow);
+  /* Breathing inner background — the persistent "it's your turn to answer" cue
+     that survives event-log scrolling. Mirrors the ev-ask-active breathe in the
+     log. color-mix keeps it theme-aware: it tints the real --bg3 toward yellow
+     instead of replacing it, so text stays legible in both light and dark. */
+  animation: cmd-input-ask-breathe 3.2s ease-in-out infinite;
+}
+@keyframes cmd-input-ask-breathe {
+  0%,100% { background-color: color-mix(in srgb, var(--bg3) 96%, var(--yellow)); }
+  50%     { background-color: color-mix(in srgb, var(--bg3) 82%, var(--yellow)); }
 }
 .cmd-input.awaiting:focus {
   border-color: var(--yellow);
   box-shadow: 0 0 0 3px rgba(227,179,65,0.2);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cmd-input.awaiting {
+    animation: none;
+    background-color: color-mix(in srgb, var(--bg3) 88%, var(--yellow));
+  }
 }
 .cmd-send.awaiting {
   background: linear-gradient(135deg, #a07800, #e3b341);
