@@ -12,6 +12,7 @@ import android.net.http.SslError
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -164,6 +165,9 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onPageFinished(view: WebView, url: String) {
                     binding.progressBar.visibility = View.GONE
+                    // A real page settled → the load succeeded; clear the retry
+                    // budget so the next failure gets its full set of retries.
+                    if (!url.startsWith("about:")) webViewRetries = 0
                 }
 
                 override fun onReceivedError(
@@ -171,15 +175,28 @@ class MainActivity : AppCompatActivity() {
                     request: WebResourceRequest,
                     error: WebResourceError
                 ) {
-                    if (request.isForMainFrame) {
-                        binding.progressBar.visibility = View.GONE
-                        // Replace Chromium's default ERR_* page with a blank
-                        // canvas so our in-app overlay is what the user sees,
-                        // not the system error page peeking through.
-                        view.stopLoading()
-                        view.loadUrl("about:blank")
-                        showError(true)
+                    if (!request.isForMainFrame) return
+                    val failedUrl = request.url?.toString().orEmpty()
+                    Log.w(TAG, "webview main-frame error ${error.errorCode} " +
+                        "\"${error.description}\" url=$failedUrl retry=$webViewRetries")
+                    binding.progressBar.visibility = View.GONE
+                    // On a cold ZeroTier path, one sub-resource of the main frame
+                    // can drop even though the pre-load probe just passed. Give the
+                    // same URL a few more shots (with backoff) before the overlay.
+                    if (failedUrl.isNotBlank() && !failedUrl.startsWith("about:") &&
+                        webViewRetries < MAX_WEBVIEW_RETRIES) {
+                        webViewRetries++
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            Log.i(TAG, "webview retry #$webViewRetries → $failedUrl")
+                            view.loadUrl(failedUrl)
+                        }, WEBVIEW_RETRY_DELAY_MS * webViewRetries)
+                        return
                     }
+                    // Out of retries → replace Chromium's default ERR_* page with a
+                    // blank canvas so our in-app overlay is what the user sees.
+                    view.stopLoading()
+                    view.loadUrl("about:blank")
+                    showError(true)
                 }
 
                 override fun onReceivedSslError(
@@ -421,6 +438,25 @@ class MainActivity : AppCompatActivity() {
     private val PROBE_RETRIES = 1          // extra attempts on timeout (not on refused)
     private val OFFLINE_AFTER_UNCERTAIN = 2  // uncertain rounds before showing red
 
+    // ── Connect robustness (ZeroTier cold-path tolerance) ───────────────────
+    // Logcat tag for all probe/connect timing so real-device debugging can
+    // filter with `adb logcat -s QevosNet`.
+    private val TAG = "QevosNet"
+    // loadDashboard reachability probe: retry with backoff and an escalating
+    // timeout so a single dropped SYN on a freshly-rebuilt ZeroTier path (relay
+    // → direct negotiation window) doesn't immediately fall through to the
+    // error overlay. Cold paths have high RTT, so later attempts wait longer.
+    private val LOAD_PROBE_ATTEMPTS = 3
+    private val LOAD_PROBE_TIMEOUT_MS = 3000     // attempt 1; grows +2s per retry
+    private val LOAD_PROBE_TIMEOUT_STEP_MS = 2000
+    private val LOAD_PROBE_BACKOFF_MS = 400L     // ×attempt between tries
+    // WebView main-frame load can still fail after a successful probe (Chromium
+    // uses its own connections). Retry the same URL a couple of times before
+    // surrendering to the error overlay.
+    private val MAX_WEBVIEW_RETRIES = 2
+    private val WEBVIEW_RETRY_DELAY_MS = 600L    // ×retry
+    private var webViewRetries = 0
+
     // Bumped every time the menu opens or closes; the poll loop stops as soon
     // as its captured token no longer matches.
     private var menuPollToken = 0
@@ -531,6 +567,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun probeOnce(s: Server): ProbeResult {
         var conn: java.net.HttpURLConnection? = null
+        val t0 = System.currentTimeMillis()
+        fun ms() = System.currentTimeMillis() - t0
         return try {
             val url = java.net.URL("${s.url()}/api/version")
             conn = url.openConnection() as java.net.HttpURLConnection
@@ -539,6 +577,7 @@ class MainActivity : AppCompatActivity() {
             conn.requestMethod = "GET"
             conn.useCaches = false
             val code = conn.responseCode
+            Log.d(TAG, "probe ${s.key()} OK code=$code ${ms()}ms")
             if (code == 200) {
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
                 val o = org.json.JSONObject(body)
@@ -557,11 +596,17 @@ class MainActivity : AppCompatActivity() {
         } catch (e: java.net.ConnectException) {
             // "Connection refused" = port closed (server down). "Network is
             // unreachable" = the phone's problem → ambiguous, allow retry/keep.
-            if (e.message?.contains("refused", ignoreCase = true) == true)
-                ProbeResult(ProbeKind.REFUSED)
+            val refused = e.message?.contains("refused", ignoreCase = true) == true
+            Log.w(TAG, "probe ${s.key()} ${if (refused) "REFUSED" else "UNCERTAIN"} " +
+                "ConnectException \"${e.message}\" ${ms()}ms")
+            if (refused) ProbeResult(ProbeKind.REFUSED)
             else ProbeResult(ProbeKind.UNCERTAIN)
-        } catch (_: Exception) {
-            // SocketTimeout, UnknownHost, NoRouteToHost, SSL, etc. → uncertain
+        } catch (e: Exception) {
+            // SocketTimeout, UnknownHost, NoRouteToHost, SSL, etc. → uncertain.
+            // Log the class so real-device traces separate connect-timeout (cold
+            // ZeroTier path) from read-timeout / unknown-host / no-route.
+            Log.w(TAG, "probe ${s.key()} UNCERTAIN " +
+                "${e.javaClass.simpleName} \"${e.message}\" ${ms()}ms")
             ProbeResult(ProbeKind.UNCERTAIN)
         } finally {
             try { conn?.disconnect() } catch (_: Exception) {}
@@ -596,24 +641,47 @@ class MainActivity : AppCompatActivity() {
         // when the server is dead, and (b) Chromium's default ERR_* page
         // flashing before our overlay can replace it.
         Thread {
-            val reachable = try {
-                val url = java.net.URL("$base/api/version")
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 3000
-                conn.readTimeout = 3000
-                conn.requestMethod = "GET"
-                conn.useCaches = false
-                val ok = conn.responseCode in 200..399
-                try { conn.inputStream.close() } catch (_: Exception) {}
-                conn.disconnect()
-                ok
-            } catch (_: Exception) { false }
+            var reachable = false
+            var attempt = 0
+            // Retry with backoff + escalating timeout: the first connect after a
+            // ZeroTier path rebuild often loses a SYN while the relay→direct path
+            // is still negotiating; a lone attempt would wrongly show the overlay.
+            while (attempt < LOAD_PROBE_ATTEMPTS && !reachable) {
+                if (myToken != loadToken) return@Thread  // superseded mid-loop
+                attempt++
+                val timeout = LOAD_PROBE_TIMEOUT_MS + (attempt - 1) * LOAD_PROBE_TIMEOUT_STEP_MS
+                val t0 = System.currentTimeMillis()
+                reachable = try {
+                    val url = java.net.URL("$base/api/version")
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = timeout
+                    conn.readTimeout = timeout
+                    conn.requestMethod = "GET"
+                    conn.useCaches = false
+                    val code = conn.responseCode
+                    val ok = code in 200..399
+                    try { conn.inputStream.close() } catch (_: Exception) {}
+                    conn.disconnect()
+                    Log.d(TAG, "load probe #$attempt $base ok=$ok code=$code " +
+                        "${System.currentTimeMillis() - t0}ms to=$timeout")
+                    ok
+                } catch (e: Exception) {
+                    Log.w(TAG, "load probe #$attempt $base fail " +
+                        "${e.javaClass.simpleName} \"${e.message}\" " +
+                        "${System.currentTimeMillis() - t0}ms to=$timeout")
+                    false
+                }
+                if (!reachable && attempt < LOAD_PROBE_ATTEMPTS) {
+                    try { Thread.sleep(LOAD_PROBE_BACKOFF_MS * attempt) } catch (_: InterruptedException) {}
+                }
+            }
 
             runOnUiThread {
                 if (myToken != loadToken) return@runOnUiThread  // superseded
                 binding.progressBar.visibility = View.GONE
                 if (reachable) {
                     showError(false)
+                    webViewRetries = 0   // fresh load gets a full WebView retry budget
                     binding.webView.loadUrl(base)
                 } else {
                     // Make sure the WebView isn't still showing the previous
