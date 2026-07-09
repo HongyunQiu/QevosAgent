@@ -70,6 +70,11 @@ crons/.pending.json
 # Cron 生成的报告（每机产物，不入库）
 reports/
 
+# QevosAgent 本底运行产物（运行时生成，不入库）
+apps/searchnet.md
+apps/searchnet_start.md
+crons/midnight-exploration.md
+
 # Local release scripts (private build tooling)
 release.ps1
 release.sh
