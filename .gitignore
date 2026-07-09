@@ -75,6 +75,11 @@ apps/searchnet.md
 apps/searchnet_start.md
 crons/midnight-exploration.md
 
+# 一次性/实验性脚本（迁移工具、探索生成器；非长期维护源码）
+scripts/
+# 本机测试数据：Reticulum 运行时状态 + 私钥（identity.key），绝不入库
+test_data/
+
 # Local release scripts (private build tooling)
 release.ps1
 release.sh
