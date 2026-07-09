@@ -1422,6 +1422,74 @@ def _episodic_ts() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def normalize_tags(tags) -> list[str]:
+    """把原始 tags 归一化为干净的关键词列表。
+
+    - 接受 list 或逗号分隔字符串。
+    - 全/半角逗号都切开（模型偶尔把多个词用 `，` 挤进一个元素）。
+    - trim、去空、按出现顺序去重（保留原始大小写用于展示）。
+    """
+    import re as _re
+    raw: list[str]
+    if isinstance(tags, str):
+        raw = [tags]
+    elif tags:
+        raw = [str(t) for t in tags]
+    else:
+        raw = []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        for part in _re.split(r"[,，]", item):
+            p = part.strip()
+            if not p:
+                continue
+            key = p.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+    return out
+
+
+def _run_dir_of(state: AgentState):
+    """当前运行的 run 目录（Path）。优先取 persistence，回退 RUN_DIR 环境变量。"""
+    pers = getattr(state, "persistence", None)
+    if pers is not None and getattr(pers, "run_dir", None) is not None:
+        return Path(pers.run_dir)
+    env = os.environ.get("RUN_DIR")
+    return Path(env) if env else None
+
+
+def _merge_run_tags(state: AgentState, new_tags: list[str]) -> None:
+    """把本次 episodic 的关键词并进 <run_dir>/tags.json（dashboard chip 过滤用）。
+
+    tags.json 是一个小文件：{"tags": [...]}。与已有 tags 做顺序保留的并集，
+    以便同一个 run 多次 append_episodic 时关键词累积而不重复。失败不影响主流程。
+    """
+    try:
+        run_dir = _run_dir_of(state)
+        if run_dir is None or not new_tags:
+            return
+        fp = run_dir / "tags.json"
+        existing: list[str] = []
+        if fp.exists():
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    existing = data.get("tags") or []
+                elif isinstance(data, list):
+                    existing = data
+            except Exception:
+                existing = []
+        merged = normalize_tags(list(existing) + list(new_tags))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        fp.write_text(json.dumps({"tags": merged}, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        # tags.json 只是 dashboard 的便利数据，写失败绝不能中断任务收尾
+        pass
+
+
 def tool_append_episodic(
     state: AgentState,
     path: str,
@@ -1454,6 +1522,9 @@ def tool_append_episodic(
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        # 把关键词并进本次 run 的 tags.json，供 dashboard 侧边栏 chip 过滤使用。
+        _merge_run_tags(state, normalize_tags(tag_list))
 
         # 验收门标记：通知 loop.py 本次运行已完成 episodic 记录
         state.meta["_episodic_appended"] = True
