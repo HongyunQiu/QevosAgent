@@ -485,6 +485,7 @@ let isLaunching  = false;  // true from spawn() until first stdout or error
 let state = {
   runs:         [],
   runSummaries: {},     // { runId: summaryString } — short label for each run
+  runTags:      {},     // { runId: [tag, …] } — keywords for sidebar chip filtering (run_dir/tags.json)
   activeRunId:  null,
   status:       null,
   scratchpad:   '',
@@ -576,6 +577,15 @@ function findRuns() {
   } catch { return []; }
 }
 
+// Read a run's keyword tags (run_dir/tags.json → {tags:[…]}). Written by
+// append_episodic and by scripts/backfill_run_tags.py. Missing/invalid → [].
+function readRunTags(runDir) {
+  const data = readJSON(path.join(runDir, 'tags.json'));
+  if (!data) return [];
+  const arr = Array.isArray(data) ? data : data.tags;
+  return Array.isArray(arr) ? arr.filter(t => typeof t === 'string') : [];
+}
+
 // ── JSONL display helper ───────────────────────────────────────────────────
 
 /**
@@ -607,6 +617,37 @@ function stripBase64FromJsonl(text) {
 
 // ── short_term.jsonl parser ────────────────────────────────────────────────
 
+// Extract the first complete JSON object from a string that may carry a
+// natural-language preamble before the JSON (the LLM sometimes explains itself
+// in prose, then emits the action object). Mirrors the agent's own tolerance in
+// llm.py _parse_llm_output (whole-string parse → scan successive '{' via
+// raw_decode). Without this, the dashboard silently drops any "prose + JSON"
+// assistant step — most visibly an ask_user emitted after an explanatory line.
+function extractJsonObject(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return null;
+  // Fast path: the whole thing is JSON.
+  try { const o = JSON.parse(trimmed); if (o && typeof o === 'object') return o; } catch {}
+  // Scan for the first '{' that begins a balanced, valid JSON object. String
+  // contents (with escapes) are skipped so braces inside values don't miscount.
+  for (let start = trimmed.indexOf('{'); start !== -1; start = trimmed.indexOf('{', start + 1)) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { if (inStr) esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) {
+        try { const o = JSON.parse(trimmed.slice(start, i + 1)); if (o && typeof o === 'object') return o; } catch {}
+        break;   // this '{' didn't yield valid JSON → try the next one
+      }
+    }
+  }
+  return null;
+}
+
 function parseLine(raw, lineIdx) {
   let rec;
   try { rec = JSON.parse(raw); } catch { return null; }
@@ -636,15 +677,14 @@ function parseLine(raw, lineIdx) {
   const base = { idx: lineIdx, hasImages };
 
   if (role === 'assistant') {
-    let action;
-    try {
-      // Strip ```json ... ``` fences — LLM sometimes wraps its JSON in markdown code blocks.
-      // This mirrors the fence-stripping logic in llm.py's _parse_llm_output.
-      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-      const jsonStr = fenceMatch ? fenceMatch[1].trim() : text;
-      action = JSON.parse(jsonStr);
-      if (!action || typeof action !== 'object') return null;
-    } catch { return null; }
+    // Strip ```json ... ``` fences first — LLM sometimes wraps its JSON in markdown
+    // code blocks (mirrors llm.py's _parse_llm_output). Then tolerate a natural-language
+    // preamble before the JSON via extractJsonObject, so "prose + action" steps aren't
+    // dropped. Fall back to scanning the whole text if the fenced slice doesn't parse.
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    let action = fenceMatch ? extractJsonObject(fenceMatch[1]) : null;
+    if (!action) action = extractJsonObject(text);
+    if (!action || typeof action !== 'object') return null;
     const thought = action.thought || null;
     if (action.action === 'tool_call') {
       return { ...base, type: 'tool_call', tool: action.tool, args: action.args || {}, thought };
@@ -836,6 +876,9 @@ function poll() {
         const s = readJSON(path.join(RUNS_DIR, rid, 'status.json'));
         state.runSummaries[rid] = (s && s.summary) || '';
       }
+      if (!(rid in state.runTags)) {
+        state.runTags[rid] = readRunTags(path.join(RUNS_DIR, rid));
+      }
     }
     dirty = true;
   }
@@ -878,6 +921,10 @@ function poll() {
         state.runSummaries[state.activeRunId] = s.summary || '';
         dirty = true;
       }
+    }
+    if (changed(path.join(dir, 'tags.json'))) {
+      state.runTags[state.activeRunId] = readRunTags(dir);
+      dirty = true;
     }
     if (changed(path.join(dir, 'scratchpad.md'))) {
       const s = readText(path.join(dir, 'scratchpad.md'));

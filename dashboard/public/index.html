@@ -25,6 +25,8 @@
   --red:     #f85149;
   --yellow:  #e3b341;
   --cyan:    #79c0ff;
+  --tag-panel-bg: #1c232e;             /* keyword panel: a lighter black, set apart from the sidebar */
+  --tag-hover:    rgba(255,255,255,0.06);
   --mono: 'JetBrains Mono','Fira Code','Cascadia Code',Consolas,'PingFang SC','Microsoft YaHei','Noto Sans CJK SC',monospace;
   --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
 }
@@ -45,6 +47,8 @@
   --red:     #d1242f;
   --yellow:  #9a6700;
   --cyan:    #0550ae;
+  --tag-panel-bg: #f6f1e9;             /* keyword panel: a warm ivory tint — elegant, distinctly non-gray */
+  --tag-hover:    rgba(9,105,218,0.08);
 }
 [data-theme="light"] .run-item.selected   { background: rgba(9,105,218,0.06); }
 [data-theme="light"] .ftree-file.selected { background: rgba(9,105,218,0.08); }
@@ -332,6 +336,37 @@ body.large-font .stat-val.muted { font-size: 12px; }
 .run-del { flex-shrink: 0; margin-left: 6px; background: transparent; border: none; color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer; padding: 2px 5px; border-radius: 3px; }
 .run-del:hover { color: #f85149; background: rgba(248,81,73,0.12); }
 mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
+
+/* ── Keyword filter (collapsible, comma-separated compact list) ────────── */
+.tag-panel { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--tag-panel-bg); }
+.tag-panel:empty { display: none; }
+.tag-head {
+  display: flex; align-items: center; gap: 6px; padding: 4px 14px; cursor: pointer;
+  user-select: none; font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.5px; color: var(--muted);
+}
+.tag-head:hover { color: var(--text); }
+.tag-head .caret { font-size: 9px; transition: transform 0.12s; display: inline-block; }
+.tag-head.collapsed .caret { transform: rotate(-90deg); }
+.tag-head .tag-count { opacity: 0.6; font-weight: 400; }
+.tag-head .tag-active {
+  margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400;
+  color: var(--blue); display: inline-flex; align-items: center; gap: 3px;
+  max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tag-head .tag-clear { color: var(--muted); font-weight: 700; }
+.tag-head .tag-clear:hover { color: #f85149; }
+.tag-list {
+  padding: 2px 12px 8px; max-height: 34vh; overflow-y: auto;
+  line-height: 2.0; font-size: 11px; word-break: break-word;
+}
+.tag-list.hidden { display: none; }
+.tag-kw { color: var(--muted); cursor: pointer; padding: 1px 4px; border-radius: 3px; }
+.tag-kw:hover { color: var(--text); background: var(--tag-hover); }
+.tag-kw.active { color: var(--blue); font-weight: 600; }
+.tag-kw.untagged { font-style: italic; }
+.tag-more { color: var(--muted); cursor: pointer; margin-left: 2px; }
+.tag-more:hover { color: var(--blue); }
 
 /* ── Events panel ────────────────────────────────────────────────────── */
 .events-panel { grid-area: events; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
@@ -1534,6 +1569,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
     <div class="section-head">Runs<input class="runs-search" id="runsSearch" type="text" placeholder="Search…" oninput="onRunsSearch(this.value)"><button class="runs-edit-btn" id="runsEditBtn" type="button" onclick="toggleRunsEdit()">管理</button></div>
     <div class="runs-scroller" id="runsList"></div>
+    <div class="tag-panel" id="tagPanel"></div>
   </aside>
 
   <!-- ── Events Panel ───────────────────────────────────────────── -->
@@ -2047,6 +2083,10 @@ let gState         = null;
 let gViewRunId     = null;
 let gRunSearch     = '';
 let gRunsEditMode  = false;
+let gTagFilter     = '';      // active keyword (lower-cased key); '' = none; UNTAGGED = untagged runs
+let gTagChipsOpen  = false;   // whether the keyword list shows all keywords vs just the top ones
+let gTagsCollapsed = (localStorage.getItem('tagsCollapsed') !== '0');  // whole keyword panel folded (default: yes)
+const UNTAGGED     = '\x00untagged';
 let gAutoScroll    = true;
 let gWs            = null;
 let gReconnTimer   = null;
@@ -2790,7 +2830,21 @@ async function copyRunDir() {
   }
 }
 
+// Lower-cased tag list for a run (from gState.runTags).
+function runTagsLower(r) {
+  const t = (gState && gState.runTags && gState.runTags[r]) || [];
+  return t.map(x => String(x).toLowerCase());
+}
+// Does a run pass the active keyword-chip filter?
+function runPassesTagFilter(r) {
+  if (!gTagFilter) return true;
+  const t = runTagsLower(r);
+  if (gTagFilter === UNTAGGED) return t.length === 0;
+  return t.includes(gTagFilter);
+}
+
 function renderRunsList(runs, activeId) {
+  renderTagChips(runs);
   const list = document.getElementById('runsList');
   if (!runs.length) {
     list.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 14px;">No runs yet</div>';
@@ -2798,6 +2852,7 @@ function renderRunsList(runs, activeId) {
   }
   const q = gRunSearch.toLowerCase();
   const items = [...runs].reverse().map(r => {
+    if (!runPassesTagFilter(r)) return '';
     const isActive   = r === (gState && gState.activeRunId);
     const isLive     = isActive && !!(gState && gState.agentAlive);
     const isSelected = r === activeId;
@@ -2822,6 +2877,101 @@ function renderRunsList(runs, activeId) {
   list.innerHTML = items || '<div style="color:var(--muted);font-size:12px;padding:12px 14px;">No matches</div>';
 }
 
+// How many top keywords to show before the "更多" expander kicks in.
+const TAG_CHIP_TOP = 30;
+
+// Build the collapsible keyword filter from every run's tags. Frequency-ranked;
+// a keyword must occur in >=2 runs to appear (singletons only match themselves —
+// the run search box covers those). Counts reflect the full dataset so they stay
+// stable regardless of which keyword is currently filtering the list. Rendered as
+// a compact comma-separated inline list rather than pill buttons to save space.
+function renderTagChips(runs) {
+  const panel = document.getElementById('tagPanel');
+  if (!panel) return;
+  const runTags = (gState && gState.runTags) || {};
+  const freq = new Map();      // lowerKey -> { display, count }
+  let untagged = 0;
+  for (const r of runs) {
+    const tags = runTags[r] || [];
+    if (!tags.length) { untagged++; continue; }
+    const seen = new Set();
+    for (const raw of tags) {
+      const key = String(raw).toLowerCase();
+      if (seen.has(key)) continue;      // count each run once per keyword
+      seen.add(key);
+      const cur = freq.get(key);
+      if (cur) cur.count++;
+      else freq.set(key, { display: String(raw), count: 1 });
+    }
+  }
+  let ranked = [...freq.entries()]
+    .filter(([, v]) => v.count >= 2)
+    .sort((a, b) => b[1].count - a[1].count || a[1].display.localeCompare(b[1].display));
+
+  if (!ranked.length && !untagged) { panel.innerHTML = ''; panel.onclick = null; return; }
+
+  // Keep an active-but-rare keyword visible so its selection stays reachable.
+  const activeIdx = gTagFilter && gTagFilter !== UNTAGGED
+    ? ranked.findIndex(([k]) => k === gTagFilter) : -1;
+  const overflow = ranked.length - TAG_CHIP_TOP;
+  let shown = (gTagChipsOpen || overflow <= 0) ? ranked : ranked.slice(0, TAG_CHIP_TOP);
+  if (activeIdx >= TAG_CHIP_TOP && !gTagChipsOpen) shown = [...shown, ranked[activeIdx]];
+
+  // Keywords are arbitrary text — never interpolate them into inline handlers.
+  // Each element carries data-act / data-key; one delegated listener dispatches.
+  const kw = (cls, act, key, inner, title) =>
+    `<span class="${cls}" data-act="${act}"${key != null ? ` data-key="${esc(key)}"` : ''} title="${esc(title)}">${inner}</span>`;
+
+  // ── Header (always visible): label · count · active filter · caret ──
+  let activeLabel = '';
+  if (gTagFilter === UNTAGGED) activeLabel = '无标签';
+  else if (gTagFilter) { const hit = ranked.find(([k]) => k === gTagFilter); activeLabel = hit ? hit[1].display : gTagFilter; }
+  const head =
+    `<div class="tag-head${gTagsCollapsed ? ' collapsed' : ''}" data-act="collapse" title="展开/收起关键词">` +
+      `<span class="caret">▾</span>关键词 <span class="tag-count">${ranked.length}</span>` +
+      (gTagFilter
+        ? `<span class="tag-active">${esc(activeLabel)}<span class="tag-clear" data-act="clear" title="清除筛选">✕</span></span>`
+        : '') +
+    `</div>`;
+
+  // ── List (hidden when collapsed): comma-separated compact keywords ──
+  const items = [];
+  for (const [key, v] of shown) {
+    items.push(kw('tag-kw' + (key === gTagFilter ? ' active' : ''), 'tag', key,
+      esc(v.display), `${v.display} · ${v.count} runs`));
+  }
+  if (untagged) {
+    items.push(kw('tag-kw untagged' + (gTagFilter === UNTAGGED ? ' active' : ''), 'untagged', null,
+      '无标签', `无关键词的 runs · ${untagged}`));
+  }
+  let listInner = items.join(' ');
+  if (overflow > 0) {
+    listInner += ' <span class="tag-more" data-act="toggle" title="' +
+      (gTagChipsOpen ? '收起' : '展开全部关键词') + '">' +
+      (gTagChipsOpen ? '收起' : `…+${overflow}`) + '</span>';
+  }
+  const list = `<div class="tag-list${gTagsCollapsed ? ' hidden' : ''}">${listInner}</div>`;
+
+  panel.innerHTML = head + list;
+  panel.onclick = onTagChipClick;
+}
+
+function onTagChipClick(e) {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const act = el.dataset.act;
+  if (act === 'collapse') {
+    gTagsCollapsed = !gTagsCollapsed;
+    try { localStorage.setItem('tagsCollapsed', gTagsCollapsed ? '1' : '0'); } catch {}
+  }
+  else if (act === 'toggle') { gTagChipsOpen = !gTagChipsOpen; }
+  else if (act === 'clear') { e.stopPropagation(); gTagFilter = ''; }
+  else if (act === 'untagged') { gTagFilter = (gTagFilter === UNTAGGED) ? '' : UNTAGGED; }
+  else if (act === 'tag') { const k = el.dataset.key; gTagFilter = (gTagFilter === k) ? '' : k; }
+  else return;
+  renderRunsList((gState && gState.runs) || [], gViewRunId);
+}
+
 // ── Main area rendering ───────────────────────────────────────────────────
 function renderMainArea(data) {
   const evs     = data.events || [];
@@ -2830,7 +2980,7 @@ function renderMainArea(data) {
   // Always update the events log first, then control the empty-state visibility.
   // NOTE: renderEvents replaces eventsLog.innerHTML which would destroy eventsEmpty
   // (a child node) — renderEvents now detaches/reattaches it to keep it alive.
-  renderEvents(evs, data.meta || {}, data.systemPrompt || '', data.patchEvents || []);
+  renderEvents(evs, data.meta || {}, data.systemPrompt || '', data.patchEvents || [], isAwaitingInput(data));
 
   const empty = document.getElementById('eventsEmpty');
   if (empty) empty.style.display = hasEvts ? 'none' : '';
@@ -2909,7 +3059,7 @@ function updateCmdBarMode(data) {
 }
 
 // ── Events rendering ──────────────────────────────────────────────────────
-function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = []) {
+function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = [], awaitingAsk = false) {
   const log   = document.getElementById('eventsLog');
   const badge = document.getElementById('evCount');
   badge.textContent = events.length;
@@ -3001,6 +3151,15 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = []) {
             + `<div class="ev-stream-label"><span class="ev-stream-dot"></span>streaming</div>`
             + `${esc(content)}</div>`;
     }
+    // Authoritative fallback: the agent is paused waiting on the user, but the parse
+    // above produced no active ask_user entry. This happens when (a) the LLM emitted
+    // prose before the JSON so the short_term line couldn't be parsed, or (b) the
+    // pause is framework-generated (e.g. weak-pass) and has no ask_user tool_call at
+    // all. Synthesize the entry from meta.awaiting_input — the same authoritative
+    // source the old floating banner used — so the question is never lost.
+    if (awaitingAsk && !activeAsk && meta.awaiting_input) {
+      html += renderAskUserEntry(meta.awaiting_input, null, true);
+    }
     log.innerHTML = html;
     if (gAutoScroll) log.scrollTop = log.scrollHeight;
   }
@@ -3073,6 +3232,21 @@ function toggleGoal(btn) {
   btn.textContent = gGoalExpanded ? '▲ show less' : '▼ show more';
 }
 
+// Shared markup for an ask_user question, used both by the parsed tool_call event
+// and by the synthesized "active" entry (renderEvents) that sources its text from
+// the authoritative meta.awaiting_input when the short_term parse yields no entry.
+function renderAskUserEntry(question, thought, isActiveAsk) {
+  const thoughtHtml = thought ? `<div class="ev-mini-thought">💭 ${esc(thought)}</div>` : '';
+  const activeCls = isActiveAsk ? ' ev-ask-active' : '';
+  const awaitHint = isActiveAsk ? `<div class="ev-ask-await">${uiT('ask_user.awaiting')}</div>` : '';
+  return `<div class="ev ev-ask-user${activeCls}"${isActiveAsk ? ' id="evAskActive"' : ''}>
+    ${thoughtHtml}
+    <div class="ev-ask-label">${uiT('ask_user.label')}</div>
+    <div class="ev-ask-q">${esc(question)}</div>
+    ${awaitHint}
+  </div>`;
+}
+
 function renderEvent(ev, goalHead = '', isActiveAsk = false) {
   switch (ev.type) {
     case 'goal': {
@@ -3110,15 +3284,7 @@ function renderEvent(ev, goalHead = '', isActiveAsk = false) {
     case 'tool_call': {
       if (ev.tool === 'ask_user') {
         const q = (ev.args && ev.args.question) || fmtArgs(ev.args || {});
-        const thought = ev.thought ? `<div class="ev-mini-thought">💭 ${esc(ev.thought)}</div>` : '';
-        const activeCls = isActiveAsk ? ' ev-ask-active' : '';
-        const awaitHint = isActiveAsk ? `<div class="ev-ask-await">${uiT('ask_user.awaiting')}</div>` : '';
-        return `<div class="ev ev-ask-user${activeCls}"${isActiveAsk ? ' id="evAskActive"' : ''}>
-          ${thought}
-          <div class="ev-ask-label">${uiT('ask_user.label')}</div>
-          <div class="ev-ask-q">${esc(q)}</div>
-          ${awaitHint}
-        </div>`;
+        return renderAskUserEntry(q, ev.thought, isActiveAsk);
       }
       const argsHL  = fmtArgsHL(ev.args || {});
       const thought = ev.thought ? `<div class="ev-mini-thought">💭 ${esc(ev.thought)}</div>` : '';
