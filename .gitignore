@@ -84,3 +84,7 @@ test_data/
 release.ps1
 release.sh
 mobile/install.ps1
+
+# 私有内置 App（源码在 myQevosApp 私有仓库，deploy.py 部署产物，不入平台库）
+apps/schematic_editor.md
+apps/qevos_update_restart.md
