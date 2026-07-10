@@ -323,6 +323,7 @@ let docs = {};                  // path -> 解析后的文档对象
 let netIndex = {};              // scope+' '+net -> [{file,ref,pin,pinName,type,value}]
 let refMeta = {};               // scope+'::'+ref -> {pinCount,value} 用于悬停图符号大小
 let refLoc = {};                // scope+'::'+ref -> {file,kind:'device'|'instance'} 原理图漫游定位
+let refPinsIdx = {};            // scope+'::'+ref -> [{pin,net}] 器件全引脚网络（二级连接推断）
 let scopes = new Set();         // 项目内出现过的目录作用域
 let ercIssues = [];
 let selectedNet = null;         // 当前高亮网络（原始名，不含scope）
@@ -553,7 +554,7 @@ function sectionLabel(sec, doc) {
 // ═══════════════════════════════════════════════════════════
 
 function rebuildIndex() {
-  netIndex = {}; refMeta = {}; refLoc = {}; scopes = new Set(); ercIssues = [];
+  netIndex = {}; refMeta = {}; refLoc = {}; refPinsIdx = {}; scopes = new Set(); ercIssues = [];
   const refSeen = {};   // scope::ref -> [file]
 
   for (const [file, doc] of Object.entries(docs)) {
@@ -580,6 +581,7 @@ function rebuildIndex() {
           (refSeen[rk] = refSeen[rk] || []).push(file);
           refMeta[rk] = { pinCount: nCols, value: row.value };
           refLoc[rk] = { file, kind: 'instance' };
+          refPinsIdx[rk] = sec.instances.pinCols.map(pc => ({ pin: String(pc.pin), net: pc.col < row.cells.length ? row.cells[pc.col] : '' }));
           for (const pc of sec.instances.pinCols) {
             const net = pc.col < row.cells.length ? row.cells[pc.col] : '';
             if (isPlaceholder(net)) {
@@ -600,6 +602,7 @@ function rebuildIndex() {
         const ref = sec.ref || doc.title || file.replace(/\.md$/, '');
         refMeta[scope + '::' + ref] = { pinCount: pins.length, value: sec.name };
         refLoc[scope + '::' + ref] = { file, kind: 'device' };
+        refPinsIdx[scope + '::' + ref] = pins.map(p => ({ pin: String(p.pin), net: p.net }));
         if (sec.kind === 'device' && sec.ref) {
           const rk = scope + '::' + sec.ref;
           (refSeen[rk] = refSeen[rk] || []).push(file);
@@ -1575,6 +1578,100 @@ function defaultSideOf(type) {
   return 'R';
 }
 
+// ── 小器件符号库（国标 GB/T 4728 风格，手绘参数化）──
+// 符号画在两个端点之间（水平或垂直），端点即引线端，保证与走线严格对接
+const SYM_C = '#adbac7', SYM_W = 1.4;
+
+function symbolKind(ref, value) {
+  const v = String(value || '');
+  if (/^R\d/i.test(ref)) return 'res';
+  if (/^C\d/i.test(ref)) return 'cap';
+  if (/^FB\d/i.test(ref) || /Ω@/.test(v)) return 'fb';
+  if (/^L\d/i.test(ref)) return 'ind';
+  if (/^FU?\d/i.test(ref)) return 'fuse';
+  if (/^(D|LED)\d/i.test(ref) || /^(ESD|SMBJ|SMF|RCLAMP|TVS)/i.test(v) || /^(ESD|TVS)\d/i.test(ref)) return 'diode';
+  if (/^(Y|X)\d/i.test(ref)) return 'xtal';
+  if (/^TP\d/i.test(ref)) return 'tp';
+  if (/^(uF|nF|pF)|[0-9](uF|nF|pF)/i.test(v)) return 'cap';
+  if (/^[0-9.]+(k|K|M|R|Ω|mΩ|kΩ|KΩ)/.test(v)) return 'res';
+  return null;
+}
+
+function symPath(kind, x1, y1, x2, y2) {
+  const horiz = Math.abs(y2 - y1) < 0.01;
+  const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+  const ln = (a, b, c, d, w) => `<line x1="${a}" y1="${b}" x2="${c}" y2="${d}" stroke="${SYM_C}" stroke-width="${w || SYM_W}"/>`;
+  // 两端引线：从端点画到本体边缘（bodyHalf = 本体沿轴半长）
+  function leads(bh) {
+    if (horiz) {
+      const s1 = x1 < x2 ? 1 : -1;
+      return ln(x1, y1, cx - bh * s1, cy) + ln(cx + bh * s1, cy, x2, y2);
+    }
+    const s1 = y1 < y2 ? 1 : -1;
+    return ln(x1, y1, cx, cy - bh * s1) + ln(cx, cy + bh * s1, x2, y2);
+  }
+  switch (kind) {
+    case 'res':   // 国标矩形
+      return leads(9) + (horiz
+        ? `<rect x="${cx - 9}" y="${cy - 3.5}" width="18" height="7" fill="none" stroke="${SYM_C}" stroke-width="${SYM_W}"/>`
+        : `<rect x="${cx - 3.5}" y="${cy - 9}" width="7" height="18" fill="none" stroke="${SYM_C}" stroke-width="${SYM_W}"/>`);
+    case 'cap':   // 两平行极板
+      return leads(2.5) + (horiz
+        ? ln(cx - 2.5, cy - 6, cx - 2.5, cy + 6, 1.7) + ln(cx + 2.5, cy - 6, cx + 2.5, cy + 6, 1.7)
+        : ln(cx - 6, cy - 2.5, cx + 6, cy - 2.5, 1.7) + ln(cx - 6, cy + 2.5, cx + 6, cy + 2.5, 1.7));
+    case 'fb':    // 磁珠：实心矩形
+      return leads(6) + (horiz
+        ? `<rect x="${cx - 6}" y="${cy - 3}" width="12" height="6" fill="${SYM_C}"/>`
+        : `<rect x="${cx - 3}" y="${cy - 6}" width="6" height="12" fill="${SYM_C}"/>`);
+    case 'ind':   // 三连拱
+      return leads(12) + (horiz
+        ? `<path d="M${cx - 12},${cy} a4,4 0 0 1 8,0 a4,4 0 0 1 8,0 a4,4 0 0 1 8,0" fill="none" stroke="${SYM_C}" stroke-width="${SYM_W}"/>`
+        : `<path d="M${cx},${cy - 12} a4,4 0 0 1 0,8 a4,4 0 0 1 0,8 a4,4 0 0 1 0,8" fill="none" stroke="${SYM_C}" stroke-width="${SYM_W}"/>`);
+    case 'fuse':  // 矩形穿线
+      return leads(10) + (horiz
+        ? `<rect x="${cx - 10}" y="${cy - 4}" width="20" height="8" fill="none" stroke="${SYM_C}" stroke-width="${SYM_W}"/>` + ln(cx - 10, cy, cx + 10, cy)
+        : `<rect x="${cx - 4}" y="${cy - 10}" width="8" height="20" fill="none" stroke="${SYM_C}" stroke-width="${SYM_W}"/>` + ln(cx, cy - 10, cx, cy + 10));
+    case 'diode': // 三角+杠（pin1→pin2 方向）
+      if (horiz) {
+        const s1 = x1 < x2 ? 1 : -1;
+        return leads(6) + `<path d="M${cx - 6 * s1},${cy - 5.5} L${cx - 6 * s1},${cy + 5.5} L${cx + 6 * s1},${cy} Z" fill="${SYM_C}"/>` + ln(cx + 6 * s1, cy - 5.5, cx + 6 * s1, cy + 5.5, 1.7);
+      } else {
+        const s1 = y1 < y2 ? 1 : -1;
+        return leads(6) + `<path d="M${cx - 5.5},${cy - 6 * s1} L${cx + 5.5},${cy - 6 * s1} L${cx},${cy + 6 * s1} Z" fill="${SYM_C}"/>` + ln(cx - 5.5, cy + 6 * s1, cx + 5.5, cy + 6 * s1, 1.7);
+      }
+    case 'xtal':  // 晶振：中矩形两平板
+      return leads(7) + (horiz
+        ? `<rect x="${cx - 4}" y="${cy - 6}" width="8" height="12" fill="none" stroke="${SYM_C}" stroke-width="${SYM_W}"/>` + ln(cx - 7, cy - 6, cx - 7, cy + 6, 1.7) + ln(cx + 7, cy - 6, cx + 7, cy + 6, 1.7)
+        : `<rect x="${cx - 6}" y="${cy - 4}" width="12" height="8" fill="none" stroke="${SYM_C}" stroke-width="${SYM_W}"/>` + ln(cx - 6, cy - 7, cx + 6, cy - 7, 1.7) + ln(cx - 6, cy + 7, cx + 6, cy + 7, 1.7));
+    case 'tp':    // 测试点
+      return leads(3.5) + `<circle cx="${cx}" cy="${cy}" r="3.5" fill="none" stroke="${SYM_C}" stroke-width="${SYM_W}"/>`;
+    default:
+      return null;
+  }
+}
+
+// GND 端接符号：入线点 (x,y)，向下
+function gndSymAt(x, y) {
+  return `<line x1="${x}" y1="${y}" x2="${x}" y2="${y + 5}" stroke="#8b949e" stroke-width="1.4"/>` +
+    `<line x1="${x - 7}" y1="${y + 5}" x2="${x + 7}" y2="${y + 5}" stroke="#8b949e" stroke-width="1.6"/>` +
+    `<line x1="${x - 4.5}" y1="${y + 8.5}" x2="${x + 4.5}" y2="${y + 8.5}" stroke="#8b949e" stroke-width="1.4"/>` +
+    `<line x1="${x - 2}" y1="${y + 12}" x2="${x + 2}" y2="${y + 12}" stroke="#8b949e" stroke-width="1.2"/>`;
+}
+// 电源端接符号：入线点 (x,y)，向上横杠 + 网名
+function pwrSymAt(x, y, net) {
+  return `<line x1="${x}" y1="${y}" x2="${x}" y2="${y - 5}" stroke="#d29922" stroke-width="1.4"/>` +
+    `<line x1="${x - 7}" y1="${y - 5}" x2="${x + 7}" y2="${y - 5}" stroke="#d29922" stroke-width="1.8"/>` +
+    `<g class="sch-netflag" data-net="${esc(net)}"><text x="${x}" y="${y - 9}" fill="#d29922" font-size="8" text-anchor="middle" font-weight="600">${esc(net.split('/').pop())}</text></g>`;
+}
+
+// 二级连接推断：2 脚小器件经 e.pin 进入后，另一脚的网络
+function farPinOf(scope, e) {
+  const m = refPinsIdx[scope + '::' + e.ref];
+  if (!m || m.length !== 2) return null;
+  const other = m.find(x => String(x.pin) !== String(e.pin));
+  return other || null;
+}
+
 // ref → 中心对象（漫游定位）
 function resolveCenter(scope, ref) {
   const loc = refLoc[scope + '::' + ref];
@@ -1653,6 +1750,45 @@ function schRender(center) {
     sides[s].push(p);
   });
 
+  // 1.5) 网络分档 + 每引脚端接规划（需在排槽前完成，挂件要占空间）
+  const netInfo = {};
+  pins.forEach(p => {
+    if (!isRealNet(p.net) || powerKind(p.net)) return;
+    if (!netInfo[p.net]) {
+      const all = netIndex[netKey(scope, p.net)] || [];
+      const others = all.filter(e => e.ref !== center.ref);
+      netInfo[p.net] = { others, total: all.length, color: getNetColor(p.net) };
+    }
+  });
+  function planPin(p) {
+    if (!isRealNet(p.net)) return { kind: 'nc' };
+    const pk = powerKind(p.net);
+    if (pk) return { kind: pk };
+    const info = netInfo[p.net];
+    if (!info.others.length || info.others.length > SCH.maxDirect) return { kind: 'label', info };
+    const shunts = [], rest = [];
+    info.others.forEach(e => {
+      const far = farPinOf(scope, e);
+      if (far && powerKind(far.net) && symbolKind(e.ref, e.value)) shunts.push({ e, far, pk: powerKind(far.net) });
+      else rest.push(e);
+    });
+    let series = null;
+    if (rest.length === 1) {
+      const far = farPinOf(scope, rest[0]);
+      if (far && symbolKind(rest[0].ref, rest[0].value)) { series = { e: rest[0], far }; rest.length = 0; }
+    }
+    return { kind: 'attach', shunts, series, rest, info };
+  }
+  pins.forEach(p => { p._plan = planPin(p); });
+  const extraOf = p => {
+    const pl = p._plan;
+    if (!pl || pl.kind !== 'attach') return null;
+    const down = pl.shunts.some(sh => sh.pk === 'gnd') ||
+                 (pl.series && powerKind(pl.series.far.net) === 'gnd');
+    const up = pl.shunts.some(sh => sh.pk === 'pwr');
+    return { before: up ? 1.3 : 0, after: down ? 1.5 : 0 };
+  };
+
   // 2) 边内按功能组聚拢（组首次出现序稳定）
   function grouped(arr) {
     const order = [], buckets = {};
@@ -1660,17 +1796,39 @@ function schRender(center) {
     return order.map(g => ({ group: g, pins: buckets[g] }));
   }
   // 槽位展开：[{kind:'pin',p,off} | {kind:'glabel',text,off}]，返回总槽数
-  function placeSlots(gs) {
+  function placeSlots(gs, exOf) {
     const items = []; let off = 0;
     gs.forEach((g, gi) => {
       if (gi > 0) off += 0.5;
       if (g.group) { items.push({ kind: 'glabel', text: g.group, off }); off += 0.6; }  // 组标占独立槽位，不压引脚名
-      g.pins.forEach(p => { items.push({ kind: 'pin', p, off }); off += 1; });
+      g.pins.forEach(p => {
+        const ex = exOf ? exOf(p) : null;
+        if (ex && ex.before) off += ex.before;
+        items.push({ kind: 'pin', p, off });
+        off += 1;
+        if (ex && ex.after) off += ex.after;
+      });
     });
     return { items, total: Math.max(off, 1) };
   }
-  const L = placeSlots(grouped(sides.L)), R = placeSlots(grouped(sides.R));
+  const L = placeSlots(grouped(sides.L), extraOf), R = placeSlots(grouped(sides.R), extraOf);
   const T = placeSlots(grouped(sides.T)), B = placeSlots(grouped(sides.B));
+
+  // 端接件占用的横向区宽（线桩与干线区之间）
+  function attachWOf(S2) {
+    let w = 0;
+    S2.items.forEach(it => {
+      if (it.kind !== 'pin') return;
+      const pl = it.p._plan;
+      if (!pl || pl.kind !== 'attach') return;
+      let aw = 0;
+      if (pl.shunts.length) aw += 12 + Math.min(pl.shunts.length, 3) * 24 + (pl.shunts.length > 3 ? 22 : 0);
+      if (pl.series) aw += 66;
+      if (aw > w) w = aw;
+    });
+    return w;
+  }
+  const attachW = { L: attachWOf(L), R: attachWOf(R) };
 
   // 3) 中心框几何（框内标注 = 名称，缺省回退引脚号）
   const small = pins.length <= 4 && noSides;
@@ -1680,21 +1838,6 @@ function schRender(center) {
   const boxH = Math.max(L.total, R.total) * SCH.pitch + (small ? 20 : 36);
   const yPin = off => 20 + off * SCH.pitch;                    // L/R 槽位 → y
   const xPin = (slots, off) => boxW / 2 - (slots.total * SCH.pitch) / 2 + off * SCH.pitch + SCH.pitch / 2;  // T/B 槽位 → x
-
-  // 4) 网络分档
-  const netInfo = {};
-  pins.forEach(p => {
-    if (!isRealNet(p.net)) { p.mode = 'nc'; return; }
-    const pk = powerKind(p.net);
-    if (pk) { p.mode = pk; return; }
-    if (!netInfo[p.net]) {
-      const all = netIndex[netKey(scope, p.net)] || [];
-      const others = all.filter(e => e.ref !== center.ref);
-      netInfo[p.net] = { others, total: all.length, color: getNetColor(p.net),
-                         mode: (others.length > 0 && others.length <= SCH.maxDirect) ? 'wire' : 'label' };
-    }
-    p.mode = netInfo[p.net].mode;
-  });
 
   let s = '';
   const t = (x, y, txt, fill, size, anchor, extra) =>
@@ -1735,10 +1878,79 @@ function schRender(center) {
     });
   });
 
-  // 6) 端点绘制：电源/地符号、NC、标签旗、直连邻居
-  const wireNetsBySide = { L: [], R: [] };   // [{net, pins:[{y}]}]
+  // 6) 端点绘制：电源/地符号、NC、标签旗、端接件（就近挂/串）、直连邻居
+  const wireNetsBySide = { L: [], R: [] };   // [{net, ys:[], refs:Map(ref→entries)}]
+
+  function labelFlagAt(net, info, sd, x, y) {
+    const nm = net.length > 30 ? net.slice(0, 28) + '…' : net;
+    s += `<g class="sch-netflag" data-net="${esc(net)}">` +
+      `<circle cx="${x}" cy="${y}" r="2.5" fill="${info.color}"/>` +
+      t(x + (sd === 'L' ? -6 : 6), y + 3.5, `${nm}  (${info.total}脚)`, info.color, 9, sd === 'L' ? 'end' : 'start') + '</g>';
+  }
+
+  // 端接件绘制：并联件挂在管脚旁（GND 下挂 / 电源上挂），串联件串进走线，二级网络直接标注
+  function renderAttach(p, pl, sd, x0, y) {
+    const dir = sd === 'L' ? -1 : 1;
+    const info = pl.info;
+    let cx2 = x0;
+    const shN = Math.min(pl.shunts.length, 3);
+    for (let k = 0; k < shN; k++) {
+      const sh = pl.shunts[k];
+      const jx = x0 + dir * (12 + k * 24);
+      const up = sh.pk === 'pwr';
+      const ey = up ? y - 26 : y + 26;
+      s += symPath(symbolKind(sh.e.ref, sh.e.value) || 'res', jx, y, jx, ey);
+      s += up ? pwrSymAt(jx, ey, sh.far.net) : gndSymAt(jx, ey);
+      s += `<g class="sch-neigh" data-ref="${esc(sh.e.ref)}">` +
+        t(jx + 3, up ? y - 13 : y + 16, sh.e.ref + (sh.e.value ? ' ' + sh.e.value : ''), '#6e7681', 7.5) + '</g>';
+      cx2 = jx;
+    }
+    if (pl.shunts.length > shN) {
+      cx2 = x0 + dir * (12 + shN * 24);
+      s += t(cx2 + dir * 2, y + 3, '+' + (pl.shunts.length - shN), '#6e7681', 8, dir < 0 ? 'end' : 'start');
+    }
+    const hasMore = !!pl.series || pl.rest.length > 0;
+    // 汇接圆点（线在该点后继续延伸才画）
+    for (let k = 0; k < shN; k++) {
+      if (hasMore || k < shN - 1)
+        s += `<circle cx="${x0 + dir * (12 + k * 24)}" cy="${y}" r="2.4" fill="${info.color}"/>`;
+    }
+    if (pl.series) {
+      const sx1 = cx2 + dir * 8, sx2 = sx1 + dir * 26;
+      s += `<path class="sch-wire" stroke="${info.color}" d="M${x0},${y} H${sx1}"/>`;
+      s += symPath(symbolKind(pl.series.e.ref, pl.series.e.value) || 'res', sx1, y, sx2, y);
+      s += `<g class="sch-neigh" data-ref="${esc(pl.series.e.ref)}">` +
+        t((sx1 + sx2) / 2, y - 9, pl.series.e.ref + (pl.series.e.value ? ' ' + pl.series.e.value : ''), '#6e7681', 7.5, 'middle') + '</g>';
+      // 二级网络端接：GND/电源画符号，信号画网名标签
+      const fn = pl.series.far.net, fpk = powerKind(fn);
+      if (fpk === 'gnd') {
+        s += `<line x1="${sx2}" y1="${y}" x2="${sx2 + dir * 8}" y2="${y}" stroke="${info.color}" stroke-width="1.4"/>` + gndSymAt(sx2 + dir * 8, y);
+      } else if (fpk === 'pwr') {
+        s += `<line x1="${sx2}" y1="${y}" x2="${sx2 + dir * 8}" y2="${y}" stroke="${info.color}" stroke-width="1.4"/>` + pwrSymAt(sx2 + dir * 8, y, fn);
+      } else if (isRealNet(fn)) {
+        const cnt = (netIndex[netKey(scope, fn)] || []).length;
+        const nm2 = fn.length > 26 ? fn.slice(0, 24) + '…' : fn;
+        s += `<g class="sch-netflag" data-net="${esc(fn)}">` +
+          `<circle cx="${sx2 + dir * 4}" cy="${y}" r="2.5" fill="${getNetColor(fn)}"/>` +
+          t(sx2 + dir * 8, y + 3, `${nm2} (${cnt}脚)`, getNetColor(fn), 8.5, dir < 0 ? 'end' : 'start') + '</g>';
+      } else {
+        s += t(sx2 + dir * 4, y + 3, '✕', '#484f58', 8, dir < 0 ? 'end' : 'start');
+      }
+    } else if (pl.rest.length) {
+      let ent = wireNetsBySide[sd].find(w2 => w2.net === p.net);
+      if (!ent) { ent = { net: p.net, ys: [], refs: new Map() }; wireNetsBySide[sd].push(ent); }
+      ent.ys.push(y);
+      pl.rest.forEach(e => { if (!ent.refs.has(e.ref)) ent.refs.set(e.ref, []); ent.refs.get(e.ref).push(e); });
+    } else if (pl.shunts.length) {
+      s += `<path class="sch-wire" stroke="${info.color}" d="M${x0},${y} H${cx2}"/>`;
+    } else {
+      labelFlagAt(p.net, info, sd, x0, y);
+    }
+  }
+
   function endpointAt(p, sd, x, y) {
-    if (p.mode === 'gnd') {
+    const pl = p._plan || { kind: 'nc' };
+    if (pl.kind === 'gnd') {
       if (sd === 'B' || sd === 'T') {
         const dir = sd === 'B' ? 1 : -1, gy = sd === 'B' ? boxH + SCH.stub : -SCH.stub;
         s += `<line x1="${x - 8}" y1="${gy}" x2="${x + 8}" y2="${gy}" stroke="#8b949e" stroke-width="1.6"/>` +
@@ -1750,7 +1962,7 @@ function schRender(center) {
       }
       return;
     }
-    if (p.mode === 'pwr') {
+    if (pl.kind === 'pwr') {
       if (sd === 'T' || sd === 'B') {
         const py2 = sd === 'T' ? -SCH.stub : boxH + SCH.stub, dir = sd === 'T' ? -1 : 1;
         s += `<line x1="${x - 8}" y1="${py2}" x2="${x + 8}" y2="${py2}" stroke="#d29922" stroke-width="1.8"/>`;
@@ -1762,28 +1974,15 @@ function schRender(center) {
       }
       return;
     }
-    if (p.mode === 'nc') {
+    if (pl.kind === 'nc') {
       s += t(x + (sd === 'L' ? -4 : sd === 'R' ? 4 : 3), y + 3.5, '✕', '#484f58', 8, sd === 'L' ? 'end' : 'start');
       return;
     }
-    if (p.mode === 'label') {
-      const info = netInfo[p.net];
-      const nm = p.net.length > 30 ? p.net.slice(0, 28) + '…' : p.net;
-      const txt = `${nm}  (${info.total}脚)`;
-      s += `<g class="sch-netflag" data-net="${esc(p.net)}">` +
-        `<circle cx="${x}" cy="${y}" r="2.5" fill="${info.color}"/>` +
-        t(x + (sd === 'L' ? -6 : 6), y + 3.5, txt, info.color, 9, sd === 'L' ? 'end' : 'start') + '</g>';
+    if (pl.kind === 'label' || (pl.kind === 'attach' && (sd === 'T' || sd === 'B'))) {
+      labelFlagAt(p.net, pl.info || netInfo[p.net], sd, x, y);
       return;
     }
-    if (p.mode === 'wire' && (sd === 'L' || sd === 'R')) {
-      let ent = wireNetsBySide[sd].find(w => w.net === p.net);
-      if (!ent) { ent = { net: p.net, ys: [] }; wireNetsBySide[sd].push(ent); }
-      ent.ys.push(y);
-    } else if (p.mode === 'wire') {
-      // 上下边的直连网退化为标签旗
-      const info = netInfo[p.net];
-      s += `<g class="sch-netflag" data-net="${esc(p.net)}">` + t(x + 3, (sd === 'T' ? -SCH.stub - 4 : boxH + SCH.stub + 10), p.net, info.color, 9) + '</g>';
-    }
+    if (pl.kind === 'attach') renderAttach(p, pl, sd, x, y);
   }
   L.items.forEach(it => { if (it.kind === 'pin') endpointAt(it.p, 'L', -SCH.stub, yPin(it.off)); });
   R.items.forEach(it => { if (it.kind === 'pin') endpointAt(it.p, 'R', boxW + SCH.stub, yPin(it.off)); });
@@ -1792,7 +1991,8 @@ function schRender(center) {
   tbIdx = 0;
   B.items.forEach(it => { if (it.kind === 'pin') { it.p._tbIdx = tbIdx++; endpointAt(it.p, 'B', xPin(B, it.off), 0); } });
 
-  // 7) 直连邻居：每侧每网一条竖干线，邻居盒按引脚 y 就近堆叠
+  // 7) 直连邻居：每侧每网一条竖干线（让出端接区），邻居按引脚 y 就近堆叠；
+  //    二端小器件画符号并标注远端网络（GND/电源直接画符号）
   const NB_W = 120, NB_H = 32;
   ['L', 'R'].forEach(sd => {
     const occ = [];
@@ -1800,16 +2000,13 @@ function schRender(center) {
       const info = netInfo[w.net];
       const dir = sd === 'L' ? -1 : 1;
       const x0 = sd === 'L' ? -SCH.stub : boxW + SCH.stub;
-      const tx = x0 + dir * (18 + (wi % 10) * 13);
-      const nbEdge = x0 + dir * 160;
-      const byRef = {};
-      info.others.forEach(e => { (byRef[e.ref] = byRef[e.ref] || []).push(e); });
-      const refs = Object.keys(byRef);
+      const tx = x0 + dir * (18 + attachW[sd] + (wi % 10) * 13);
+      const nbEdge = x0 + dir * (attachW[sd] + 160);
+      const refs = [...w.refs.keys()];
       // 干线范围 = 引脚 y 与邻居 y 的跨度
       const nys = [];
       refs.forEach((r2, j) => {
-        let want = w.ys[Math.min(j, w.ys.length - 1)] + (j - (refs.length - 1) / 2) * (NB_H + 8);
-        let ny = want;
+        let ny = w.ys[Math.min(j, w.ys.length - 1)] + (j - (refs.length - 1) / 2) * (NB_H + 8);
         while (occ.some(o => Math.abs(o - ny) < NB_H + 6)) ny += NB_H + 8;
         occ.push(ny); nys.push(ny);
       });
@@ -1818,20 +2015,45 @@ function schRender(center) {
       w.ys.forEach(y => { s += `<path class="sch-wire" stroke="${info.color}" d="M${x0},${y} H${tx}"/>`; });
       const junctions = allY.length > 2;
       refs.forEach((r2, j) => {
-        const ny = nys[j], entries = byRef[r2];
+        const ny = nys[j], entries = w.refs.get(r2);
         s += `<path class="sch-wire" stroke="${info.color}" d="M${tx},${ny} H${nbEdge}"/>`;
         if (junctions && j < refs.length - 1) s += `<circle cx="${tx}" cy="${ny}" r="2.6" fill="${info.color}"/>`;
-        const bx2 = sd === 'L' ? nbEdge - NB_W : nbEdge;
         const meta = refMeta[scope + '::' + r2] || {};
-        const smallN = isSmallRef(scope, r2);
         let vv = String(entries[0].value || meta.value || '').slice(0, 18);
-        if (vv === r2) vv = '';   // value 与编号相同不重复显示
-        s += `<g class="sch-neigh" data-ref="${esc(r2)}">` +
-          `<rect class="sch-neigh-box" x="${bx2}" y="${ny - NB_H / 2}" width="${NB_W}" height="${NB_H}" rx="${smallN ? 12 : 4}" fill="#1c2129" stroke="#30363d" stroke-width="1.2"/>` +
-          t(bx2 + NB_W / 2, ny + (vv ? -2 : 4), r2, '#f0c674', 11, 'middle', 'font-weight="700"') +
-          (vv ? t(bx2 + NB_W / 2, ny + 10, vv, '#6e7681', 8, 'middle') : '') +
-          t(sd === 'L' ? nbEdge + 3 : nbEdge - 3, ny - 5, '脚' + entries.map(e => e.pin).join(','), '#8b949e', 8, sd === 'L' ? 'start' : 'end') +
-          '</g>';
+        if (vv === r2) vv = '';
+        const pinsOfR2 = refPinsIdx[scope + '::' + r2] || [];
+        const kind2 = pinsOfR2.length === 2 ? symbolKind(r2, entries[0].value || meta.value) : null;
+        if (kind2) {
+          // 符号绘制 + 二级网络标注
+          const sx2 = nbEdge + dir * 28;
+          s += `<g class="sch-neigh" data-ref="${esc(r2)}">` +
+            symPath(kind2, nbEdge, ny, sx2, ny) +
+            t((nbEdge + sx2) / 2, ny - 10, r2 + (vv ? ' ' + vv : ''), '#f0c674', 8.5, 'middle') +
+            t(sd === 'L' ? nbEdge + 2 : nbEdge - 2, ny + 11, '脚' + entries.map(e => e.pin).join(','), '#8b949e', 7, sd === 'L' ? 'start' : 'end') +
+            '</g>';
+          const far = farPinOf(scope, entries[0]);
+          if (far) {
+            const fpk = powerKind(far.net);
+            if (fpk === 'gnd') {
+              s += `<line x1="${sx2}" y1="${ny}" x2="${sx2 + dir * 7}" y2="${ny}" stroke="${SYM_C}" stroke-width="1.3"/>` + gndSymAt(sx2 + dir * 7, ny);
+            } else if (fpk === 'pwr') {
+              s += `<line x1="${sx2}" y1="${ny}" x2="${sx2 + dir * 7}" y2="${ny}" stroke="${SYM_C}" stroke-width="1.3"/>` + pwrSymAt(sx2 + dir * 7, ny, far.net);
+            } else if (isRealNet(far.net)) {
+              const nm3 = far.net.length > 20 ? far.net.slice(0, 18) + '…' : far.net;
+              s += `<g class="sch-netflag" data-net="${esc(far.net)}">` +
+                t(sx2 + dir * 5, ny + 3, nm3, '#6e7681', 7.5, sd === 'L' ? 'end' : 'start') + '</g>';
+            }
+          }
+        } else {
+          const bx2 = sd === 'L' ? nbEdge - NB_W : nbEdge;
+          const smallN = isSmallRef(scope, r2);
+          s += `<g class="sch-neigh" data-ref="${esc(r2)}">` +
+            `<rect class="sch-neigh-box" x="${bx2}" y="${ny - NB_H / 2}" width="${NB_W}" height="${NB_H}" rx="${smallN ? 12 : 4}" fill="#1c2129" stroke="#30363d" stroke-width="1.2"/>` +
+            t(bx2 + NB_W / 2, ny + (vv ? -2 : 4), r2, '#f0c674', 11, 'middle', 'font-weight="700"') +
+            (vv ? t(bx2 + NB_W / 2, ny + 10, vv, '#6e7681', 8, 'middle') : '') +
+            t(sd === 'L' ? nbEdge + 3 : nbEdge - 3, ny - 5, '脚' + entries.map(e => e.pin).join(','), '#8b949e', 8, sd === 'L' ? 'start' : 'end') +
+            '</g>';
+        }
       });
       // 网名标在干线顶端（相邻干线标签交错三档高度，长名截断）
       let nm = w.net.length > 28 ? w.net.slice(0, 26) + '…' : w.net;
