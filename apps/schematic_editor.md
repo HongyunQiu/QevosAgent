@@ -1672,9 +1672,10 @@ function schRender(center) {
   const L = placeSlots(grouped(sides.L)), R = placeSlots(grouped(sides.R));
   const T = placeSlots(grouped(sides.T)), B = placeSlots(grouped(sides.B));
 
-  // 3) 中心框几何
+  // 3) 中心框几何（框内标注 = 名称，缺省回退引脚号）
   const small = pins.length <= 4 && noSides;
-  const nameW = Math.max(0, ...pins.map(p => (p.name || '').length)) * 6.5;
+  const inLabel = p => p.name || p.pin || '';
+  const nameW = Math.max(0, ...pins.map(p => inLabel(p).length)) * 6.5;
   const boxW = Math.max(small ? 80 : 150, nameW * 2 + 50, Math.max(T.total, B.total) * SCH.pitch + 30, center.ref.length * 9 + 20);
   const boxH = Math.max(L.total, R.total) * SCH.pitch + (small ? 20 : 36);
   const yPin = off => 20 + off * SCH.pitch;                    // L/R 槽位 → y
@@ -1703,22 +1704,34 @@ function schRender(center) {
   s += `<rect x="0" y="0" width="${boxW}" height="${boxH}" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1.6"/>`;
   s += t(boxW / 2, -26, center.kind === 'instance' ? (center.label.replace(center.ref, '').trim()) : center.label.replace(center.ref, '').trim(), '#6e7681', 10, 'middle');
   s += t(boxW / 2, -10, center.ref, '#f0c674', 13, 'middle', 'font-weight="700"');
+  // 左右边：引脚名在框内、文字垂直中心对齐管脚、以框边线为基准左/右对齐；
+  // 名称缺省时框内画引脚号（此时线桩外不再重复画号）
   [[L, 'L'], [R, 'R']].forEach(([S2, sd]) => {
     S2.items.forEach(it => {
       const y = yPin(it.off);
       if (it.kind === 'glabel') { s += t(sd === 'L' ? 6 : boxW - 6, y + 6, it.text, '#d29922', 8, sd === 'L' ? 'start' : 'end', 'font-style="italic"'); return; }
       const p = it.p;
       s += `<line x1="${sd === 'L' ? -SCH.stub : boxW}" y1="${y}" x2="${sd === 'L' ? 0 : boxW + SCH.stub}" y2="${y}" stroke="#8b949e" stroke-width="1.4"/>`;
-      s += t(sd === 'L' ? -5 : boxW + 5, y - 4, p.pin, '#6e7681', 8, sd === 'L' ? 'end' : 'start');
-      if (p.name && !small) s += t(sd === 'L' ? 6 : boxW - 6, y + 3.5, p.name, '#adbac7', 9.5, sd === 'L' ? 'start' : 'end');
+      const nm = inLabel(p);
+      if (p.name) s += t(sd === 'L' ? -5 : boxW + 5, y - 4, p.pin, '#6e7681', 8, sd === 'L' ? 'end' : 'start');
+      if (nm && !small) s += t(sd === 'L' ? 6 : boxW - 6, y, nm, '#adbac7', 9.5, sd === 'L' ? 'start' : 'end', 'dominant-baseline="central"');
     });
   });
+  // 上下边：引脚名竖排在框内（旋转90°），起笔贴框边线，水平中心对齐管脚
   [[T, 'T'], [B, 'B']].forEach(([S2, sd]) => {
     S2.items.forEach(it => {
       if (it.kind !== 'pin') return;
       const x = xPin(S2, it.off), p = it.p;
       s += `<line x1="${x}" y1="${sd === 'T' ? -SCH.stub : boxH}" x2="${x}" y2="${sd === 'T' ? 0 : boxH + SCH.stub}" stroke="#8b949e" stroke-width="1.4"/>`;
-      s += t(x + 3, sd === 'T' ? -4 : boxH + 10, p.pin, '#6e7681', 8);
+      const nm = inLabel(p);
+      if (p.name) s += t(x + 3, sd === 'T' ? -4 : boxH + 10, p.pin, '#6e7681', 8);
+      if (nm && !small) {
+        const nmT = nm.length > 14 ? nm.slice(0, 13) + '…' : nm;
+        if (sd === 'T')
+          s += `<text transform="translate(${x},6) rotate(90)" fill="#adbac7" font-size="9.5" text-anchor="start" dominant-baseline="central">${esc(nmT)}</text>`;
+        else
+          s += `<text transform="translate(${x},${boxH - 6}) rotate(90)" fill="#adbac7" font-size="9.5" text-anchor="end" dominant-baseline="central">${esc(nmT)}</text>`;
+      }
     });
   });
 
