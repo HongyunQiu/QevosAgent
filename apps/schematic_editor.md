@@ -156,6 +156,23 @@ enabled: true
   /* ── 悬停网络连线图浮窗 ── */
   #hover-topo { display: none; position: fixed; z-index: 300; background: #161b22f5; border: 1px solid #30363d; border-radius: 10px; box-shadow: 0 8px 32px #000000aa; padding: 8px 10px 4px; pointer-events: none; }
   #hover-topo .ht-hint { color: #6e7681; font-size: 10px; text-align: right; padding: 2px 2px 3px; }
+
+  /* ── 邻域原理图 overlay ── */
+  #schematic-overlay { display: none; position: fixed; top: 44px; left: 0; right: 0; bottom: 0; background: #0d1117; z-index: 150; flex-direction: column; }
+  #sch-toolbar { display: flex; align-items: center; gap: 10px; padding: 7px 14px; border-bottom: 1px solid #21262d; background: #161b22; flex-shrink: 0; }
+  #sch-toolbar .sch-title { color: #58a6ff; font-weight: 700; font-size: 14px; }
+  #sch-toolbar .sch-sub { color: #6e7681; font-size: 11px; }
+  #sch-canvas-wrap { flex: 1; overflow: hidden; cursor: grab; position: relative; }
+  #sch-canvas-wrap.panning { cursor: grabbing; }
+  #sch-svg { width: 100%; height: 100%; display: block; }
+  #sch-hint { position: absolute; right: 10px; bottom: 8px; color: #6e7681; font-size: 10px; pointer-events: none; }
+  .sch-btn-mini { display: inline-block; margin-left: 6px; padding: 0 6px; font-size: 11px; color: #6e7681; border: 1px solid #30363d; border-radius: 5px; cursor: pointer; vertical-align: 2px; }
+  .sch-btn-mini:hover { color: #58a6ff; border-color: #58a6ff; }
+  .sch-wire { fill: none; stroke-width: 1.4; }
+  .sch-neigh { cursor: pointer; }
+  .sch-neigh:hover .sch-neigh-box { stroke: #58a6ff; stroke-width: 1.6; }
+  .sch-netflag { cursor: pointer; }
+  .sch-netflag:hover text { font-weight: 700; }
 </style>
 </head>
 <body>
@@ -239,6 +256,22 @@ enabled: true
 <!-- 右侧面板收起后的展开把手 -->
 <div id="right-expand" title="展开面板">◀ 面板</div>
 
+<!-- 邻域原理图 overlay -->
+<div id="schematic-overlay">
+  <div id="sch-toolbar">
+    <button id="sch-back" class="btn" title="返回上一个器件" disabled>← 返回</button>
+    <span class="sch-title" id="sch-title"></span>
+    <span class="sch-sub" id="sch-sub"></span>
+    <span style="margin-left:auto"></span>
+    <button id="sch-fit" class="btn" title="适配视图">⛶ 适配</button>
+    <button id="sch-close" class="btn" title="关闭 (Esc)">✕</button>
+  </div>
+  <div id="sch-canvas-wrap">
+    <svg id="sch-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="sch-hint">拖拽平移 · 滚轮缩放 · 点击邻居器件漫游 · 已忽略 GND/电源走线（以符号表示）</div>
+  </div>
+</div>
+
 <!-- 悬停网络连线图浮窗 -->
 <div id="hover-topo"></div>
 
@@ -289,6 +322,7 @@ let fileList = [];              // [{path}] 项目内全部 md
 let docs = {};                  // path -> 解析后的文档对象
 let netIndex = {};              // scope+' '+net -> [{file,ref,pin,pinName,type,value}]
 let refMeta = {};               // scope+'::'+ref -> {pinCount,value} 用于悬停图符号大小
+let refLoc = {};                // scope+'::'+ref -> {file,kind:'device'|'instance'} 原理图漫游定位
 let scopes = new Set();         // 项目内出现过的目录作用域
 let ercIssues = [];
 let selectedNet = null;         // 当前高亮网络（原始名，不含scope）
@@ -385,7 +419,7 @@ function splitRow(line) {
 function isSeparatorRow(line) { return /^\|[-\s|:]+\|?\s*$/.test(line); }
 
 function mapPinCols(cells) {
-  const m = { rowNo: -1, pin: -1, name: -1, type: -1, net: -1, note: -1, count: cells.length };
+  const m = { rowNo: -1, pin: -1, name: -1, type: -1, net: -1, note: -1, side: -1, part: -1, group: -1, count: cells.length };
   cells.forEach((c, i) => {
     if (c === '行号' || /^Row/i.test(c)) m.rowNo = i;
     else if (c === '引脚号' || /^Pin/i.test(c)) m.pin = i;
@@ -393,6 +427,9 @@ function mapPinCols(cells) {
     else if (c === '类型' || /^Type/i.test(c)) m.type = i;
     else if (c === '网络' || c === '网络名' || /^Net/i.test(c)) m.net = i;
     else if (c === '说明' || /^Note|^Desc/i.test(c)) m.note = i;
+    else if (c === '方位') m.side = i;
+    else if (c === 'part' || c === 'Part' || c === '单元') m.part = i;
+    else if (c === '功能组' || c === '功能聚类') m.group = i;
   });
   if (m.pin < 0 || m.net < 0) {
     // 表头不规范 → 按列数位置推断
@@ -456,7 +493,8 @@ function parseDoc(text) {
         if (!pt.cols) continue;
         const c = pt.cols;
         const get = j => (j >= 0 && j < cells.length) ? cells[j] : '';
-        const pin = { lineIdx: i, cells, colMap: c, rowNo: get(c.rowNo), pin: get(c.pin), name: get(c.name), type: get(c.type), net: get(c.net), note: get(c.note) };
+        const pin = { lineIdx: i, cells, colMap: c, rowNo: get(c.rowNo), pin: get(c.pin), name: get(c.name), type: get(c.type), net: get(c.net), note: get(c.note),
+                      side: get(c.side), part: get(c.part), group: get(c.group) };
         if (pin.pin !== '' || pin.name !== '' || pin.net !== '') pt.pins.push(pin);
       } else if (table && table.mode === 'inst' && cur.instances) {
         const it = cur.instances;
@@ -490,10 +528,14 @@ function parseDoc(text) {
   return doc;
 }
 
-// section 的全部引脚（拍平分组）
+// section 的全部引脚（拍平分组；v1.8 兼容：分组/实体标题映射到 功能组/part）
 function sectionPins(sec) {
   const out = [];
-  sec.pinTables.forEach(pt => pt.pins.forEach(p => out.push(p)));
+  sec.pinTables.forEach(pt => pt.pins.forEach(p => {
+    if (!p.group && pt.group) p.group = pt.group;
+    if (!p.part && pt.entity) p.part = pt.entity;
+    out.push(p);
+  }));
   return out;
 }
 // section 显示名
@@ -511,7 +553,7 @@ function sectionLabel(sec, doc) {
 // ═══════════════════════════════════════════════════════════
 
 function rebuildIndex() {
-  netIndex = {}; refMeta = {}; scopes = new Set(); ercIssues = [];
+  netIndex = {}; refMeta = {}; refLoc = {}; scopes = new Set(); ercIssues = [];
   const refSeen = {};   // scope::ref -> [file]
 
   for (const [file, doc] of Object.entries(docs)) {
@@ -537,6 +579,7 @@ function rebuildIndex() {
           const rk = scope + '::' + row.ref;
           (refSeen[rk] = refSeen[rk] || []).push(file);
           refMeta[rk] = { pinCount: nCols, value: row.value };
+          refLoc[rk] = { file, kind: 'instance' };
           for (const pc of sec.instances.pinCols) {
             const net = pc.col < row.cells.length ? row.cells[pc.col] : '';
             if (isPlaceholder(net)) {
@@ -556,6 +599,7 @@ function rebuildIndex() {
         // ── 单实例器件 / 模块接口 ──
         const ref = sec.ref || doc.title || file.replace(/\.md$/, '');
         refMeta[scope + '::' + ref] = { pinCount: pins.length, value: sec.name };
+        refLoc[scope + '::' + ref] = { file, kind: 'device' };
         if (sec.kind === 'device' && sec.ref) {
           const rk = scope + '::' + sec.ref;
           (refSeen[rk] = refSeen[rk] || []).push(file);
@@ -795,6 +839,18 @@ function renderDetail(doc) {
 
     const h2 = document.createElement('h2');
     h2.textContent = sectionLabel(sec, doc);
+    if (!sec.instances && sectionPins(sec).length) {
+      const sb = document.createElement('span');
+      sb.className = 'sch-btn-mini';
+      sb.textContent = '◫ 原理图';
+      sb.title = '查看该器件的邻域原理图';
+      sb.addEventListener('click', () => {
+        const scope = scopeOf(currentFile);
+        const ref = sec.ref || doc.title || currentFile.replace(/\.md$/, '');
+        openSchematic({ kind: 'device', scope, ref, label: sectionLabel(sec, doc), file: currentFile, sec }, false);
+      });
+      h2.appendChild(sb);
+    }
     block.appendChild(h2);
 
     const subtitleBits = [];
@@ -863,12 +919,17 @@ function netCellHtml(net) {
   return esc(net);
 }
 
-// 引脚表（网络列可编辑）
+// 引脚表（网络列可编辑；方位/part/功能组列有值才显示）
 function buildPinTable(pt, sec) {
   const table = document.createElement('table');
   table.className = 'sch';
   const showRowNo = pt.cols && pt.cols.rowNo >= 0;
-  table.innerHTML = `<thead><tr>${showRowNo ? '<th>行号</th>' : ''}<th>引脚号</th><th>名称</th><th>类型</th><th>网络</th><th>说明</th></tr></thead>`;
+  const showSide = pt.pins.some(p => p.side);
+  const showPart = pt.pins.some(p => p.part);
+  const showGroup = pt.pins.some(p => p.group);
+  table.innerHTML = `<thead><tr>${showRowNo ? '<th>行号</th>' : ''}<th>引脚号</th><th>名称</th><th>类型</th>` +
+    (showSide ? '<th>方位</th>' : '') + (showPart ? '<th>part</th>' : '') + (showGroup ? '<th>功能组</th>' : '') +
+    `<th>网络</th><th>说明</th></tr></thead>`;
   const tbody = document.createElement('tbody');
 
   pt.pins.forEach(pin => {
@@ -879,6 +940,9 @@ function buildPinTable(pt, sec) {
       `<td class="pnum">${esc(pin.pin)}</td>` +
       `<td class="pname">${esc(pin.name)}</td>` +
       `<td>${typeBadge(pin.type)}</td>` +
+      (showSide ? `<td style="color:#adbac7">${esc(pin.side)}</td>` : '') +
+      (showPart ? `<td style="color:#f0c674">${esc(pin.part)}</td>` : '') +
+      (showGroup ? `<td style="color:#d29922;font-size:12px">${esc(pin.group)}</td>` : '') +
       `<td class="${netCellClass(pin.net)}" contenteditable="true" spellcheck="false">${netCellHtml(pin.net)}</td>` +
       `<td class="pnote">${esc(pin.note)}</td>`;
     const netTd = tr.querySelector('.net-cell');
@@ -925,7 +989,7 @@ function buildInstTable(sec, si) {
   it.rows.forEach(row => {
     const tr = document.createElement('tr');
     tr.dataset.ref = row.ref;
-    let html = `<td class="iref">${esc(row.ref)}</td><td class="ival">${esc(row.value)}</td><td class="ifp" title="${esc(row.footprint)}">${esc(row.footprint)}</td>`;
+    let html = `<td class="iref">${esc(row.ref)}<span class="sch-btn-mini sch-open" title="邻域原理图">◫</span></td><td class="ival">${esc(row.value)}</td><td class="ifp" title="${esc(row.footprint)}">${esc(row.footprint)}</td>`;
     it.pinCols.forEach(pc => {
       const net = pc.col < row.cells.length ? row.cells[pc.col] : '';
       html += `<td class="${netCellClass(net)}" data-col="${pc.col}" contenteditable="true" spellcheck="false">${netCellHtml(net)}</td>`;
@@ -941,8 +1005,14 @@ function buildInstTable(sec, si) {
         commitLineEdit(currentFile, row.lineIdx, row.cells);
       });
     });
+    tr.querySelector('.sch-open').addEventListener('click', e => {
+      e.stopPropagation();
+      const scope = scopeOf(currentFile);
+      openSchematic({ kind: 'instance', scope, ref: row.ref, label: row.ref + (row.value ? ' ' + row.value : ''), file: currentFile, sec, row }, false);
+    });
     tr.addEventListener('click', e => {
       if (e.target.classList && e.target.classList.contains('net-cell')) return;  // 网络格自己处理
+      if (e.target.classList && e.target.classList.contains('sch-open')) return;
       renderInstanceTopology(sec, row);
       switchTab('topo');
     });
@@ -1476,6 +1546,349 @@ document.getElementById('detail-panel').addEventListener('scroll', hideHoverTopo
 document.addEventListener('mousedown', hideHoverTopo);
 
 // ═══════════════════════════════════════════════════════════
+//  邻域原理图（全屏 overlay）
+//  中心矩形符号（方位/功能组驱动）· 电源地符号化 · 少脚网直连/多脚网标签旗 · 点邻居漫游
+// ═══════════════════════════════════════════════════════════
+
+const schOverlay = $('schematic-overlay');
+const schSvg = $('sch-svg');
+const schWrap = $('sch-canvas-wrap');
+let schHistory = [];          // 漫游历史（返回用）
+let schCurrent = null;        // {scope, ref}
+let schViewBox = null;        // {x,y,w,h}
+
+const SCH = { pitch: 26, stub: 26, maxDirect: 5 };
+
+// 电源网络判定（取层次名最后一段）：'gnd' / 'pwr' / null
+function powerKind(net) {
+  if (!isRealNet(net)) return null;
+  const seg = net.split('/').pop();
+  if (net === 'GND' || /^GND/i.test(seg) || /^VSS/i.test(seg)) return 'gnd';
+  if (/^\+/.test(seg) || /^(VCC|VDD|VBUS|VSYS|VBAT|VEE)/i.test(seg)) return 'pwr';
+  return null;
+}
+function defaultSideOf(type) {
+  if (type === 'input') return 'L';
+  if (type === 'output') return 'R';
+  if (type === 'power') return 'T';
+  if (type === 'ground') return 'B';
+  return 'R';
+}
+
+// ref → 中心对象（漫游定位）
+function resolveCenter(scope, ref) {
+  const loc = refLoc[scope + '::' + ref];
+  if (!loc || !docs[loc.file]) return null;
+  const doc = docs[loc.file];
+  if (loc.kind === 'device') {
+    const sec = doc.sections.find(s => s.kind === 'device' && s.ref === ref) ||
+                doc.sections.find(s => !s.instances && sectionPins(s).length);
+    if (!sec) return null;
+    return { kind: 'device', scope, ref, label: sectionLabel(sec, doc), file: loc.file, sec };
+  }
+  for (const sec of doc.sections) {
+    if (!sec.instances) continue;
+    const row = sec.instances.rows.find(r => r.ref === ref);
+    if (row) return { kind: 'instance', scope, ref, label: ref + (row.value ? ' ' + row.value : ''), file: loc.file, sec, row };
+  }
+  return null;
+}
+
+// 中心引脚列表（实例继承类模板的 名称/类型/方位/功能组；方位=隐 不画）
+function schCenterPins(center) {
+  if (center.kind === 'device') {
+    return sectionPins(center.sec).filter(p => p.side !== '隐')
+      .map(p => ({ pin: p.pin, name: p.name, type: p.type, side: p.side, group: p.group, net: p.net }));
+  }
+  const tpl = {};
+  sectionPins(center.sec).forEach(p => { tpl[p.pin] = p; });
+  return center.sec.instances.pinCols.map(pc => {
+    const t = tpl[pc.pin] || {};
+    return { pin: pc.pin, name: t.name || '', type: t.type || '', side: t.side || '', group: t.group || '',
+             net: pc.col < center.row.cells.length ? center.row.cells[pc.col] : '' };
+  }).filter(p => p.side !== '隐');
+}
+
+function openSchematic(center, pushHist) {
+  if (!center) return;
+  if (pushHist && schCurrent) schHistory.push(schCurrent);
+  schCurrent = { scope: center.scope, ref: center.ref };
+  $('sch-back').disabled = !schHistory.length;
+  schOverlay.style.display = 'flex';
+  schRender(center);
+}
+function openSchematicByRef(scope, ref, pushHist) {
+  const c = resolveCenter(scope, ref);
+  if (!c) { setStatus('未找到器件 ' + ref, true); return; }
+  openSchematic(c, pushHist);
+}
+
+// —— 渲染 ——
+function schRender(center) {
+  const scope = center.scope;
+  const pins = schCenterPins(center);
+  $('sch-title').textContent = '◫ ' + center.label;
+  $('sch-sub').textContent = `${center.file} · ${pins.length} 引脚 · 邻域 1 跳`;
+
+  // 1) 分边（方位列优先；无方位按类型；小器件左右均分）
+  const sideMap = { '左': 'L', '右': 'R', '上': 'T', '下': 'B' };
+  const noSides = pins.every(p => !p.side);
+  const sides = { L: [], R: [], T: [], B: [] };
+  // 无方位标注时：电源/地归上下，其余信号脚按序左右均分（类型有 in/out 的仍按类型）
+  const hasIO = pins.some(p => p.type === 'input' || p.type === 'output');
+  const signalPins = pins.filter(p => !powerKind(p.net) && p.type !== 'power' && p.type !== 'ground');
+  const halfAt = Math.ceil(signalPins.length / 2);
+  let sigIdx = 0;
+  pins.forEach(p => {
+    let s = sideMap[p.side];
+    if (!s) {
+      const pk = powerKind(p.net);
+      if (pk === 'gnd') s = 'B';
+      else if (pk === 'pwr') s = 'T';
+      else if (p.type === 'power') s = 'T';
+      else if (p.type === 'ground') s = 'B';
+      else if (noSides && !hasIO) { s = sigIdx < halfAt ? 'L' : 'R'; sigIdx++; }
+      else s = defaultSideOf(p.type);
+    }
+    sides[s].push(p);
+  });
+
+  // 2) 边内按功能组聚拢（组首次出现序稳定）
+  function grouped(arr) {
+    const order = [], buckets = {};
+    arr.forEach(p => { const g = p.group || ''; if (!(g in buckets)) { buckets[g] = []; order.push(g); } buckets[g].push(p); });
+    return order.map(g => ({ group: g, pins: buckets[g] }));
+  }
+  // 槽位展开：[{kind:'pin',p,off} | {kind:'glabel',text,off}]，返回总槽数
+  function placeSlots(gs) {
+    const items = []; let off = 0;
+    gs.forEach((g, gi) => {
+      if (gi > 0) off += 0.5;
+      if (g.group) { items.push({ kind: 'glabel', text: g.group, off }); off += 0.6; }  // 组标占独立槽位，不压引脚名
+      g.pins.forEach(p => { items.push({ kind: 'pin', p, off }); off += 1; });
+    });
+    return { items, total: Math.max(off, 1) };
+  }
+  const L = placeSlots(grouped(sides.L)), R = placeSlots(grouped(sides.R));
+  const T = placeSlots(grouped(sides.T)), B = placeSlots(grouped(sides.B));
+
+  // 3) 中心框几何
+  const small = pins.length <= 4 && noSides;
+  const nameW = Math.max(0, ...pins.map(p => (p.name || '').length)) * 6.5;
+  const boxW = Math.max(small ? 80 : 150, nameW * 2 + 50, Math.max(T.total, B.total) * SCH.pitch + 30, center.ref.length * 9 + 20);
+  const boxH = Math.max(L.total, R.total) * SCH.pitch + (small ? 20 : 36);
+  const yPin = off => 20 + off * SCH.pitch;                    // L/R 槽位 → y
+  const xPin = (slots, off) => boxW / 2 - (slots.total * SCH.pitch) / 2 + off * SCH.pitch + SCH.pitch / 2;  // T/B 槽位 → x
+
+  // 4) 网络分档
+  const netInfo = {};
+  pins.forEach(p => {
+    if (!isRealNet(p.net)) { p.mode = 'nc'; return; }
+    const pk = powerKind(p.net);
+    if (pk) { p.mode = pk; return; }
+    if (!netInfo[p.net]) {
+      const all = netIndex[netKey(scope, p.net)] || [];
+      const others = all.filter(e => e.ref !== center.ref);
+      netInfo[p.net] = { others, total: all.length, color: getNetColor(p.net),
+                         mode: (others.length > 0 && others.length <= SCH.maxDirect) ? 'wire' : 'label' };
+    }
+    p.mode = netInfo[p.net].mode;
+  });
+
+  let s = '';
+  const t = (x, y, txt, fill, size, anchor, extra) =>
+    `<text x="${x}" y="${y}" fill="${fill}" font-size="${size}" text-anchor="${anchor || 'start'}" ${extra || ''}>${esc(txt)}</text>`;
+
+  // 5) 中心框 + 引脚名/号/组标
+  s += `<rect x="0" y="0" width="${boxW}" height="${boxH}" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="1.6"/>`;
+  s += t(boxW / 2, -26, center.kind === 'instance' ? (center.label.replace(center.ref, '').trim()) : center.label.replace(center.ref, '').trim(), '#6e7681', 10, 'middle');
+  s += t(boxW / 2, -10, center.ref, '#f0c674', 13, 'middle', 'font-weight="700"');
+  [[L, 'L'], [R, 'R']].forEach(([S2, sd]) => {
+    S2.items.forEach(it => {
+      const y = yPin(it.off);
+      if (it.kind === 'glabel') { s += t(sd === 'L' ? 6 : boxW - 6, y + 6, it.text, '#d29922', 8, sd === 'L' ? 'start' : 'end', 'font-style="italic"'); return; }
+      const p = it.p;
+      s += `<line x1="${sd === 'L' ? -SCH.stub : boxW}" y1="${y}" x2="${sd === 'L' ? 0 : boxW + SCH.stub}" y2="${y}" stroke="#8b949e" stroke-width="1.4"/>`;
+      s += t(sd === 'L' ? -5 : boxW + 5, y - 4, p.pin, '#6e7681', 8, sd === 'L' ? 'end' : 'start');
+      if (p.name && !small) s += t(sd === 'L' ? 6 : boxW - 6, y + 3.5, p.name, '#adbac7', 9.5, sd === 'L' ? 'start' : 'end');
+    });
+  });
+  [[T, 'T'], [B, 'B']].forEach(([S2, sd]) => {
+    S2.items.forEach(it => {
+      if (it.kind !== 'pin') return;
+      const x = xPin(S2, it.off), p = it.p;
+      s += `<line x1="${x}" y1="${sd === 'T' ? -SCH.stub : boxH}" x2="${x}" y2="${sd === 'T' ? 0 : boxH + SCH.stub}" stroke="#8b949e" stroke-width="1.4"/>`;
+      s += t(x + 3, sd === 'T' ? -4 : boxH + 10, p.pin, '#6e7681', 8);
+    });
+  });
+
+  // 6) 端点绘制：电源/地符号、NC、标签旗、直连邻居
+  const wireNetsBySide = { L: [], R: [] };   // [{net, pins:[{y}]}]
+  function endpointAt(p, sd, x, y) {
+    if (p.mode === 'gnd') {
+      if (sd === 'B' || sd === 'T') {
+        const dir = sd === 'B' ? 1 : -1, gy = sd === 'B' ? boxH + SCH.stub : -SCH.stub;
+        s += `<line x1="${x - 8}" y1="${gy}" x2="${x + 8}" y2="${gy}" stroke="#8b949e" stroke-width="1.6"/>` +
+             `<line x1="${x - 5}" y1="${gy + 4 * dir}" x2="${x + 5}" y2="${gy + 4 * dir}" stroke="#8b949e" stroke-width="1.4"/>` +
+             `<line x1="${x - 2}" y1="${gy + 8 * dir}" x2="${x + 2}" y2="${gy + 8 * dir}" stroke="#8b949e" stroke-width="1.2"/>`;
+        if (p.net !== 'GND') s += t(x + 12, gy + 8 * dir, p.net.split('/').pop(), '#6e7681', 8);
+      } else {
+        s += `<g class="sch-netflag" data-net="${esc(p.net)}">` + t(x + (sd === 'L' ? -4 : 4), y + 3.5, '⏚ ' + (p.net === 'GND' ? '' : p.net), '#8b949e', 9, sd === 'L' ? 'end' : 'start') + '</g>';
+      }
+      return;
+    }
+    if (p.mode === 'pwr') {
+      if (sd === 'T' || sd === 'B') {
+        const py2 = sd === 'T' ? -SCH.stub : boxH + SCH.stub, dir = sd === 'T' ? -1 : 1;
+        s += `<line x1="${x - 8}" y1="${py2}" x2="${x + 8}" y2="${py2}" stroke="#d29922" stroke-width="1.8"/>`;
+        // 相邻电源标签交错两档高度，避免互相重叠
+        const stag = (p._tbIdx % 2) * 12;
+        s += `<g class="sch-netflag" data-net="${esc(p.net)}">` + t(x, py2 + dir * (10 + stag) + (dir < 0 ? 0 : 4), p.net.split('/').pop(), '#d29922', 9, 'middle', 'font-weight="600"') + '</g>';
+      } else {
+        s += `<g class="sch-netflag" data-net="${esc(p.net)}">` + t(x + (sd === 'L' ? -4 : 4), y + 3.5, p.net.split('/').pop(), '#d29922', 9, sd === 'L' ? 'end' : 'start', 'font-weight="600"') + '</g>';
+      }
+      return;
+    }
+    if (p.mode === 'nc') {
+      s += t(x + (sd === 'L' ? -4 : sd === 'R' ? 4 : 3), y + 3.5, '✕', '#484f58', 8, sd === 'L' ? 'end' : 'start');
+      return;
+    }
+    if (p.mode === 'label') {
+      const info = netInfo[p.net];
+      const nm = p.net.length > 30 ? p.net.slice(0, 28) + '…' : p.net;
+      const txt = `${nm}  (${info.total}脚)`;
+      s += `<g class="sch-netflag" data-net="${esc(p.net)}">` +
+        `<circle cx="${x}" cy="${y}" r="2.5" fill="${info.color}"/>` +
+        t(x + (sd === 'L' ? -6 : 6), y + 3.5, txt, info.color, 9, sd === 'L' ? 'end' : 'start') + '</g>';
+      return;
+    }
+    if (p.mode === 'wire' && (sd === 'L' || sd === 'R')) {
+      let ent = wireNetsBySide[sd].find(w => w.net === p.net);
+      if (!ent) { ent = { net: p.net, ys: [] }; wireNetsBySide[sd].push(ent); }
+      ent.ys.push(y);
+    } else if (p.mode === 'wire') {
+      // 上下边的直连网退化为标签旗
+      const info = netInfo[p.net];
+      s += `<g class="sch-netflag" data-net="${esc(p.net)}">` + t(x + 3, (sd === 'T' ? -SCH.stub - 4 : boxH + SCH.stub + 10), p.net, info.color, 9) + '</g>';
+    }
+  }
+  L.items.forEach(it => { if (it.kind === 'pin') endpointAt(it.p, 'L', -SCH.stub, yPin(it.off)); });
+  R.items.forEach(it => { if (it.kind === 'pin') endpointAt(it.p, 'R', boxW + SCH.stub, yPin(it.off)); });
+  let tbIdx = 0;
+  T.items.forEach(it => { if (it.kind === 'pin') { it.p._tbIdx = tbIdx++; endpointAt(it.p, 'T', xPin(T, it.off), 0); } });
+  tbIdx = 0;
+  B.items.forEach(it => { if (it.kind === 'pin') { it.p._tbIdx = tbIdx++; endpointAt(it.p, 'B', xPin(B, it.off), 0); } });
+
+  // 7) 直连邻居：每侧每网一条竖干线，邻居盒按引脚 y 就近堆叠
+  const NB_W = 120, NB_H = 32;
+  ['L', 'R'].forEach(sd => {
+    const occ = [];
+    wireNetsBySide[sd].forEach((w, wi) => {
+      const info = netInfo[w.net];
+      const dir = sd === 'L' ? -1 : 1;
+      const x0 = sd === 'L' ? -SCH.stub : boxW + SCH.stub;
+      const tx = x0 + dir * (18 + (wi % 10) * 13);
+      const nbEdge = x0 + dir * 160;
+      const byRef = {};
+      info.others.forEach(e => { (byRef[e.ref] = byRef[e.ref] || []).push(e); });
+      const refs = Object.keys(byRef);
+      // 干线范围 = 引脚 y 与邻居 y 的跨度
+      const nys = [];
+      refs.forEach((r2, j) => {
+        let want = w.ys[Math.min(j, w.ys.length - 1)] + (j - (refs.length - 1) / 2) * (NB_H + 8);
+        let ny = want;
+        while (occ.some(o => Math.abs(o - ny) < NB_H + 6)) ny += NB_H + 8;
+        occ.push(ny); nys.push(ny);
+      });
+      const allY = w.ys.concat(nys);
+      s += `<path class="sch-wire" stroke="${info.color}" d="M${tx},${Math.min(...allY)} V${Math.max(...allY)}"/>`;
+      w.ys.forEach(y => { s += `<path class="sch-wire" stroke="${info.color}" d="M${x0},${y} H${tx}"/>`; });
+      const junctions = allY.length > 2;
+      refs.forEach((r2, j) => {
+        const ny = nys[j], entries = byRef[r2];
+        s += `<path class="sch-wire" stroke="${info.color}" d="M${tx},${ny} H${nbEdge}"/>`;
+        if (junctions && j < refs.length - 1) s += `<circle cx="${tx}" cy="${ny}" r="2.6" fill="${info.color}"/>`;
+        const bx2 = sd === 'L' ? nbEdge - NB_W : nbEdge;
+        const meta = refMeta[scope + '::' + r2] || {};
+        const smallN = isSmallRef(scope, r2);
+        let vv = String(entries[0].value || meta.value || '').slice(0, 18);
+        if (vv === r2) vv = '';   // value 与编号相同不重复显示
+        s += `<g class="sch-neigh" data-ref="${esc(r2)}">` +
+          `<rect class="sch-neigh-box" x="${bx2}" y="${ny - NB_H / 2}" width="${NB_W}" height="${NB_H}" rx="${smallN ? 12 : 4}" fill="#1c2129" stroke="#30363d" stroke-width="1.2"/>` +
+          t(bx2 + NB_W / 2, ny + (vv ? -2 : 4), r2, '#f0c674', 11, 'middle', 'font-weight="700"') +
+          (vv ? t(bx2 + NB_W / 2, ny + 10, vv, '#6e7681', 8, 'middle') : '') +
+          t(sd === 'L' ? nbEdge + 3 : nbEdge - 3, ny - 5, '脚' + entries.map(e => e.pin).join(','), '#8b949e', 8, sd === 'L' ? 'start' : 'end') +
+          '</g>';
+      });
+      // 网名标在干线顶端（相邻干线标签交错三档高度，长名截断）
+      let nm = w.net.length > 28 ? w.net.slice(0, 26) + '…' : w.net;
+      s += `<g class="sch-netflag" data-net="${esc(w.net)}">` + t(tx + 3 * dir, Math.min(...allY) - 5 - (wi % 3) * 9, nm, info.color, 8.5, sd === 'L' ? 'end' : 'start') + '</g>';
+    });
+  });
+
+  schSvg.innerHTML = s;
+  schFit();
+}
+
+// —— 视图控制 ——
+function schApplyView() {
+  if (schViewBox) schSvg.setAttribute('viewBox', `${schViewBox.x} ${schViewBox.y} ${schViewBox.w} ${schViewBox.h}`);
+}
+function schFit() {
+  try {
+    const bb = schSvg.getBBox();
+    const m = 60;
+    const vw = schWrap.clientWidth || 800, vh = schWrap.clientHeight || 600;
+    let w = bb.width + m * 2, h = bb.height + m * 2;
+    const ar = vw / vh;
+    if (w / h < ar) w = h * ar; else h = w / ar;
+    schViewBox = { x: bb.x + bb.width / 2 - w / 2, y: bb.y + bb.height / 2 - h / 2, w, h };
+    schApplyView();
+  } catch (e) { /* 空图 */ }
+}
+$('sch-fit').addEventListener('click', schFit);
+$('sch-close').addEventListener('click', () => { schOverlay.style.display = 'none'; schHistory = []; schCurrent = null; });
+$('sch-back').addEventListener('click', () => {
+  const prev = schHistory.pop();
+  if (prev) { schCurrent = null; openSchematicByRef(prev.scope, prev.ref, false); schCurrent = prev; }
+  $('sch-back').disabled = !schHistory.length;
+});
+
+// 平移 / 缩放
+let schPanning = null;
+schWrap.addEventListener('mousedown', e => {
+  if (e.target.closest('.sch-neigh') || e.target.closest('.sch-netflag')) return;
+  schPanning = { x: e.clientX, y: e.clientY, vb: { ...schViewBox } };
+  schWrap.classList.add('panning');
+});
+window.addEventListener('mousemove', e => {
+  if (!schPanning || !schViewBox) return;
+  const r = schSvg.getBoundingClientRect();
+  schViewBox.x = schPanning.vb.x - (e.clientX - schPanning.x) * schViewBox.w / r.width;
+  schViewBox.y = schPanning.vb.y - (e.clientY - schPanning.y) * schViewBox.h / r.height;
+  schApplyView();
+});
+window.addEventListener('mouseup', () => { schPanning = null; schWrap.classList.remove('panning'); });
+schWrap.addEventListener('wheel', e => {
+  if (!schViewBox) return;
+  e.preventDefault();
+  const r = schSvg.getBoundingClientRect();
+  const px = schViewBox.x + (e.clientX - r.left) / r.width * schViewBox.w;
+  const py = schViewBox.y + (e.clientY - r.top) / r.height * schViewBox.h;
+  const f = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+  schViewBox = { x: px - (px - schViewBox.x) * f, y: py - (py - schViewBox.y) * f, w: schViewBox.w * f, h: schViewBox.h * f };
+  schApplyView();
+}, { passive: false });
+
+// 画布内点击：邻居漫游 / 网络弹窗
+schSvg.addEventListener('click', e => {
+  const nb = e.target.closest('.sch-neigh');
+  if (nb) { openSchematicByRef(schCurrent.scope, nb.getAttribute('data-ref'), true); return; }
+  const fl = e.target.closest('.sch-netflag');
+  if (fl) showNetPopup(fl.getAttribute('data-net'), e, schCurrent.scope);
+});
+
+// ═══════════════════════════════════════════════════════════
 //  网络详情悬浮面板（全局视角，可跳转）
 // ═══════════════════════════════════════════════════════════
 
@@ -1521,7 +1934,8 @@ function showNetPopup(net, event, scopeOverride) {
 $('net-popup-close').addEventListener('click', () => { netPopup.style.display = 'none'; });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    netPopup.style.display = 'none';
+    if (netPopup.style.display === 'flex') { netPopup.style.display = 'none'; return; }
+    if (schOverlay.style.display === 'flex') { schOverlay.style.display = 'none'; schHistory = []; schCurrent = null; return; }
     $('dir-picker').style.display = 'none';
   }
 });
