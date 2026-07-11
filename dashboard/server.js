@@ -419,6 +419,9 @@ function isIpAllowed(rawIp) {
 }
 const RUNS_DIR        = path.resolve(process.env.RUNS_DIR        || path.join(__dirname, '..', 'runs'));
 const AGENT_DIR       = path.resolve(process.env.AGENT_DIR       || path.join(__dirname, '..'));
+// Episodic memory lives next to runs/ (agent writes ./memory_episodic.jsonl in its CWD).
+// Used to self-heal keyword tags on instances where runs/ was never backfilled.
+const EPISODIC_FILE   = path.resolve(process.env.EPISODIC_PATH   || path.join(AGENT_DIR, 'memory_episodic.jsonl'));
 const SKILLS_DIR      = path.resolve(process.env.SKILLS_DIR      || path.join(AGENT_DIR, 'SKILLS'));
 const CRONS_DIR       = path.resolve(process.env.CRONS_DIR       || path.join(AGENT_DIR, 'crons'));
 const APPS_DIR        = path.resolve(process.env.APPS_DIR        || path.join(AGENT_DIR, 'apps'));
@@ -577,13 +580,80 @@ function findRuns() {
   } catch { return []; }
 }
 
-// Read a run's keyword tags (run_dir/tags.json → {tags:[…]}). Written by
-// append_episodic and by scripts/backfill_run_tags.py. Missing/invalid → [].
-function readRunTags(runDir) {
+// Normalize keyword tags: split on half/full-width commas, trim, drop empties,
+// dedupe case-insensitively (keeping first display form + order). Mirrors
+// agent/tools/standard.py:normalize_tags so both producers agree.
+function normalizeTags(tags) {
+  const raw = Array.isArray(tags) ? tags : (typeof tags === 'string' ? [tags] : []);
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    for (const part of String(item).split(/[,，]/)) {
+      const p = part.trim();
+      if (!p) continue;
+      const key = p.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+// Episodic-derived fallback map { runId: [tags] }, rebuilt when the run set
+// changes. Lets instances that never ran the backfill still show keywords,
+// derived on the fly from their own memory_episodic.jsonl.
+let _episodicTags = {};
+
+// Align every episodic entry to the run whose [start, next-start) window contains
+// its timestamp, then union the (normalized) tags per run. Run dir names are LOCAL
+// time; episodic ts is UTC ISO — Date handles the offset since the dashboard runs
+// in the same timezone as the agent that named the dirs. No tz constant needed.
+function rebuildEpisodicTags(runs) {
+  _episodicTags = {};
+  let text;
+  try { text = fs.readFileSync(EPISODIC_FILE, 'utf8'); }
+  catch { return; }                      // no episodic file → nothing to derive
+
+  const starts = runs.map(id => {
+    const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(id);
+    if (!m) return NaN;
+    const [, y, mo, d, h, mi, s] = m.map(Number);
+    return new Date(y, mo - 1, d, h, mi, s).getTime();   // local time
+  });
+
+  const acc = {};                        // runId -> tag[]
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    let rec;
+    try { rec = JSON.parse(t); } catch { continue; }
+    const ms = Date.parse(rec.ts);       // UTC ISO → epoch
+    if (Number.isNaN(ms)) continue;
+    // rightmost run start <= ms (runs are chronologically sorted)
+    let lo = 0, hi = starts.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (starts[mid] <= ms) lo = mid + 1; else hi = mid; }
+    const i = lo - 1;
+    if (i < 0) continue;
+    const rid = runs[i];
+    (acc[rid] || (acc[rid] = [])).push(...normalizeTags(rec.tags));
+  }
+  for (const rid of Object.keys(acc)) _episodicTags[rid] = normalizeTags(acc[rid]);
+}
+
+// Read a run's keyword tags: prefer the on-disk tags.json (written by
+// append_episodic / the backfill script), else fall back to the episodic-derived
+// map so no instance shows empty keywords. Missing/invalid → [].
+function readRunTags(runDir, runId) {
   const data = readJSON(path.join(runDir, 'tags.json'));
-  if (!data) return [];
-  const arr = Array.isArray(data) ? data : data.tags;
-  return Array.isArray(arr) ? arr.filter(t => typeof t === 'string') : [];
+  if (data) {
+    const arr = Array.isArray(data) ? data : data.tags;
+    if (Array.isArray(arr)) {
+      const tags = arr.filter(t => typeof t === 'string');
+      if (tags.length) return tags;
+    }
+  }
+  return (runId && _episodicTags[runId]) || [];
 }
 
 // ── JSONL display helper ───────────────────────────────────────────────────
@@ -870,15 +940,15 @@ function poll() {
 
   if (JSON.stringify(runs) !== JSON.stringify(state.runs)) {
     state.runs = runs;
-    // Load summary for any run not yet cached
+    rebuildEpisodicTags(runs);   // refresh the tags.json-less fallback map for the new run set
+    state.runTags = {};          // window boundaries shifted → recompute all fallbacks
+    // Load summary + keyword tags for each run
     for (const rid of runs) {
       if (!(rid in state.runSummaries)) {
         const s = readJSON(path.join(RUNS_DIR, rid, 'status.json'));
         state.runSummaries[rid] = (s && s.summary) || '';
       }
-      if (!(rid in state.runTags)) {
-        state.runTags[rid] = readRunTags(path.join(RUNS_DIR, rid));
-      }
+      state.runTags[rid] = readRunTags(path.join(RUNS_DIR, rid), rid);
     }
     dirty = true;
   }
@@ -923,7 +993,7 @@ function poll() {
       }
     }
     if (changed(path.join(dir, 'tags.json'))) {
-      state.runTags[state.activeRunId] = readRunTags(dir);
+      state.runTags[state.activeRunId] = readRunTags(dir, state.activeRunId);
       dirty = true;
     }
     if (changed(path.join(dir, 'scratchpad.md'))) {
