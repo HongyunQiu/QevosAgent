@@ -2403,7 +2403,7 @@ def tool_file_tab(
             pass
         return ToolResult(success=False, output="", error=err)
     except Exception as e:
-        return ToolResult(success=False, output="", error=str(e))
+        return ToolResult(success=False, output="", error=str(e) + _port_hint())
 
     if action == "list":
         tabs = result.get("tabs", [])
@@ -2543,16 +2543,23 @@ def tool_web_show(
         }
         fp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    port = os.environ.get("DASHBOARD_PORT", "8765")
+    port, is_default = _dashboard_port()
     run_id = Path(run_dir).name
     url = f"http://localhost:{port}/view/{run_id}/{display_id}"
 
-    # 每个 display_id 只在首次创建时自动打开，append 不重复触发
+    # 每个 display_id 只在首次创建时自动打开，append 不重复触发。
+    # opened: None=本次未尝试（append / 已打开过）；True/False=本次尝试的结果。
+    opened = None
+    open_error = None
     opened_key = f"_web_show_opened_{display_id}"
     if mode != "append" and not state.meta.get(opened_key):
         # Always notify via dashboard API: Electron uses serverEvents to open a native
         # tab; browser clients receive a WebSocket broadcast so remote browsers (e.g.
         # computer A accessing the server on computer B) can open the view themselves.
+        #
+        # web 视图【只在这一次 open-view 广播/serverEvents 时】弹出，dashboard 没有持久的
+        # "视图列表"可事后点开。所以打开结果必须如实上报——POST 失败（服务重启 / DASHBOARD_PORT
+        # 指向了非当前浏览器所连的实例）时不能再像以前那样 except:pass 静默吞掉、盲报成功。
         import urllib.request as _ur
         try:
             _payload = json.dumps(
@@ -2565,18 +2572,38 @@ def tool_web_show(
                 method="POST",
             )
             _ur.urlopen(_req, timeout=2)
-        except Exception:
-            pass
+            opened = True
+        except Exception as _e:
+            opened = False
+            open_error = f"{type(_e).__name__}: {_e}"
         state.meta[opened_key] = True
 
-    return ToolResult(
-        success=True,
-        output={
-            "url": url,
-            "display_id": display_id,
-            "content_type": content_type,
-        },
-    )
+    out = {
+        "url": url,
+        "display_id": display_id,
+        "content_type": content_type,
+        "port": port,
+        "opened": opened,
+    }
+    if is_default:
+        out["warning"] = (
+            f"DASHBOARD_PORT 未设置，已回退默认 :{port}；同机多实例时可能不是你浏览器所连的 dashboard。"
+        )
+
+    if opened is False:
+        # 内容已写盘、URL 有效，但自动弹窗失败——不再盲报成功。附上可手动打开的 URL 以便补救。
+        out["open_error"] = open_error
+        return ToolResult(
+            success=False,
+            output=out,
+            error=(
+                f"视图内容已生成，但未能在 dashboard 自动弹出（{open_error}）。"
+                f"目标 dashboard 可能已重启，或 DASHBOARD_PORT 指向了非当前浏览器所连的实例。"
+                f"请手动打开 {url}，或确认 agent 与浏览器连的是同一个 dashboard。"
+                + _port_hint()
+            ),
+        )
+    return ToolResult(success=True, output=out)
 
 
 def tool_web_notify(
@@ -2647,7 +2674,7 @@ def tool_web_interact(
             err = body
         return ToolResult(success=False, output="", error=err)
     except Exception as e:
-        return ToolResult(success=False, output="", error=str(e))
+        return ToolResult(success=False, output="", error=str(e) + _port_hint())
 
     if "error" in result:
         return ToolResult(success=False, output="", error=result["error"])
@@ -2811,7 +2838,7 @@ def tool_panel_control(state: AgentState, app: str, action: str, selector: str =
         except Exception: err = body_txt
         return ToolResult(success=False, output=None, error=err)
     except Exception as e:
-        return ToolResult(success=False, output=None, error=str(e))
+        return ToolResult(success=False, output=None, error=str(e) + _port_hint())
 
     if result.get("ok") is False:
         return ToolResult(success=False, output=None, error=result.get("error") or "面板控制失败")
@@ -3096,11 +3123,36 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text or "").replace("\r\n", "\n").replace("\r", "")
 
 
+def _dashboard_port():
+    """返回 (port, is_default)。
+
+    is_default=True 表示环境里没有 DASHBOARD_PORT、回退到了默认 8765——这在同机跑多个
+    实例时往往意味着 agent 打到了错误的 dashboard（会话建在别的服务进程里，当前浏览器看不到）。
+    """
+    v = os.environ.get("DASHBOARD_PORT")
+    return (v, False) if v else ("8765", True)
+
+
+def _port_hint() -> str:
+    """DASHBOARD_PORT 用了默认兜底时，返回一句可拼到错误信息后的诊断提示；否则空串。
+
+    用于请求-响应式的 dashboard 工具：连接失败/找不到目标时，把含糊的"连接被拒"变成
+    "可能打到了错误的 dashboard 实例"这种可诊断信息。
+    """
+    port, is_default = _dashboard_port()
+    if is_default:
+        return (
+            f" [提示] DASHBOARD_PORT 未设置，本次用了默认 :{port}；"
+            "同机多实例时连接失败/找不到目标，往往是打到了错误的 dashboard 进程。"
+        )
+    return ""
+
+
 def _term_api(method: str, path: str, body=None, timeout: float = 10):
     """Call the dashboard terminal API at http://localhost:DASHBOARD_PORT."""
     import urllib.request as _ur
     import urllib.error as _ue
-    port = os.environ.get("DASHBOARD_PORT", "8765")
+    port, _is_default = _dashboard_port()
     url = f"http://localhost:{port}{path}"
     data = json.dumps(body).encode() if body is not None else None
     req = _ur.Request(url, data=data, headers={"Content-Type": "application/json"}, method=method)
@@ -3129,11 +3181,45 @@ def tool_terminal_list(state: AgentState) -> ToolResult:
 
 
 def tool_terminal_open(state: AgentState, title: str = "Agent") -> ToolResult:
-    """新建一个共享终端会话，用户界面会自动出现对应 Tab。返回 {id, title}。"""
+    """新建一个共享终端会话，用户界面会自动出现对应 Tab。
+
+    返回 {id, title, port, registered}：port 是本次实际命中的 dashboard 端口，
+    registered 表示新建的会话确实登记在了这台服务的会话列表里。终端会话是各服务进程
+    的内存态，只对连着【同一台 live 进程】的浏览器可见——同机多实例或服务重启后，即便
+    POST 成功、会话也可能落在你正看的浏览器所连之外的进程里。此工具因此建完会二次核对，
+    发现没登记在册就不再盲报成功。
+    """
+    port, is_default = _dashboard_port()
     r = _term_api("POST", "/api/term", {"title": title})
     if "error" in r:
         return ToolResult(success=False, output=None, error=r["error"])
-    return ToolResult(success=True, output={"id": r.get("id"), "title": r.get("title")})
+    sid = r.get("id")
+    out = {"id": sid, "title": r.get("title"), "port": port}
+    if is_default:
+        out["warning"] = (
+            "DASHBOARD_PORT 未设置，已回退默认 8765；同机多实例时可能落到错误的 dashboard，"
+            "当前浏览器未必看得到该终端。"
+        )
+
+    # 自校验：确认会话确实登记在这台服务上（多实例 / 服务重启场景下能一眼看出错配）。
+    check = _term_api("GET", "/api/term")
+    if "error" in check:
+        # 无法二次核对——不阻断，但标注未验证，让上层知道成功是"未经确认"的。
+        out["registered"] = None
+        out["verify_error"] = check["error"]
+        return ToolResult(success=True, output=out)
+    registered = any(s.get("id") == sid for s in (check.get("sessions") or []))
+    out["registered"] = registered
+    if not registered:
+        return ToolResult(
+            success=False, output=out,
+            error=(
+                f"终端会话已创建 (id={sid}) 但未出现在 :{port} 的会话列表中——"
+                "目标 dashboard 可能已重启，或 DASHBOARD_PORT 指向了非当前浏览器所连的实例。"
+                "请用 terminal_list 核对，并确认 agent 与浏览器连的是同一个 dashboard。"
+            ),
+        )
+    return ToolResult(success=True, output=out)
 
 
 def tool_terminal_send(state: AgentState, id: str, text: str, submit: bool = True) -> ToolResult:
@@ -3342,7 +3428,11 @@ def get_standard_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="terminal_open",
-            description="新建一个共享终端会话，用户界面会自动出现对应 Tab。返回 {id, title}。",
+            description=(
+                "新建一个共享终端会话，用户界面会自动出现对应 Tab。"
+                "返回 {id, title, port, registered}：port 为实际命中的 dashboard 端口，"
+                "registered 表示会话已登记在册。建完会二次核对，未登记（服务重启/端口错配）时不报成功。"
+            ),
             args_schema={"title": "（可选）终端标题，默认 'Agent'"},
             fn=tool_terminal_open,
         ),
