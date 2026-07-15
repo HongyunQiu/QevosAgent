@@ -2102,6 +2102,8 @@ let _advisorLogIdxQueue = [];
 let _advisorRenderCursor = 0;
 // Cache of fetched full advisor entries so re-renders don't re-fetch.
 const _advisorEntryCache = {};
+// Run id the cache/open-state currently belong to; on change they're dropped.
+let gAdvisorCacheRunId = null;
 // Track which advisor details are open by `${logIdx}-${section}` so 500ms re-renders
 // don't collapse them. Sections: 'advice' (always open by default), 'context', 'system'.
 const _advisorOpenSet = new Set();
@@ -2323,14 +2325,24 @@ function handleMsg(msg) {
 // ── Render ────────────────────────────────────────────────────────────────
 function renderAll(data, runId) {
   const rid = runId || data.activeRunId;
+  // Set BEFORE renderMainArea: renderEvents builds the advisor→log index queue
+  // from gAdvisorView.advisorHistory, so it must already point at the run being
+  // rendered. If left until after renderMainArea, the queue is built from the
+  // PREVIOUSLY viewed (or live) run's history — a mismatched advisor-event count
+  // exhausts the queue and the surplus events render "(not available)".
+  gAdvisorView = data;
+  // advisor entry cache / open-state are keyed by logIdx only; drop them when the
+  // viewed run changes so entry #N of run A can't leak into entry #N of run B.
+  if (rid !== gAdvisorCacheRunId) {
+    for (const k in _advisorEntryCache) delete _advisorEntryCache[k];
+    _advisorOpenSet.clear();
+    gAdvisorCacheRunId = rid;
+  }
   renderTopBar(data, rid);
   renderSidebar(data, rid);
   renderMainArea(data);
   renderScratchpad(data.scratchpad || '');
   renderJobs(data.events || []);
-  // gAdvisorView retained so the inline advisor expansion in events log knows
-  // which run's advisor_log to map against (live vs. historical view).
-  gAdvisorView = data;
   updateCmdBarMode(data);
   if (gCenterTab === 'files')        loadRunFiles();
   else if (gCenterTab.startsWith('dir-')) reloadDirTab(gCenterTab);
@@ -3793,7 +3805,10 @@ async function advisorExpand(logIdx, ctxElId, sysElId) {
     if (sysEl.querySelector('.adv-loading')) sysEl.textContent = cached.system  || '(empty)';
     return;
   }
-  const runId = (gState && gState.activeRunId) || gViewRunId;
+  // Prefer the run being VIEWED, not the live one: on a historical run
+  // gState.activeRunId is the live run, whose advisor_log has a different (or no)
+  // entry at logIdx → 404 or wrong content.
+  const runId = gViewRunId || (gState && gState.activeRunId);
   if (!runId) return;
   try {
     const r = await fetch('/api/run/' + encodeURIComponent(runId) + '/advisor/' + logIdx);
