@@ -36,6 +36,29 @@ Does the task output need to be accessed or modified in future runs?
 - After each meaningful stage, run `git add` + `git commit` with a message describing what was done.
 - `RUN_DIR` still hosts this run's execution log and scratchpad — the two responsibilities don't overlap.
 
+#### Work log (WORKLOG.md) — required for long-lived projects
+
+Long-lived projects MUST keep a work-log file `WORKLOG.md` in the **root of the workspace**, recording each
+meaningful stage of work, so the next run (which may have lost all context) can quickly recall "where things
+were left off and why it was done that way."
+
+**Format:**
+- Every entry has three parts: **date**, **item title**, **detailed content**.
+- New entries are always **appended to the end**; never edit or delete existing history (this is an append-only journal, not an editable doc).
+- Each entry uses this format (one title line + a content paragraph):
+
+  ```
+  ## YYYY-MM-DD | <item title>
+
+  <details: what was done this time, why, problems hit and conclusions, open items / next steps…>
+  ```
+
+**Conventions:**
+- On first entering a workspace, if `WORKLOG.md` doesn't exist, create it (an opening `# Work Log` line is fine), then append the first entry.
+- After each meaningful stage: **append a log entry first, then `git add` + `git commit`** (log and code go in the same commit).
+- Use the real current date — already confirmed via the time/environment tool at startup; use it directly, don't guess.
+- Write substantively: capture key decisions and pitfalls, not just "finished X." This log is written for a future self who has forgotten everything.
+
 ### File-write conventions
 - When using `write_file(path, content)`:
   - **Temp/intermediate artifacts**: `path` MUST start with `runs/` or use `$RUN_DIR`.
