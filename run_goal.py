@@ -494,6 +494,21 @@ def main():
             print(f"[run_goal] skills loaded: {loaded_skills}")
         initial_meta["_active_skills"] = loaded_skills
 
+    # ── (5b) SKILL 清单（名称+简介）──────────────────────────────────────────
+    # 与 (5) 的全文注入无关：不管勾没勾，agent 都该知道有哪些技能存在、各管什么，
+    # 相关时自己 read_skill 拉全文。算一次存进 meta，system prompt 每轮复用。
+    try:
+        from agent.core.skills import build_skills_catalog
+
+        _catalog = build_skills_catalog(initial_meta.get("_active_skills") or [])
+        if _catalog:
+            initial_meta["_skills_catalog"] = _catalog
+            print(f"[run_goal] skills catalog: {len(_catalog.splitlines())} entries "
+                  f"({len(_catalog)} chars)")
+    except Exception as _ce:
+        # 清单只是发现性优化，构建失败不该拖垮整个 run。
+        print(f"[run_goal] skills catalog: WARNING failed to build: {_ce}")
+
     full_goal = goal + "\n\n" + prefix
 
     agent = Agent(

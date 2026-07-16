@@ -143,6 +143,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "advisor.ctx.progress":   "## 工作进展日志（主 Agent 自述，来源={method}，更新于 iter={iter}；可能存在自我偏置，请结合最近原始片段交叉验证）\n{log}",
         "advisor.ctx.tools":      "## 可用工具与能力（仅名称与简介）\n{items}",
         "advisor.ctx.tools_empty": "## 可用工具与能力\n（无工具）",
+        "advisor.ctx.skills_header": "### 可用领域技能（agent 可用 read_skill 读取全文）",
         "advisor.ctx.history":    "## 最近原始执行片段（最后 {n} 条，供与自述对账）\n{hist}",
         "advisor.ctx.no_history": "（暂无历史记录）",
         "advisor.ctx.truncated":  "…[截断]",
@@ -200,6 +201,12 @@ _STRINGS: dict[str, dict[str, str]] = {
         "sys.tools_header":   "## 可用工具",
         "sys.tools_none":     "（暂无可用工具）",
         "sys.evolved_tag":    " [进化工具]",
+        "sys.skills_header":  "## 可用领域技能",
+        "sys.skills_hint": (
+            "以下技能各自封装了一个领域的专业规范与操作细节。任务与某条相关时，"
+            "先调用 read_skill(name) 读取全文再动手，不要凭猜测执行。"
+        ),
+        "sys.skills_loaded_tag": " 〔已全文加载，无需再读〕",
         "sys.params_label":   "  参数:",
         "sys.concept_header": "## 宏观工作记忆",
         "sys.memory_header":  "## 细粒度记忆（近期任务经验）",
@@ -702,6 +709,7 @@ Tip: just type / to pause; enter the full command then press Enter.
         "advisor.ctx.progress":   "## Work Progress Log (main agent's self-account, source={method}, updated at iter={iter}; may contain self-bias — cross-check against the recent raw fragments)\n{log}",
         "advisor.ctx.tools":      "## Available Tools & Capabilities (names + one-line summaries)\n{items}",
         "advisor.ctx.tools_empty": "## Available Tools & Capabilities\n(none)",
+        "advisor.ctx.skills_header": "### Available domain skills (the agent can read_skill for full text)",
         "advisor.ctx.history":    "## Recent Raw Execution Fragments (last {n}, for cross-checking the self-account)\n{hist}",
         "advisor.ctx.no_history": "(no history yet)",
         "advisor.ctx.truncated":  "…[truncated]",
@@ -763,6 +771,13 @@ Tip: just type / to pause; enter the full command then press Enter.
         "sys.tools_header":   "## Available tools",
         "sys.tools_none":     "(no tools available)",
         "sys.evolved_tag":    " [evolved tool]",
+        "sys.skills_header":  "## Available domain skills",
+        "sys.skills_hint": (
+            "Each skill below packages the rules and operational details of one domain. "
+            "When the task relates to one, call read_skill(name) to read it in full "
+            "before acting — do not proceed on guesswork."
+        ),
+        "sys.skills_loaded_tag": " [already loaded in full, no need to re-read]",
         "sys.params_label":   "  Parameters:",
         "sys.concept_header": "## Macro working memory",
         "sys.memory_header":  "## Fine-grained memory (recent task experience)",

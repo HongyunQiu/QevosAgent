@@ -927,11 +927,16 @@ def build_system_prompt(
     long_term: list[str],
     concept_memory: str = "",
     scratchpad_note_mode: Optional[str] = None,
+    skills_catalog: str = "",
 ) -> str:
     """
     动态构建 system prompt（仅含静态/准静态内容）。
     scratchpad 和 runtime_patches 已移至每轮 context 末尾注入，以保持 system prompt
     前缀稳定，最大化 KV Cache 命中率。工具集变化（进化后）时 prompt 仍会自动更新。
+
+    skills_catalog 为 build_skills_catalog() 的产物（名称+简介，不含正文）。
+    与工具清单同属「环境常量」，一次 run 内不变，放这里可吃满 KV Cache。
+    空串则整节省略。
     """
     tool_docs = []
     for name, spec in tools.items():
@@ -944,6 +949,14 @@ def build_system_prompt(
         )
 
     tools_section = "\n".join(tool_docs) if tool_docs else t("sys.tools_none")
+
+    skills_section = ""
+    if skills_catalog and skills_catalog.strip():
+        skills_section = (
+            f"\n\n{t('sys.skills_header')}\n"
+            f"{t('sys.skills_hint')}\n\n"
+            f"{skills_catalog.strip()}"
+        )
 
     concept_section = ""
     if concept_memory and concept_memory.strip():
@@ -975,6 +988,7 @@ def build_system_prompt(
 
 {t('sys.tools_header')}
 {tools_section}
+{skills_section}
 {concept_section}
 {memory_section}
 

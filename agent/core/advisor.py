@@ -89,10 +89,19 @@ def _build_tools_catalog(state: AgentState) -> str:
             first_line = first_line[:140] + "…"
         lines.append(f"- {name} — {first_line}" if first_line else f"- {name}")
 
-    skills = state.meta.get("_active_skills")
-    if isinstance(skills, list) and skills:
+    # SKILL 清单给全量（名称+简介+已加载标注），advisor 才能主动建议「这任务该读
+    # kicad_mcp」；只给已激活名称的话，它对没勾选的技能同样无从推荐。
+    catalog = state.meta.get("_skills_catalog")
+    if isinstance(catalog, str) and catalog.strip():
         lines.append("")
-        lines.append(f"(已激活 SKILL：{', '.join(skills)})")
+        lines.append(t("advisor.ctx.skills_header"))
+        lines.append(catalog.strip())
+    else:
+        # 无 catalog（如恢复自旧 run 的 state）时退回仅列已激活名称。
+        skills = state.meta.get("_active_skills")
+        if isinstance(skills, list) and skills:
+            lines.append("")
+            lines.append(f"(已激活 SKILL：{', '.join(skills)})")
     return "\n".join(lines)
 
 
@@ -305,6 +314,7 @@ def run_self_progress_summary(state: AgentState, llm: LLMBackend) -> Optional[st
             state.tools,
             state.long_term,
             concept_memory=state.meta.get("concept_memory", ""),
+            skills_catalog=state.meta.get("_skills_catalog", ""),
         )
         messages = build_context_messages(
             state,
