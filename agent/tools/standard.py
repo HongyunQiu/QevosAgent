@@ -2603,6 +2603,27 @@ def tool_web_show(
                 + _port_hint()
             ),
         )
+
+    # 实例归属自校验（仅在本次确实尝试了自动打开时做）。同机多 agent 错路由时，POST 会打到
+    # "活着但不是目标"的实例——它 200 受理、opened=True，却把 Tab 弹在【错误的窗口】里，你正看的
+    # 实例什么都没有（terminal_open 的"会话在不在册"是同一思路）。判据：目标 dashboard 的运行
+    # 列表 runs 里必须包含本 run；不包含 → 打错了实例，如实降级为失败。
+    if opened is True:
+        _st = _term_api("GET", "/api/state")
+        _runs = _st.get("runs") if isinstance(_st, dict) else None
+        if isinstance(_runs, list) and _runs and run_id not in _runs:
+            out["registered"] = False
+            return ToolResult(
+                success=False,
+                output=out,
+                error=(
+                    f"页面已推送到 :{port}，但该 dashboard 的运行列表里没有本 run（{run_id}）——"
+                    f"很可能打到了错误的实例（同机多 agent），弹窗出现在别的窗口、你这边看不到。"
+                    f"请确认 agent 与浏览器连的是同一个 dashboard。" + _port_hint()
+                ),
+            )
+        if isinstance(_runs, list) and run_id in _runs:
+            out["registered"] = True
     return ToolResult(success=True, output=out)
 
 

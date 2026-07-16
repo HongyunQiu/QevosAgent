@@ -322,11 +322,13 @@ async function startDashboard() {
     const { serverEvents } = require(serverPath);
     serverEvents.on('open-view', ({ url, title, displayId }) => {
       if (!mainWindow || mainWindow.isDestroyed()) return;
-      // Pop the new view to the front only if the user is currently on the
-      // Dashboard (so the first web_show actually shows up). If they're already
-      // watching another agent view, just add/refresh the tab so we don't yank
-      // them away from what they're watching.
-      const activate = gActiveId === HOME_ID;
+      // A brand-new panel always pops to the front — that's what web_show has
+      // always done and what users expect (a new display should be visible).
+      // Only a REPEAT web_show that merely refreshes an already-open panel
+      // respects "don't yank me off what I'm watching", and even then it still
+      // pops if the user is currently on the Dashboard.
+      const isNew    = !gViews.has('view-' + displayId);
+      const activate = isNew || gActiveId === HOME_ID;
       openElectronView(displayId, url, title || displayId, false, activate);
     });
 
