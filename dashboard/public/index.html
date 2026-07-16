@@ -3991,6 +3991,11 @@ function setCenterTab(name) {
 // server kill the backing PTY (handled in dashboard/server.js). Terminals are
 // intentionally NOT persisted — a PTY can't survive a page reload.
 let gTermSeq = 0;
+// False until the first terminal-session sync after (re)load. The first sync
+// adopts any already-live sessions silently (background tabs) so we don't hijack
+// the user's view on page load; after that, a session that newly appears is
+// agent/other-frontend-created and gets surfaced (focused) so it's actually seen.
+let gTermSynced = false;
 
 // Open a terminal tab. opts.sessionId attaches to an existing (e.g. agent-created)
 // shared session; omit to create a fresh one — the server assigns the id, which
@@ -4068,11 +4073,17 @@ function updateTerminalTabsFromState(terminals) {
   if (!Array.isArray(terminals)) return;
   const live = new Set(terminals.map(t => t.id));
   const tabs = () => [...document.querySelectorAll('[id^=ctab-term-]')];
+  // First sync after (re)load: adopt existing sessions silently as background
+  // tabs (don't yank the user around on page load). After that, a session that
+  // newly appears is agent-/other-frontend-created — surface it (focus the tab)
+  // so an agent-opened terminal is actually seen instead of hiding in the strip.
+  const firstSync = !gTermSynced;
   for (const t of terminals) {
     if (!tabs().some(b => b.dataset.sessionId === t.id)) {
-      openTerminalTab({ sessionId: t.id, title: t.title, background: true });
+      openTerminalTab({ sessionId: t.id, title: t.title, background: firstSync });
     }
   }
+  gTermSynced = true;
   for (const b of tabs()) {
     const sid = b.dataset.sessionId;
     if (sid && !live.has(sid)) removeTerminalTabLocal(b.id.replace('ctab-', ''));
