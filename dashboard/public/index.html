@@ -5210,17 +5210,26 @@ let gFilesRawUrl   = ''; // resolved per-file for image/raw serving
 let gFilesEditMode = false;
 let gCmEditor      = null;
 
-// ── Shared file-type sets ─────────────────────────────────────────────────
+// ── Shared file-type helpers ──────────────────────────────────────────────
+// 只有图片还按后缀判断（要走 <img> 而不是解码成文本）。文本/二进制不再看后缀，
+// 由后端嗅探字节内容决定：拿到 {binary:true} 才显示"二进制"占位。
 const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp','ico','tiff']);
-const TEXT_EXTS = new Set([
-  'txt','log','out','err','diff','patch',
-  'md','markdown','html','htm','xml','svg','rst',
-  'json','jsonl','yaml','yml','toml','ini','cfg','conf','env',
-  'py','js','ts','jsx','tsx','go','rs','java','c','cpp','h','hpp','cs','rb','php',
-  'sh','bash','zsh','fish','ps1','bat','cmd','r','kotlin','swift','dart','lua',
-  'vim','dockerfile','makefile','sql','graphql','proto','tf','tfvars',
-  'css','scss','less','csv','tsv','ndjson',
-]);
+
+// 两种情况能看不能编辑，否则保存会毁文件：
+//   非 UTF-8（GBK、UTF-16…）——/api/fs/write 只写 UTF-8，等于偷偷换了编码；
+//   被截断的大文件——保存等于把后面没读到的部分砍掉。
+function _canEditFile(data) {
+  if (data.error || data.binary || data.truncated) return false;
+  return !data.encoding || data.encoding === 'utf-8';
+}
+
+// 编码/截断这类信息挂在路径栏后面，不混进正文（正文要参与渲染、复制、编辑）。
+function _fileMeta(data) {
+  const bits = [];
+  if (data.encoding && data.encoding !== 'utf-8') bits.push(data.encoding.toUpperCase() + ' 只读');
+  if (data.truncated) bits.push(`仅显示前 8 MB / 共 ${fmtSize(data.size)}`);
+  return bits.length ? '  · ' + bits.join(' · ') : '';
+}
 
 function csvToTable(csv, sep = ',') {
   const lines = csv.split('\n').filter(l => l.trim());
@@ -5320,21 +5329,21 @@ async function selectRunFile(runId, filePath, el) {
     applyPreview('', gFilesPath, gFilesPreview);
     return;
   }
-  if (!TEXT_EXTS.has(ext)) {
-    gFilesContent = '';
-    document.getElementById('filesView').innerHTML = '<span class="files-placeholder">Binary file – preview not supported</span>';
-    applyPreview('', gFilesPath, false);
-    _updateFilesToolbar(false);
-    return;
-  }
-
   document.getElementById('filesView').innerHTML = '<span class="files-placeholder">Loading…</span>';
   try {
     const data = await fetch(`/api/run-file/${encodeURIComponent(runId)}/${filePath}`).then(r => r.json());
+    if (data.binary) {
+      gFilesContent = '';
+      document.getElementById('filesView').innerHTML = '<span class="files-placeholder">二进制文件 – 无法预览</span>';
+      applyPreview('', gFilesPath, false);
+      _updateFilesToolbar(false);
+      return;
+    }
     gFilesContent = data.error ? '' : (data.content || '');
+    document.getElementById('filesContentPathName').textContent = filePath + _fileMeta(data);
     document.getElementById('filesView').textContent = data.error ? 'Error: ' + data.error : gFilesContent;
     applyPreview(gFilesContent, gFilesPath, gFilesPreview);
-    _updateFilesToolbar(!data.error);
+    _updateFilesToolbar(_canEditFile(data));
   } catch (e) {
     document.getElementById('filesView').innerHTML = `<span class="files-placeholder">Error: ${esc(e.message)}</span>`;
     _updateFilesToolbar(false);
@@ -5615,19 +5624,21 @@ async function selectDirTabFile(id, el) {
     document.getElementById(id + '-editBtn').style.display = 'none';
     return;
   }
-  if (!TEXT_EXTS.has(ext)) {
-    s.content = '';
-    document.getElementById(id + '-view').innerHTML = '<span class="files-placeholder">Binary file – preview not supported</span>';
-    document.getElementById(id + '-editBtn').style.display = 'none';
-    return;
-  }
   document.getElementById(id + '-view').innerHTML = '<span class="files-placeholder">Loading…</span>';
   try {
     const data = await fetch('/api/fs/read?path=' + encodeURIComponent(fullPath)).then(r => r.json());
+    if (data.binary) {
+      s.content = '';
+      document.getElementById(id + '-view').innerHTML = '<span class="files-placeholder">二进制文件 – 无法预览</span>';
+      applyPreviewCtx(dirCtx(id), '', fullPath, false, s.rawUrl);
+      document.getElementById(id + '-editBtn').style.display = 'none';
+      return;
+    }
     s.content = data.error ? '' : (data.content || '');
+    pb.textContent = fullPath + _fileMeta(data);
     document.getElementById(id + '-view').textContent = data.error ? 'Error: ' + data.error : s.content;
     applyPreviewCtx(dirCtx(id), s.content, fullPath, s.preview, s.rawUrl);
-    document.getElementById(id + '-editBtn').style.display = data.error ? 'none' : '';
+    document.getElementById(id + '-editBtn').style.display = _canEditFile(data) ? '' : 'none';
   } catch (e) {
     document.getElementById(id + '-view').innerHTML = `<span class="files-placeholder">Error: ${esc(e.message)}</span>`;
     document.getElementById(id + '-editBtn').style.display = 'none';

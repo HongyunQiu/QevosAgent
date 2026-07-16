@@ -1760,6 +1760,88 @@ const MIME = {
   '.otf':   'font/otf',
 };
 
+// ── 文本嗅探 ────────────────────────────────────────────────────────────────
+// 文件浏览器过去按后缀白名单决定能不能预览，于是 .rules / .inc / .gcode /
+// LICENSE 这类明明是纯文本的文件一律被当成二进制。改成看字节内容决定。
+const SNIFF_BYTES       = 8192;             // 只嗅探文件头这么多字节
+const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;  // 超过这么大只返回前面一段
+
+function _decoder(enc, opts) {
+  // 小 ICU 构建的 Node 只认 utf-8/utf-16le/latin1，其余标签会抛错。
+  try { return new TextDecoder(enc, opts); } catch { return null; }
+}
+
+// 解码整段并要求无非法字节；返回 null 表示这个编码解不通。
+function _tryDecode(buf, enc, whole) {
+  const dec = _decoder(enc, { fatal: true });
+  if (!dec) return null;
+  try {
+    // stream:true 让被 SNIFF_BYTES 切断的尾部多字节字符不算解码失败——
+    // 否则一个合法 UTF-8 文件会因为切在半个汉字上而被误判。
+    return dec.decode(buf, { stream: !whole });
+  } catch { return null; }
+}
+
+// 文本里几乎不会出现 C0 控制字符（制表/换行/回车/换页除外）。比例偏高说明
+// 这是没有 NUL 的二进制块（压缩数据之类），不是文本。
+function _tooManyControls(text) {
+  if (!text.length) return false;
+  let bad = 0;
+  for (const ch of text) {
+    const c = ch.codePointAt(0);
+    if ((c < 0x20 && c !== 9 && c !== 10 && c !== 13 && c !== 12) || c === 0x7f) bad++;
+  }
+  return bad / text.length > 0.1;
+}
+
+// 返回可用的编码名，null 表示二进制。
+function sniffEncoding(head, whole) {
+  if (!head.length) return 'utf-8';
+  // BOM 优先：UTF-16 文本天生满是 NUL 字节，不能栽在下面的 NUL 判断上。
+  if (head.length >= 3 && head[0] === 0xEF && head[1] === 0xBB && head[2] === 0xBF) return 'utf-8';
+  if (head.length >= 2 && head[0] === 0xFF && head[1] === 0xFE) return 'utf-16le';
+  if (head.length >= 2 && head[0] === 0xFE && head[1] === 0xFF) return 'utf-16be';
+  if (head.includes(0)) return null;   // 和 git 一样：文件头有 NUL 就是二进制
+  // latin1 兜底：每个字节都合法，所以它只会被控制字符比例挡下来。
+  for (const enc of ['utf-8', 'gbk', 'latin1']) {
+    const text = _tryDecode(head, enc, whole);
+    if (text !== null && !_tooManyControls(text)) return enc;
+  }
+  return null;
+}
+
+// 为预览读一个文件：先嗅探文件头定文本/二进制，二进制就直接返回、不整块读进
+// 内存（点开一个 4G 的 .bin 也不会把服务打爆）。
+// 返回 { binary, content, encoding, truncated, size }。
+function readFileForPreview(fullPath) {
+  const st = fs.statSync(fullPath);
+  if (st.isDirectory()) throw Object.assign(new Error('EISDIR: is a directory'), { code: 'EISDIR' });
+  const fd = fs.openSync(fullPath, 'r');
+  try {
+    const head = Buffer.alloc(Math.min(SNIFF_BYTES, st.size));
+    if (head.length) fs.readSync(fd, head, 0, head.length, 0);
+    const enc = sniffEncoding(head, st.size <= head.length);
+    if (!enc) return { binary: true, content: null, encoding: null, truncated: false, size: st.size };
+    const len = Math.min(st.size, MAX_PREVIEW_BYTES);
+    let buf = head;
+    if (len > head.length) {
+      buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, 0);
+    } else if (len < head.length) {
+      buf = head.subarray(0, len);
+    }
+    // 这里不要 fatal：截断处可能切在半个字符上，宁可出个 U+FFFD 也别整段失败。
+    const dec = _decoder(enc) || _decoder('utf-8');
+    return {
+      binary:    false,
+      content:   dec.decode(buf),
+      encoding:  enc,
+      truncated: st.size > len,
+      size:      st.size,
+    };
+  } finally { fs.closeSync(fd); }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -2822,16 +2904,14 @@ const server = http.createServer(async (req, res) => {
       json(403, { error: 'forbidden' }); return;
     }
     try {
-      const st = fs.statSync(fullPath);
-      // For JSONL files strip embedded base64 blobs before the size check so
-      // image-heavy conversation logs remain displayable in the dashboard.
+      // JSONL 走单独一条路：先剥掉内嵌的 base64 大块再返回，这样图片很多的
+      // 对话日志仍然能显示，也不会因为 base64 撑爆 MAX_PREVIEW_BYTES 被截断。
       if (relFile.endsWith('.jsonl')) {
         const raw = fs.readFileSync(fullPath, 'utf8');
         json(200, { content: stripBase64FromJsonl(raw), truncated: false });
         return;
       }
-      const content = fs.readFileSync(fullPath, 'utf8');
-      json(200, { content });
+      json(200, readFileForPreview(fullPath));
     } catch (e) {
       if (e.code === 'ENOENT') { json(200, { content: null, exists: false }); return; }
       json(500, { error: String(e) });
@@ -2980,8 +3060,7 @@ const server = http.createServer(async (req, res) => {
       const u        = new URL(req.url, 'http://x');
       const filePath = u.searchParams.get('path');
       if (!filePath) return json(400, { error: 'path required' });
-      const content  = fs.readFileSync(filePath, 'utf8');
-      return json(200, { content });
+      return json(200, readFileForPreview(filePath));
     } catch (e) { return json(400, { error: String(e.message) }); }
   }
 
