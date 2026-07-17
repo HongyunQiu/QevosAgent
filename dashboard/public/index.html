@@ -962,6 +962,18 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .center-pane { display:none; flex:1; overflow:hidden; flex-direction:column; }
 .center-pane.active { display:flex; }
 
+/* Zen mode — collapse both side panels so the center pane spans the full
+   width. Topbar + command bar stay put (Esc to exit). */
+.app.pane-zen { grid-template-columns: 0 1fr 0; }
+.app.pane-zen .sidebar, .app.pane-zen .right-panel { display:none; }
+.pane-fullscreen-btn {
+  background:none; border:none; color:var(--muted); cursor:pointer;
+  font-size:13px; line-height:1; padding:2px 6px; border-radius:3px;
+  flex-shrink:0; transition:all 0.15s;
+}
+.pane-fullscreen-btn:hover { color:var(--blue); background:rgba(88,166,255,0.12); }
+.app.pane-zen .pane-fullscreen-btn { color:var(--blue); }
+
 /* ── AGENTS.md pane ──────────────────────────────────────────────────── */
 .agents-toolbar {
   display:flex; align-items:center; gap:8px;
@@ -1823,6 +1835,7 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
       <div class="files-toolbar">
         <span class="tree-caret-toggle" onclick="toggleFilesTree(this)" title="收起/展开目录树">▾</span>
         <span class="agents-title" id="filesRunLabel">No run selected</span>
+        <button class="pane-fullscreen-btn" onclick="togglePaneFullscreen()" title="全屏">⛶</button>
         <div class="bar-gap"></div>
         <button class="icon-btn" onclick="refreshFilesTab()">↺ Refresh</button>
         <button class="icon-btn active" id="filesRenderBtn" onclick="toggleFilesRender()" title="Preview (Markdown / JSON / JSONL / HTML / CSV / Code)">◈ Preview</button>
@@ -3517,13 +3530,29 @@ function toggleJobFullscreen(ev, jobId, runId) {
   }
 }
 
+// Zen mode: hide both side panels so the center pane spans the full width.
+// State lives on .app, so it survives switching center tabs. Works for any
+// pane — drop a .pane-fullscreen-btn in its toolbar and it just works.
+function setPaneZen(on) {
+  document.querySelector('.app').classList.toggle('pane-zen', on);
+  document.querySelectorAll('.pane-fullscreen-btn').forEach(b => {
+    b.title = on ? '退出全屏 (Esc)' : '全屏';
+  });
+}
+
+function togglePaneFullscreen() {
+  setPaneZen(!document.querySelector('.app').classList.contains('pane-zen'));
+}
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const full = document.querySelector('.job-card.fullscreen');
   if (full) {
     full.classList.remove('fullscreen');
     document.body.style.overflow = '';
+    return;
   }
+  if (document.querySelector('.app.pane-zen')) setPaneZen(false);
 });
 
 function fetchJobOutput(jobId, runId) {
@@ -5476,6 +5505,7 @@ function _dirPaneHTML(id, label, dirPath) {
   <div class="files-toolbar">
     <span class="tree-caret-toggle" onclick="toggleFilesTree(this)" title="收起/展开目录树">▾</span>
     <span class="agents-title" id="${id}-dirLabel" title="${esc(dirPath)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px">${esc(label)}</span>
+    <button class="pane-fullscreen-btn" onclick="togglePaneFullscreen()" title="全屏">⛶</button>
     <div class="bar-gap"></div>
     <button class="icon-btn" onclick="reloadDirTab('${id}')">↺ Refresh</button>
     <button class="icon-btn active" id="${id}-renderBtn" onclick="toggleDirPreview('${id}')">◈ Preview</button>
