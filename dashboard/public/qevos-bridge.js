@@ -8,8 +8,10 @@
  *
  * Surface:
  *   qevos.app / qevos.root
- *   qevos.readFile(rel)            -> string | null
+ *   qevos.readFile(rel)            -> string | null      (utf8 文本)
  *   qevos.writeFile(rel, content)  -> {ok:true}
+ *   qevos.readBinary(rel)          -> ArrayBuffer | null (二进制：STL/图片等)
+ *   qevos.writeBinary(rel, base64) -> {ok:true}          (base64 → 原始字节落盘)
  *   qevos.readJSON(rel)            -> object | null      (parsed)
  *   qevos.writeJSON(rel, obj)      -> {ok:true}          (pretty-printed)
  *   qevos.exists(rel)              -> boolean
@@ -146,6 +148,15 @@
     },
     writeFile: async function (rel, content) {
       return req('POST', FBASE + enc(rel) + qs(), { content: String(content) });
+    },
+    readBinary: async function (rel) {
+      var r = await fetch(FBASE + enc(rel) + qs({ raw: 1 }));
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    },
+    writeBinary: async function (rel, base64) {
+      return req('POST', FBASE + enc(rel) + qs(), { content_b64: String(base64) });
     },
     exists: async function (rel) {
       var j = await req('GET', FBASE + enc(rel) + qs());

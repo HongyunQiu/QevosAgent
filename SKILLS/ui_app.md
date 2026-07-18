@@ -109,8 +109,10 @@ enabled: true
 
 ```js
 // —— 文件 API（相对 project root；确定性编辑走这里，零 LLM、实时）——
-const md   = await qevos.readFile('flow.md');          // string | null
+const md   = await qevos.readFile('flow.md');          // string | null（utf8 文本）
 await       qevos.writeFile('flow.md', md);            // {ok}
+const buf  = await qevos.readBinary('model.stl');      // ArrayBuffer | null（二进制：STL/图片等，勿用 readFile 读）
+await       qevos.writeBinary('shot.png', base64);     // {ok} base64 → 原始字节落盘
 const view = await qevos.readJSON('.qevos/view.json');  // 解析后的对象 | null
 await       qevos.writeJSON('.qevos/view.json', state); // 美化写入
 const ok   = await qevos.exists('flow.md');            // boolean

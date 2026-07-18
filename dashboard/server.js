@@ -2579,9 +2579,24 @@ const server = http.createServer(async (req, res) => {
     const rel = path.relative(rootDir, fullPath);
     if (rel.startsWith('..') || path.isAbsolute(rel)) { json(403, { error: 'forbidden' }); return; }
     if (req.method === 'GET') {
-      try { json(200, { content: fs.readFileSync(fullPath, 'utf8') }); }
+      // ?raw=1 → 二进制安全：原样流式返回字节（面板 fetch → arrayBuffer）；默认仍是 utf8 JSON
+      const raw = new URL(req.url, 'http://x').searchParams.get('raw');
+      try {
+        if (raw) {
+          const data = fs.readFileSync(fullPath);
+          const mime = MIME[path.extname(fullPath).toLowerCase()] || 'application/octet-stream';
+          res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+          res.end(data);
+        } else {
+          json(200, { content: fs.readFileSync(fullPath, 'utf8') });
+        }
+      }
       catch (e) {
-        if (e.code === 'ENOENT') { json(200, { content: null, exists: false }); return; }
+        if (e.code === 'ENOENT') {
+          if (raw) { res.writeHead(404); res.end('not found'); }
+          else json(200, { content: null, exists: false });
+          return;
+        }
         json(500, { error: String(e) });
       }
       return;
@@ -2595,10 +2610,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     try {
-      const { content } = JSON.parse(await readBody(req));
-      if (typeof content !== 'string') { json(400, { error: 'content required' }); return; }
+      const { content, content_b64 } = JSON.parse(await readBody(req));
+      if (typeof content !== 'string' && typeof content_b64 !== 'string') { json(400, { error: 'content or content_b64 required' }); return; }
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      fs.writeFileSync(fullPath, content, 'utf8');
+      if (typeof content_b64 === 'string') fs.writeFileSync(fullPath, Buffer.from(content_b64, 'base64'));
+      else fs.writeFileSync(fullPath, content, 'utf8');
       pushToPanel(rootDir, { type: 'file-changed', path: relFile });  // notify open panels of this project
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }

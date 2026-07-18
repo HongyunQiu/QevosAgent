@@ -149,7 +149,8 @@ my-flow/                    ← project root(持久,cwd 轴)
 不再是内联字符串:抽成**服务的模块** [`dashboard/public/qevos-bridge.js`](../dashboard/public/qevos-bridge.js),
 面板由 server 注入 `<script>window.__QEVOS__={app}</script><script src="/qevos-bridge.js">`,模块自配置。
 
-- **文件 API**:`readFile/writeFile/readJSON/writeJSON/exists/remove/list`(root-scoped 到 `app-data/<id>/`)。
+- **文件 API**:`readFile/writeFile/readJSON/writeJSON/exists/remove/list`(root-scoped 到 `app-data/<id>/`);
+  二进制走 `readBinary`(`GET ?raw=1` 流式字节 → ArrayBuffer)/`writeBinary`(POST `content_b64`),文本端点不动。
 - **`emit`**:结构化事件(惰性日志),不变。
 - **`onPush(cb)`**:server→面板 **SSE** 通道(`GET /api/app-stream/:id`),返回退订函数。
   v1 生产者:文件经 API 写/删时推 `{type:'file-changed',path}`(多实例同步/外部编辑刷新);Agent 主动回推仍 v2。
