@@ -1478,11 +1478,15 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
     border-right: none; border-bottom: 1px solid var(--border);
   }
 
-  /* Large-font mode: disable scale transform on mobile */
+  /* Large-font mode: disable scale transform on mobile, fall back to the
+     normal single-column portrait layout. grid-columns 必须一并重置——否则
+     桌面版的 184px 1fr 248px (0,2,1) 会压过单列 .app，把 topbar/events 挤进
+     最左 184px、右侧留两条空槽。 */
   body.large-font .app {
     transform: none;
     width: 100%;
     height: 100dvh;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   /* Zen（全屏）在移动端无意义：左右栏本就是离屏抽屉。彻底中和 zen 状态并
