@@ -963,8 +963,12 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .center-pane.active { display:flex; }
 
 /* Zen mode — collapse both side panels so the center pane spans the full
-   width. Topbar + command bar stay put (Esc to exit). */
-.app.pane-zen { grid-template-columns: 0 1fr 0; }
+   width. Topbar + command bar stay put (Esc to exit).
+   配对选择器是为了压过 body.large-font .app 的 grid-columns 覆盖 (0,2,1)：
+   否则大字体下面板被藏、184px/248px 空轨道仍在，中间区铺不满。
+   移动端的中和见下方 @media。 */
+.app.pane-zen,
+body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 .app.pane-zen .sidebar, .app.pane-zen .right-panel { display:none; }
 /* TAB 栏右侧位置紧张：去掉按钮框只留图标，配色仍走 icon-btn 的 muted→blue */
 #paneZenBtn { border:none; padding:2px 4px; font-size:13px; }
@@ -1480,6 +1484,14 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
     width: 100%;
     height: 100dvh;
   }
+
+  /* Zen（全屏）在移动端无意义：左右栏本就是离屏抽屉。彻底中和 zen 状态并
+     隐藏 ⛶——否则残留的 pane-zen 会把单列撑成三列、并 display:none 掉抽屉
+     使其再也拉不出来。选择器与上方基线一一对应，靠源码靠后在此断点取胜。 */
+  .app.pane-zen,
+  body.large-font .app.pane-zen { grid-template-columns: minmax(0, 1fr); }
+  .app.pane-zen .sidebar, .app.pane-zen .right-panel { display: flex; }
+  #paneZenBtn { display: none; }
 }
 
 /* ── Right-click context menu (file manager upload/download) ─────────────── */
@@ -3538,6 +3550,11 @@ function setPaneZen(on) {
 function togglePaneFullscreen() {
   setPaneZen(!document.querySelector('.app').classList.contains('pane-zen'));
 }
+
+// 进入移动断点时自动退出 zen：移动端侧栏是离屏抽屉，CSS 已中和 zen，这里再
+// 兜底清掉状态类，保持 JS/DOM 一致（否则退出移动端后 pane-zen 仍残留）。
+matchMedia('(max-width: 768px), (orientation: portrait)')
+  .addEventListener('change', e => { if (e.matches) setPaneZen(false); });
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
