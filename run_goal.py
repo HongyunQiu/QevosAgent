@@ -13,6 +13,59 @@ DEFAULT_CONCEPT  = "./memory_macro.md"
 DEFAULT_RUNS_DIR = "./runs"
 
 
+class _FaultTolerantTextIO:
+    """Wrap a text stream (stdout/stderr) so a broken downstream never aborts the run.
+
+    The dashboard reads our stdout/stderr over a socket. If that reader goes away
+    mid-run (e.g. its event loop closes the socket's read end), the next write/flush
+    raises ``BrokenPipeError`` (EPIPE) or ``OSError`` (EBADF). Console output is
+    best-effort telemetry — the run's real state is persisted to files independently
+    — so an unwritable console must NOT crash the agent, nor make the interpreter's
+    shutdown stdout-flush fail (which returns exit code 120). Once the stream breaks
+    we silently drop further output for the rest of the run.
+    """
+
+    def __init__(self, stream):
+        self._stream  = stream
+        self._broken  = False
+
+    def write(self, s):
+        if self._broken:
+            return len(s) if isinstance(s, str) else 0
+        try:
+            return self._stream.write(s)
+        except (BrokenPipeError, OSError):
+            self._broken = True
+            return len(s) if isinstance(s, str) else 0
+
+    def flush(self):
+        if self._broken:
+            return
+        try:
+            self._stream.flush()
+        except (BrokenPipeError, OSError):
+            self._broken = True
+
+    def __getattr__(self, name):
+        # Delegate everything else (encoding, fileno, isatty, buffer, ...) untouched.
+        return getattr(self._stream, name)
+
+
+def install_fault_tolerant_stdio():
+    """Replace sys.stdout/sys.stderr with broken-pipe-tolerant wrappers.
+
+    Idempotent and never raises — a failure here must not block startup.
+    Call once, before any console output.
+    """
+    try:
+        if not isinstance(sys.stdout, _FaultTolerantTextIO):
+            sys.stdout = _FaultTolerantTextIO(sys.stdout)
+        if not isinstance(sys.stderr, _FaultTolerantTextIO):
+            sys.stderr = _FaultTolerantTextIO(sys.stderr)
+    except Exception:
+        pass
+
+
 def load_dotenv_if_present(path: str = ".env"):
     """Load simple KEY=VALUE pairs from a .env file into os.environ.
 
@@ -215,6 +268,11 @@ def format_probe_summary(probe: dict) -> str:
 
 
 def main():
+    # Make console I/O tolerant of the dashboard closing our stdout/stderr socket
+    # mid-run (see _FaultTolerantTextIO). Must run before any print — otherwise a
+    # broken console write aborts the run and yields the cryptic exit code 120.
+    install_fault_tolerant_stdio()
+
     _team_api_instance = None  # 提前初始化，确保 finally 块安全访问
     ensure_env_defaults()
     # 依赖自检：缺失第三方库（尤其 json_repair）会导致诡异故障（如格式错误死循环），
