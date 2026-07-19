@@ -127,7 +127,28 @@ await qevos.emit('review_flow', { focus: 'approval' });
 //   当前生产者：项目文件经 API 被写/删时推 {type:'file-changed',path}（多实例同步/外部编辑刷新）。
 //   "Agent 主动回推" 仍 🔒 v2（待子 Agent）。返回取消订阅函数。
 const off = qevos.onPush(msg => { if (msg.type==='file-changed') reloadFrom(msg.path); });
+
+// —— 主题（light/dark 自动跟随 dashboard，已可用）——
+qevos.theme                                   // 'dark' | 'light'（当前值）
+const offT = qevos.onTheme(t => redraw(t));   // 切换时回调；返回取消订阅
 ```
+
+### 面板配色：必须跟随 light/dark 主题（平台已自动铺路）
+
+桥在每个面板里自动做了三件事，App **不用自己探测主题**：
+
+1. 把 `data-theme`（`'light'`/`'dark'`）写在面板自己的 `<html>` 上，dashboard 切换时实时跟随；
+2. 注入 `/qevos-theme.css` —— 一套随主题自动翻转的 CSS 变量（GitHub 系调色板，与 dashboard 一致）：
+   `--q-bg/--q-bg2/--q-bg3/--q-bg4`（底色由深到浅）、`--q-border`、`--q-text`、`--q-muted`、
+   `--q-blue/green/purple/orange/red/yellow/cyan`（强调色）、`--q-canvas`（大面积画布/3D 视口底色）、
+   `--q-mono/--q-sans`（字体栈）。注入先于 App 样式，App 可覆盖；
+3. 暴露 `qevos.theme` / `qevos.onTheme(cb)` 给 CSS 管不到的场景。
+
+**App 侧规则**：
+- 样式颜色一律写 `var(--q-*)`，不要硬编码 hex —— 这样零 JS 即自动换肤；
+- 半透明浮层、选中态等 `--q-*` 覆盖不到的细节，自定义变量 + `[data-theme="light"]` 覆盖；
+- **canvas/WebGL 内的颜色 CSS 管不到**（three.js 场景背景、图编辑器画布网格）→ 初始化时按
+  `qevos.theme` 取色（可 `getComputedStyle` 读自己的 CSS 变量），再 `qevos.onTheme(cb)` 里重绘。
 
 **不要**用 `/api/inject` 传结构化数据——那是把消息当"用户聊天文本"，会污染上下文，只用于自然语言。
 
@@ -244,6 +265,7 @@ my-flow/                    ← project root
 - [ ] 几何/视图与语义是否**分文件**(`.qevos/view.json` vs `flow.md`)？
 - [ ] 结构化事件走 `qevos.emit`/`panel-event`，**没塞进 `/api/inject`**？
 - [ ] 文件路径都是 **root 相对**、没有绝对路径句柄？
+- [ ] 配色是否走 `var(--q-*)` / `[data-theme="light"]`、canvas 类接了 `qevos.onTheme`？(§2，勿硬编码深色)
 - [ ] 要纯本地：库是否 vendor 进项目 / 或走构建产物 `dist/`、**没拉 CDN**？
 - [ ] 工程型 App：只注册了 `dist/`、**node_modules 没入库/没进 apps 或 app-data**？相对 base?
 - [ ] **造完已用 §6 那套(`web_interact` 驱动 + 文件态断言)自测过**？

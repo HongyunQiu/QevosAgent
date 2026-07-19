@@ -19,6 +19,8 @@
  *   qevos.list(dir?)              -> [{path,type,size}]  (recursive under dir)
  *   qevos.emit(event, data)        -> {ok:true}          (惰性事件日志)
  *   qevos.onPush(cb)               -> unsubscribe()       (server→panel, SSE)
+ *   qevos.theme                    -> 'dark' | 'light'    (跟随 dashboard 主题)
+ *   qevos.onTheme(cb)              -> unsubscribe()       (主题切换回调 cb(theme))
  *
  * See SKILLS/ui_app.md for the authoring contract.
  */
@@ -26,6 +28,33 @@
   var CFG  = window.__QEVOS__ || {};
   var APP  = CFG.app  || '';
   var ROOT = CFG.root || '';
+
+  // ── theme：面板跟随 dashboard 的 light/dark ──
+  // dashboard 把主题存在 localStorage('dashTheme')；面板 iframe 与其同源 → 直接读，
+  // 且切换时 storage 事件会广播到所有其它同源浏览上下文（含本 iframe）→ 实时跟随。
+  // 桥把 data-theme 写在面板自己的 <html> 上，并注入 /qevos-theme.css（--q-* 变量表，
+  // 先于 App 样式，App 可覆盖）。纯 CSS 的 App 零 JS 即自动换肤；canvas/WebGL 类
+  // 用 qevos.theme / qevos.onTheme(cb) 重绘。
+  var themeCbs = [];
+  function currentTheme() {
+    try { return localStorage.getItem('dashTheme') === 'light' ? 'light' : 'dark'; }
+    catch (_) { return 'dark'; }
+  }
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    if (window.qevos) window.qevos.theme = t;
+    themeCbs.slice().forEach(function (cb) { try { cb(t); } catch (_) {} });
+  }
+  (function initTheme() {
+    var link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = '/qevos-theme.css';
+    (document.head || document.documentElement).appendChild(link);
+    applyTheme(currentTheme());
+    window.addEventListener('storage', function (e) {
+      if (e.key === 'dashTheme') applyTheme(currentTheme());
+    });
+  })();
   var FBASE = '/api/app-file/'  + encodeURIComponent(APP) + '/';
   var LBASE = '/api/app-files/' + encodeURIComponent(APP);
 
@@ -103,7 +132,7 @@
     await ensureH2C();
     var bg = getComputedStyle(document.body).backgroundColor;
     var canvas = await window.html2canvas(target, {
-      backgroundColor: (bg && bg !== 'rgba(0, 0, 0, 0)') ? bg : '#0d1117',
+      backgroundColor: (bg && bg !== 'rgba(0, 0, 0, 0)') ? bg : (currentTheme() === 'light' ? '#ffffff' : '#0d1117'),
       scale: Math.min(window.devicePixelRatio || 1, 2), useCORS: true, logging: false,
     });
     var url = canvas.toDataURL('image/png');   // 跨域资源会 SecurityError（被 handleCtl 捕获回报）
@@ -141,6 +170,15 @@
   window.qevos = {
     app: APP,
     root: ROOT,
+    theme: document.documentElement.getAttribute('data-theme') || 'dark',
+
+    onTheme: function (cb) {
+      themeCbs.push(cb);
+      return function () {
+        var i = themeCbs.indexOf(cb);
+        if (i >= 0) themeCbs.splice(i, 1);
+      };
+    },
 
     readFile: async function (rel) {
       var j = await req('GET', FBASE + enc(rel) + qs());
