@@ -1462,7 +1462,7 @@ function buildPanelHtml(appId, html, baseHref, root) {
  * dashboard can show real-time output. Always resolves with the full final result
  * {ok,code,stdout,stderr,durationMs,timedOut} for the HTTP response.
  */
-function runAppScript(meta, body, token = '') {
+function runAppScript(meta, body, token = '', runArgs = undefined) {
   return new Promise((resolve) => {
     const runtime  = APP_RUNTIMES.includes(meta.runtime) ? meta.runtime : 'shell';
     const isWin    = process.platform === 'win32';
@@ -1492,9 +1492,12 @@ function runAppScript(meta, body, token = '') {
     let stdout = '', stderr = '', timedOut = false, done = false;
     let child;
     try {
+      // 调用方结构化参数经 env 传给脚本（面板档①exec 契约：run body 的 args 字段）
+      const extraEnv = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
+      if (runArgs !== undefined) extraEnv.QEVOS_RUN_ARGS = JSON.stringify(runArgs);
       child = spawn(cmd, args, {
         cwd: AGENT_DIR,
-        env: childEnv({ PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }),
+        env: childEnv(extraEnv),
         windowsHide: true,
       });
     } catch (e) {
@@ -2439,8 +2442,11 @@ const server = http.createServer(async (req, res) => {
     const id = decodeURIComponent(appRunMatch[1]).replace(/\.md$/, '');
     const fp = path.join(APPS_DIR, id + '.md');
     if (!fs.existsSync(fp)) { json(404, { error: 'app not found' }); return; }
-    let token = '';
-    try { const raw = await readBody(req); if (raw) token = (JSON.parse(raw).token) || ''; } catch {}
+    let token = '', runArgs;
+    try {
+      const raw = await readBody(req);
+      if (raw) { const b = JSON.parse(raw); token = b.token || ''; runArgs = b.args; }
+    } catch {}
     try {
       const { meta, body } = parseAppFile(readText(fp) || '');
       // UI App: don't spawn a script — tell the frontend to open a panel.
@@ -2448,7 +2454,7 @@ const server = http.createServer(async (req, res) => {
         json(200, { panel: true, id, name: meta.name || id, icon: meta.icon || '📦' });
         return;
       }
-      const r = await runAppScript(meta, body, token);
+      const r = await runAppScript(meta, body, token, runArgs);
       broadcastConsole('system', `▶ Run app: ${meta.name || id} → exit ${r.code}${r.timedOut ? ' (timeout)' : ''}`);
       json(200, r);
     } catch (e) { json(500, { error: String(e) }); }
