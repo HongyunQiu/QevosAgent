@@ -11,6 +11,9 @@
  *   - canvas/WebGL 里的颜色（CSS 管不到）→ 用 qevos.theme / qevos.onTheme(cb) 重绘。
  *
  * 取值与 dashboard/public/index.html 的 :root 调色板保持一致（改这边记得对齐那边）。
+ *
+ * 除变量外，唯一的元素级样式是文末的滚动条（与 dashboard 同款、随主题翻转）——
+ * 属默认皮肤，App 自己写 ::-webkit-scrollbar 规则即可覆盖。
  */
 :root {
   --q-bg:      #0d1117;
@@ -50,3 +53,10 @@
   --q-cyan:    #0550ae;
   --q-canvas:  #eef1f5;
 }
+
+/* ── 滚动条（dashboard 同款；App 可覆盖）───────────────────────────── */
+* { scrollbar-width: thin; scrollbar-color: var(--q-border) transparent; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--q-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--q-muted); }
