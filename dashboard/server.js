@@ -460,6 +460,22 @@ if (APP_VERSION === 'dev') {
 // Python command — default to 'python' so the calling conda env is used
 const PYTHON_CMD = process.env.PYTHON_CMD || 'python';
 
+// ── 子进程环境：本机回环必须豁免代理 ──────────────────────────────────────────
+// 设置面板的代理经 .env 进 process.env、被所有子进程继承；若无 NO_PROXY，子进程里
+// urllib/requests/curl 对 127.0.0.1 的回环请求会被送去代理——代理常回 200，造成
+// "假推送成功"类静默故障（详见 doc/ui-app-proxy.md）。llm.py 只保护了 LLM 这一个
+// 消费点；这里在唯一的注入源头统一补齐，脚本 App / 终端 / Agent 全体受益。
+const LOOPBACK_NO_PROXY = ['localhost', '127.0.0.1', '::1'];
+function childEnv(extra) {
+  const env = { ...process.env, ...(extra || {}) };
+  const cur = String(env.NO_PROXY || env.no_proxy || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  for (const h of LOOPBACK_NO_PROXY) if (!cur.includes(h)) cur.push(h);
+  env.NO_PROXY = cur.join(',');
+  if (env.no_proxy !== undefined) env.no_proxy = env.NO_PROXY;  // 大小写并存时保持一致
+  return env;
+}
+
 /**
  * Split PYTHON_CMD into [executable, ...args], respecting quoted paths.
  * Handles: plain "python", conda "conda run -n env python",
@@ -1198,7 +1214,7 @@ function launchAgent(goal, nostop = false, skills = [], agentsProfile = '', advi
     // Force UTF-8 I/O so emoji / CJK in loop.py don't crash on Windows (GBK default).
     // PYTHONUTF8=1  → Python 3.7+ UTF-8 mode (affects open(), stdin, stdout, stderr)
     // PYTHONIOENCODING → explicit codec for stdin/stdout/stderr streams
-    env:         { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+    env:         childEnv({ PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }),
     windowsHide: false,
     // Ignore stdin: the agent receives its goal as a CLI argument and dashboard
     // commands via web_cmd.txt (watched by UserInterruptHandler._web_cmd_watcher).
@@ -1478,7 +1494,7 @@ function runAppScript(meta, body, token = '') {
     try {
       child = spawn(cmd, args, {
         cwd: AGENT_DIR,
-        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+        env: childEnv({ PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }),
         windowsHide: true,
       });
     } catch (e) {
@@ -2126,6 +2142,13 @@ const server = http.createServer(async (req, res) => {
         const val = (v == null ? '' : String(v)).trim();
         if (val) merged[k] = val;
         else { delete merged[k]; cleared.push(k); }
+      }
+      // 配代理必须配套回环豁免：否则子进程对 127.0.0.1 的请求会被送去代理
+      // （childEnv 在 spawn 时也会兜底注入；写进 .env 让用户可见可改，双保险）
+      if (merged.HTTP_PROXY || merged.HTTPS_PROXY) {
+        const cur = String(merged.NO_PROXY || '').split(',').map(s => s.trim()).filter(Boolean);
+        for (const h of LOOPBACK_NO_PROXY) if (!cur.includes(h)) cur.push(h);
+        merged.NO_PROXY = cur.join(',');
       }
       const content = Object.entries(merged).map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
       fs.mkdirSync(path.dirname(DOTENV_PATH), { recursive: true });
@@ -3307,7 +3330,7 @@ function createTermSession({ title, cols, rows, cwd } = {}) {
       // Windows: keep ConPTY (default). winpty produces no output when the host
       // has no attached console (the GUI Electron case). ConPTY works there; its
       // only quirk is a cosmetic AttachConsole crash in a child on kill.
-      env: { ...process.env, TERM: 'xterm-256color' },
+      env: childEnv({ TERM: 'xterm-256color' }),
     });
   } catch (e) { return { error: e.message }; }
 
