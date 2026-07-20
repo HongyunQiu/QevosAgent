@@ -18,6 +18,7 @@
  *   qevos.remove(rel)              -> {ok:true}
  *   qevos.list(dir?)              -> [{path,type,size}]  (recursive under dir)
  *   qevos.emit(event, data)        -> {ok:true}          (惰性事件日志)
+ *   qevos.call(method, params, {timeout}?) -> result     (受管 sidecar RPC;App 声明 sidecar: 后可用)
  *   qevos.onPush(cb)               -> unsubscribe()       (server→panel, SSE)
  *   qevos.theme                    -> 'dark' | 'light'    (跟随 dashboard 主题)
  *   qevos.onTheme(cb)              -> unsubscribe()       (主题切换回调 cb(theme))
@@ -217,6 +218,18 @@
 
     emit: async function (event, data) {
       return req('POST', '/api/panel-event', { app: APP, event: event, data: data || {}, root: ROOT || undefined });
+    },
+
+    // 受管 sidecar RPC(App frontmatter 声明 sidecar: worker.py 后可用;见 SKILLS/ui_app.md §4.5)。
+    // 平台负责 worker 进程启停;超时秒数经 opts.timeout 传(缺省 30s)。失败抛 Error。
+    // worker 主动事件经 onPush 到达:{type:'sidecar-event',event,data};崩溃通知:{type:'sidecar-exit'}。
+    call: async function (method, params, opts) {
+      var body = { method: method, params: params || {} };
+      if (ROOT) body.root = ROOT;
+      if (opts && opts.timeout) body.timeout = opts.timeout;
+      var j = await req('POST', '/api/app/' + encodeURIComponent(APP) + '/call', body);
+      if (!j || j.ok === false) throw new Error((j && j.error) || 'sidecar call failed');
+      return j.result;
     },
 
     onPush: function (cb) {

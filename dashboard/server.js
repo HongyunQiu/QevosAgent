@@ -1367,7 +1367,8 @@ const APP_RUNTIMES = ['python', 'powershell', 'shell', 'web'];
 /** Parse an app file: YAML-ish frontmatter + script body. */
 function parseAppFile(content) {
   const meta = { name: '', icon: '📦', description: '', runtime: 'shell', enabled: true, timeout: 120,
-                 skill: '', entry: '', root: '' };  // skill/entry/root: UI App (runtime:web) extras, all optional
+                 skill: '', entry: '', root: '',   // skill/entry/root: UI App (runtime:web) extras, all optional
+                 sidecar: '', sidecar_scope: '', sidecar_linger: 300 };  // managed sidecar (§7.7), all optional
   let body = content;
   const m = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (m) {
@@ -1384,6 +1385,7 @@ function parseAppFile(content) {
       }
       if (key === 'enabled')       meta.enabled = !/^(false|no|0|off)$/i.test(val);
       else if (key === 'timeout')  { const n = parseInt(val, 10); if (n > 0) meta.timeout = n; }
+      else if (key === 'sidecar_linger') { const n = parseInt(val, 10); if (n >= 0) meta.sidecar_linger = n; }
       else if (key in meta)        meta[key] = val;
     }
   }
@@ -1436,6 +1438,122 @@ function pushToPanel(appId, msg) {
   for (const res of set) { try { res.write(line); } catch { /* dropped */ } }
 }
 function panelIsOpen(base) { const s = panelStreams.get(base); return !!(s && s.size); }
+
+// ── UI App managed sidecar（受管常驻 worker；DLL/SDK 持久句柄活在这里） ────────
+// UI App 声明 `sidecar: worker.py`（文件必须在 apps-dist/<id>/ 内）即获得一个由平台
+// 全权管理生命周期的常驻 python 进程：首次 call 懒启动、空闲 linger 到期且无面板打开
+// 时回收、崩溃清理并通知面板、服务退出统一杀。面板经 qevos.call() → POST
+// /api/app/:id/call → worker stdin 一行 JSON {id,method,params,root} → stdout 一行
+// {id,result|error} 回应；不带 id 的 stdout 行是 worker 主动事件 {event,data}，经既有
+// SSE 推给面板（{type:'sidecar-event',…}）。大件（帧/模型）不走 RPC：worker 落盘
+// base 目录 → 既有 file-changed 推送 → 面板 readBinary。见 doc/interactive-app.md §7.7。
+const sidecars = new Map();   // key（id 或 id|base，按 sidecar_scope）→ entry
+
+function sidecarKey(id, meta, base) {
+  return meta.sidecar_scope === 'root' ? `${id}|${base}` : id;
+}
+
+function sidecarStop(key, reason) {
+  const sc = sidecars.get(key);
+  if (!sc) return;
+  sidecars.delete(key);
+  clearTimeout(sc.lingerTimer);
+  for (const [, p] of sc.pending) { clearTimeout(p.timer); p.resolve({ ok: false, error: `sidecar stopped (${reason})` }); }
+  sc.pending.clear();
+  try { sc.child.kill(); } catch {}
+}
+
+// 空闲回收：每次 call 重置；到期时若仍有面板开着（bases 任一）则续命——
+// 防止"用户切个页签就把制冷了半天的相机进程重置了"。
+function sidecarArmLinger(sc) {
+  clearTimeout(sc.lingerTimer);
+  sc.lingerTimer = setTimeout(() => {
+    for (const b of sc.bases) if (panelIsOpen(b)) { sidecarArmLinger(sc); return; }
+    broadcastConsole('system', `⏹ Sidecar idle-stopped: ${sc.appId}`);
+    sidecarStop(sc.key, 'idle');
+  }, sc.lingerMs);
+  if (sc.lingerTimer.unref) sc.lingerTimer.unref();
+}
+
+function sidecarEnsure(id, meta, base) {
+  const key = sidecarKey(id, meta, base);
+  let sc = sidecars.get(key);
+  if (sc) { sc.bases.add(base); return sc; }
+  const appDist = path.resolve(path.join(APPS_DIST_DIR, id));
+  const worker  = path.resolve(path.join(appDist, meta.sidecar));
+  const rel = path.relative(appDist, worker);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('sidecar path escapes apps-dist/<id>/');
+  if (!fs.existsSync(worker)) throw new Error(`sidecar worker not found: apps-dist/${id}/${meta.sidecar}`);
+  const parts = parsePythonCmd(PYTHON_CMD);
+  const child = spawn(parts[0], [...parts.slice(1), worker], {
+    cwd: appDist,
+    env: childEnv({
+      PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1',
+      QEVOS_SIDECAR: '1', QEVOS_APP_ID: id, QEVOS_ROOT: base,
+    }),
+    windowsHide: true,
+  });
+  sc = {
+    key, appId: id, child, seq: 0, buf: '', errTail: '',
+    pending: new Map(),        // callId → {resolve, timer}
+    bases: new Set([base]),    // 该进程服务过的 panel base（事件推送 + 存活判定）
+    lingerMs: (meta.sidecar_linger > 0 ? meta.sidecar_linger : 300) * 1000,
+    lingerTimer: null, startedAt: Date.now(),
+  };
+  sidecars.set(key, sc);
+  const stopIfCurrent = (reason) => { if (sidecars.get(key) === sc) sidecarStop(key, reason); };
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', d => {
+    sc.buf += d;
+    if (sc.buf.length > 32 * 1024 * 1024) { sc.buf = ''; stopIfCurrent('stdout line too large (use the file channel for bulk data)'); return; }
+    let i;
+    while ((i = sc.buf.indexOf('\n')) >= 0) {
+      const line = sc.buf.slice(0, i).trim(); sc.buf = sc.buf.slice(i + 1);
+      if (!line) continue;
+      let msg; try { msg = JSON.parse(line); } catch { continue; }  // 非 JSON 行按 worker 日志忽略（日志应走 stderr）
+      if (msg && msg.id != null && sc.pending.has(msg.id)) {
+        const p = sc.pending.get(msg.id); sc.pending.delete(msg.id);
+        clearTimeout(p.timer);
+        p.resolve(msg.error != null ? { ok: false, error: String(msg.error) } : { ok: true, result: msg.result });
+      } else if (msg && msg.event) {
+        for (const b of sc.bases) pushToPanel(b, { type: 'sidecar-event', event: msg.event, data: msg.data });
+      }
+    }
+  });
+  child.stderr.on('data', d => { sc.errTail = (sc.errTail + d).slice(-8192); });
+  child.on('error', () => stopIfCurrent('spawn error'));
+  child.on('close', (code) => {
+    if (sidecars.get(key) !== sc) return;  // 已被主动 stop / 已被新进程顶替
+    for (const b of sc.bases) pushToPanel(b, { type: 'sidecar-exit', code, stderr: sc.errTail.slice(-2000) });
+    broadcastConsole('system', `✖ Sidecar exited (${code}): ${id}`);
+    sidecarStop(key, `exit ${code}`);
+  });
+  broadcastConsole('system', `▶ Sidecar started: ${id} (${meta.sidecar})`);
+  sidecarArmLinger(sc);
+  return sc;
+}
+
+function sidecarCall(id, meta, base, method, params, timeoutMs) {
+  return new Promise((resolve) => {
+    let sc;
+    try { sc = sidecarEnsure(id, meta, base); }
+    catch (e) { resolve({ ok: false, error: String((e && e.message) || e) }); return; }
+    const callId = 'c' + (++sc.seq);
+    const timer = setTimeout(() => {
+      if (sc.pending.delete(callId)) resolve({ ok: false, error: `sidecar call timeout (${timeoutMs / 1000}s)` });
+    }, timeoutMs);
+    sc.pending.set(callId, { resolve, timer });
+    sidecarArmLinger(sc);
+    try { sc.child.stdin.write(JSON.stringify({ id: callId, method, params: params ?? {}, root: base }) + '\n'); }
+    catch (e) {
+      clearTimeout(timer); sc.pending.delete(callId);
+      resolve({ ok: false, error: 'sidecar stdin write failed: ' + e });
+    }
+  });
+}
+
+process.on('exit', () => { for (const key of [...sidecars.keys()]) sidecarStop(key, 'server shutdown'); });
 
 // ── UI App panel control (Agent → panel, first-party, no CDP/debug flag) ─────
 // The Agent drives/inspects its own panels through the SAME SSE channel + a result
@@ -2456,6 +2574,34 @@ const server = http.createServer(async (req, res) => {
       }
       const r = await runAppScript(meta, body, token, runArgs);
       broadcastConsole('system', `▶ Run app: ${meta.name || id} → exit ${r.code}${r.timedOut ? ' (timeout)' : ''}`);
+      json(200, r);
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // POST /api/app/:id/call — panel → managed sidecar RPC (qevos.call；见 doc/interactive-app.md §7.7)
+  const appCallMatch = req.url.match(/^\/api\/app\/([^/?]+)\/call$/);
+  if (req.method === 'POST' && appCallMatch) {
+    const id = decodeURIComponent(appCallMatch[1]).replace(/\.md$/, '');
+    const fp = path.join(APPS_DIR, id + '.md');
+    if (!fs.existsSync(fp)) { json(404, { error: 'app not found' }); return; }
+    let b = {};
+    try { const raw = await readBody(req); if (raw) b = JSON.parse(raw) || {}; } catch {}
+    try {
+      const { meta } = parseAppFile(readText(fp) || '');
+      if (!meta.sidecar) { json(400, { error: 'app declares no sidecar' }); return; }
+      const base = resolveAppBase(id, b.root || '');
+      const key  = sidecarKey(id, meta, base);
+      // $ 前缀是平台保留控制方法，不进 worker（调试/热换 worker 代码用）
+      if (b.method === '$status') {
+        const sc = sidecars.get(key);
+        json(200, { ok: true, result: sc ? { running: true, pid: sc.child.pid, uptimeMs: Date.now() - sc.startedAt } : { running: false } });
+        return;
+      }
+      if (b.method === '$stop') { sidecarStop(key, 'requested'); json(200, { ok: true, result: { stopped: true } }); return; }
+      if (typeof b.method !== 'string' || !b.method) { json(400, { error: 'method required' }); return; }
+      const timeoutMs = Math.min(Math.max(parseInt(b.timeout, 10) || 30, 1), 600) * 1000;
+      const r = await sidecarCall(id, meta, base, b.method, b.params, timeoutMs);
       json(200, r);
     } catch (e) { json(500, { error: String(e) }); }
     return;

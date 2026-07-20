@@ -74,13 +74,14 @@ description: 基于 Markdown 的流程图/节点图设计
 runtime: web            # ← 关键：走面板而非脚本
 skill: flowchart        # ← 可选：结构化事件交给哪个领域 skill 处理(Agent-UI 档)
 entry: panel.html       # ← 可选：面板入口文件；省略则正文即 HTML
+sidecar: worker.py      # ← 可选：受管常驻 worker(调 DLL/持久句柄，见 §4.5)
 enabled: true
 ---
 <!-- 正文即面板 HTML（或让 entry 指向单独文件）。可内联 <script>/<style>，
      可引用自带库；要纯本地就把库 vendor 进项目文件夹，别拉 CDN。 -->
 ```
 
-- frontmatter 新字段 `skill`/`entry`/`root` 均可选，缺省即退化成"纯前端 UI App"。
+- frontmatter 新字段 `skill`/`entry`/`root`/`sidecar` 均可选，缺省即退化成"纯前端 UI App"。
 - 面板运行在 sandbox iframe(`allow-scripts allow-same-origin allow-forms`)，内部 JS 可直接 `fetch('/api/...')`。
 
 ### 需要 npm / 是一整个前端工程(React/Vue/Vite)?
@@ -94,7 +95,8 @@ enabled: true
 - **打包用相对 base**(Vite:`base: './'`),资源写成 `./assets/…`;`<base>` 会把它们解析到 `/api/app/<id>/` 下。绝对 `/assets` 仍会 404。
 - **产物与源码分离**:`apps-dist/<id>/` 是产物(gitignore、可 ship);源码 / node_modules **绝不 commit、绝不进 `apps/`/`app-data/`**。
 - `qevos` 桥与框架无关：打包后的代码直接调 `window.qevos.readFile(...)` 即可(桥已注入进 `index.html`)。
-- 运行时真需要常驻 node 服务(SSR/自带 server)→ **不支持**(UI App 无自己的后端)，属未来 sidecar。
+- 运行时需要**常驻逻辑**(持久持有 DLL/SDK 句柄)→ 走**受管 sidecar**(§4.5，python worker，平台管生命周期)；
+  SSR / 自带 node server 依旧**不支持**(UI App 无自己的后端)。
 
 **代码管理 / git**（运行时绑 QevosAgent，但源码是独立仓库，两者不冲突）：
 - **App 源码 = 一个独立 git 仓库**：放 `app-src/<id>/`（被 QevosAgent 忽略 → 可直接 `git init`，无嵌套/submodule 冲突），或磁盘任意位置。**不要**做成 QevosAgent 的 submodule。
@@ -122,6 +124,10 @@ const files= await qevos.list('.qevos');               // [{path,type,size}] 递
 // —— 结构化事件（🔒 惰性日志：写入 panel_events.jsonl，近期无自动消费方，不保证被处理；
 //     可当自身遥测/状态；勿把基线功能建在"会被 Agent 处理"上）——
 await qevos.emit('review_flow', { focus: 'approval' });
+
+// —— 受管 sidecar RPC（App 声明 sidecar: worker.py 后可用，见 §4.5；失败抛 Error）——
+const r = await qevos.call('start_exposure', { ms: 5000 }, { timeout: 60 });  // timeout 秒，缺省 30
+// worker 主动事件经 onPush 到达：{type:'sidecar-event',event,data}；崩溃：{type:'sidecar-exit',code,stderr}
 
 // —— onPush（server→面板推送，SSE；已可用）——
 //   当前生产者：项目文件经 API 被写/删时推 {type:'file-changed',path}（多实例同步/外部编辑刷新）。
@@ -193,7 +199,62 @@ my-flow/                    ← project root
 **铁律**：
 1. 不要让每次拖拽都过一次 LLM——客户端确定性编辑必须本地直写文件。
 2. **确定性重计算(布局/校验/导出)不是"智能"**,别塞给 Agent/LLM——它该是被调用的**工具**。
-3. **近期只用第一档(+脚本 App 兜第二档)完成一切基线功能**。第三/四档暂不接入,**App 不得依赖它们**。
+3. **近期只用第一档(+脚本 App/sidecar 兜第二档)完成一切基线功能**。第三/四档暂不接入,**App 不得依赖它们**。
+
+**第二档选型**：一次性计算(导出/校验，每次冷启动可接受)→ 伴生脚本 App(`POST /api/app/<id>/run` 带
+`args`，脚本从环境变量 `QEVOS_RUN_ARGS` 读 JSON)；**常驻状态**(DLL/SDK 句柄要活着：相机、CAD 内核)→
+受管 sidecar(§4.5)。判据一句话：**句柄需要跨调用存活就 sidecar，否则脚本 App**。
+
+---
+
+## 4.5 受管 sidecar(常驻 worker：调 DLL/持久句柄)
+
+per-call 脚本解决不了"句柄要活着"的库(如相机 SDK：open 一次、常驻曝光/制冷)。声明
+`sidecar: worker.py`(文件放 **`apps-dist/<id>/`**)即获得一个**平台全权管理**的常驻 python 进程：
+首次 `qevos.call()` 懒启动、空闲回收(缺省 300s，`sidecar_linger` 可调；有面板开着不回收)、
+崩溃自动通知+下次调用重启。**你只写 handler 函数，不写 server**(无端口、无部署)。
+可选 `sidecar_scope: app|root`(缺省 app：全局硬件一进程；root：每项目一进程)。
+
+**worker.py skeleton(照抄改 handlers 即可)**：
+
+```python
+import sys, json, threading, os
+
+def emit(event, data=None):   # 主动推事件 → 面板 onPush 收 {type:'sidecar-event',...}
+    print(json.dumps({"event": event, "data": data or {}}), flush=True)
+
+# —— 初始化只做一次，句柄常驻进程 ——
+# import ctypes; sdk = ctypes.CDLL("qhyccd.dll"); ...OpenCamera...
+
+def ping(params): return "pong"
+
+def start_exposure(params):   # 长操作：丢线程、立即回 ack、完成后推事件(勿阻塞主循环)
+    def run():
+        # ...曝光/读帧，大件写文件到 os.environ["QEVOS_ROOT"]，不要经 RPC 返回...
+        emit("frame-ready", {"path": "preview.jpg"})   # 面板收事件后 readBinary('preview.jpg')
+    threading.Thread(target=run, daemon=True).start()
+    return {"started": True}
+
+HANDLERS = {"ping": ping, "start_exposure": start_exposure}
+
+for line in sys.stdin:        # 主循环：一行请求一行响应；异常回 error，不退出
+    mid = None
+    try:
+        msg = json.loads(line); mid = msg.get("id")
+        out = {"id": mid, "result": HANDLERS[msg["method"]](msg.get("params") or {})}
+    except Exception as e:
+        out = {"id": mid, "error": str(e)}
+    print(json.dumps(out), flush=True)
+```
+
+**规则**：
+- **stdout 是协议通道**：只准 print 协议 JSON 行；调试日志走 `sys.stderr`(崩溃时尾部会带给面板)。
+- **大件(帧/模型)走文件通道**：worker 落盘 → 面板收 `file-changed`/自定义事件 → `readBinary`。
+  RPC 结果留给小 JSON；超大 stdout 行会被平台掐掉进程。
+- 长操作**必须**丢线程(见 skeleton)——主循环阻塞期间所有 call(含状态查询)都会排队到超时。
+- env：`QEVOS_SIDECAR=1`、`QEVOS_APP_ID`、`QEVOS_ROOT`(spawn 时 base；逐 call 的 root 在消息里)；
+  cwd = `apps-dist/<id>/`。回环 NO_PROXY 已由平台注入。
+- 调试：`qevos.call('$status')` 查 pid/uptime；`qevos.call('$stop')` 杀掉(改完 worker 代码后热换)。
 
 ---
 
@@ -262,7 +323,8 @@ my-flow/                    ← project root
 ## 检查清单(造 App 前自检)
 
 - [ ] **App 在零 Agent 下能开、能做完基线功能**？(近期硬约束，绝不能依赖 Agent)
-- [ ] 我在写**前端 + 文件读写**，而不是一个后端 server？
+- [ ] 我在写**前端 + 文件读写**，而不是一个后端 server？(常驻句柄需求 → §4.5 sidecar，仍不是 server)
+- [ ] 用 sidecar 时：stdout 只走协议、日志走 stderr、大件走文件、长操作丢线程？(§4.5 规则)
 - [ ] 确定性交互是否**本地直写文件**、没过 LLM？
 - [ ] 几何/视图与语义是否**分文件**(`.qevos/view.json` vs `flow.md`)？
 - [ ] 结构化事件走 `qevos.emit`/`panel-event`，**没塞进 `/api/inject`**？
