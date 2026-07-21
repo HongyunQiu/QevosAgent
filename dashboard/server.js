@@ -2720,27 +2720,32 @@ const server = http.createServer(async (req, res) => {
     return;  // keep open — do NOT end
   }
 
-  // GET /api/app-files/:id[?dir=&root=]  — recursive file list in the project dir
+  // GET /api/app-files/:id[?dir=&root=&depth=]  — recursive file list in the project dir
+  // depth>0 限制递归层数（1=仅直接子项，2=含孙级……）；缺省/0 = 不限（向后兼容）
   const appFilesMatch = req.url.match(/^\/api\/app-files\/([^/?]+)/);
   if (req.method === 'GET' && appFilesMatch) {
     const id      = decodeURIComponent(appFilesMatch[1]).replace(/[^a-zA-Z0-9_\-]/g, '_');
     const qs      = new URL(req.url, 'http://x').searchParams;
     const rootDir = resolveAppBase(id, qs.get('root') || '');
     const sub     = qs.get('dir') || '';
+    const maxDepth = parseInt(qs.get('depth'), 10) || 0;
     const startDir = path.resolve(path.join(rootDir, sub));
     const relStart = path.relative(rootDir, startDir);
     if (relStart.startsWith('..') || path.isAbsolute(relStart)) { json(403, { error: 'forbidden' }); return; }
     const files = [];
-    (function walk(dir) {
+    (function walk(dir, level) {
       let entries; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
         const abs = path.join(dir, e.name);
         const rp  = path.relative(rootDir, abs).replace(/\\/g, '/');
-        if (e.isDirectory()) { files.push({ path: rp, type: 'dir' }); walk(abs); }
+        if (e.isDirectory()) {
+          files.push({ path: rp, type: 'dir' });
+          if (!maxDepth || level < maxDepth) walk(abs, level + 1);
+        }
         else { let size = 0; try { size = fs.statSync(abs).size; } catch {} files.push({ path: rp, type: 'file', size }); }
       }
-    })(startDir);
-    json(200, { files });
+    })(startDir, 1);
+    json(200, { files, base: rootDir.replace(/\\/g, '/') });
     return;
   }
 
