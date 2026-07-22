@@ -209,6 +209,8 @@ my-flow/                    ← project root
 
 ## 4.5 受管 sidecar(常驻 worker：调 DLL/持久句柄)
 
+> 概念与设计动机的完整版见 `doc/ui-app-sidecar.md`；本节是操作契约，自包含够用。
+
 per-call 脚本解决不了"句柄要活着"的库(如相机 SDK：open 一次、常驻曝光/制冷)。声明
 `sidecar: worker.py`(文件放 **`apps-dist/<id>/`**)即获得一个**平台全权管理**的常驻 python 进程：
 首次 `qevos.call()` 懒启动、空闲回收(缺省 300s，`sidecar_linger` 可调；有面板开着不回收)、
