@@ -151,7 +151,7 @@ def truncate(s: str, max_chars: int = 200) -> str:
 def print_state_summary(label: str, state: AgentState, llm: MockLLM, system: str):
     messages = build_context_messages(state)
     token_est = llm.estimate_tokens(messages, system)
-    ctx = int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
+    ctx = int(os.environ.get("LLM_CONTEXT_WINDOW", "153600"))
 
     print(f"\n{CYAN}[{label}]{RESET}")
     print(f"  消息数量    : {len(state.short_term)}")
@@ -313,7 +313,7 @@ def main():
         "--context-window",
         type=int,
         default=None,
-        help="模拟的 context window 大小（默认：使用环境变量 LLM_CONTEXT_WINDOW 或 131072）",
+        help="模拟的 context window 大小（默认：使用环境变量 LLM_CONTEXT_WINDOW 或 153600）",
     )
     parser.add_argument(
         "--warn-ratio",

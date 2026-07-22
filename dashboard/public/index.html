@@ -27,6 +27,12 @@
   --cyan:    #79c0ff;
   --tag-panel-bg: #1c232e;             /* keyword panel: a lighter black, set apart from the sidebar */
   --tag-hover:    rgba(255,255,255,0.06);
+  /* Markdown render surfaces — deliberately lighter than --bg so long-form prose
+     isn't white-on-near-black. Matches the CM6 (One Dark) code preview canvas. */
+  --md-bg:        #282c34;
+  --md-surface:   #21252b;             /* code blocks / table headers — recessed */
+  --md-inline:    #2f343d;             /* inline code chip — raised */
+  --md-border:    #3c434d;             /* --border is invisible on the lighter canvas */
   --mono: 'JetBrains Mono','Fira Code','Cascadia Code',Consolas,'PingFang SC','Microsoft YaHei','Noto Sans CJK SC',monospace;
   --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
 }
@@ -49,6 +55,10 @@
   --cyan:    #0550ae;
   --tag-panel-bg: #f6f1e9;             /* keyword panel: a warm ivory tint — elegant, distinctly non-gray */
   --tag-hover:    rgba(9,105,218,0.08);
+  --md-bg:        #ffffff;
+  --md-surface:   #f6f8fa;
+  --md-inline:    #eaeef2;
+  --md-border:    #d0d7de;
 }
 [data-theme="light"] .run-item.selected   { background: rgba(9,105,218,0.06); }
 [data-theme="light"] .ftree-file.selected { background: rgba(9,105,218,0.08); }
@@ -1233,37 +1243,37 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 .md-render {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size:13px; line-height:1.7; color:var(--text);
-  background:var(--bg); overflow:auto; padding:16px 20px;
+  background:var(--md-bg); overflow:auto; padding:16px 20px;
   white-space:normal; word-break:break-word; flex:1;
 }
 .md-render h1,.md-render h2,.md-render h3,.md-render h4,.md-render h5,.md-render h6 {
   color:var(--text); margin:1em 0 0.4em; font-weight:600; line-height:1.3;
 }
-.md-render h1 { font-size:1.5em; border-bottom:1px solid var(--border); padding-bottom:0.3em; }
-.md-render h2 { font-size:1.25em; border-bottom:1px solid var(--border); padding-bottom:0.2em; }
+.md-render h1 { font-size:1.5em; border-bottom:1px solid var(--md-border); padding-bottom:0.3em; }
+.md-render h2 { font-size:1.25em; border-bottom:1px solid var(--md-border); padding-bottom:0.2em; }
 .md-render h3 { font-size:1.05em; }
 .md-render p  { margin:0.5em 0; }
 .md-render ul,.md-render ol { margin:0.4em 0; padding-left:1.6em; }
 .md-render li { margin:0.15em 0; }
 .md-render code {
-  font-family:var(--mono); font-size:11px; background:var(--bg3);
+  font-family:var(--mono); font-size:11px; background:var(--md-inline);
   border-radius:3px; padding:0.1em 0.35em; color:var(--orange);
 }
 .md-render pre {
-  background:var(--bg2); border:1px solid var(--border); border-radius:6px;
+  background:var(--md-surface); border:1px solid var(--md-border); border-radius:6px;
   padding:12px 14px; overflow-x:auto; margin:0.6em 0;
 }
 .md-render pre code { background:none; padding:0; color:var(--text); font-size:11px; }
 .md-render blockquote {
-  border-left:3px solid var(--border); margin:0.5em 0;
+  border-left:3px solid var(--md-border); margin:0.5em 0;
   padding:0.2em 12px; color:var(--muted);
 }
-.md-render hr { border:none; border-top:1px solid var(--border); margin:1em 0; }
+.md-render hr { border:none; border-top:1px solid var(--md-border); margin:1em 0; }
 .md-render a  { color:var(--blue); text-decoration:none; }
 .md-render a:hover { text-decoration:underline; }
 .md-render table { border-collapse:collapse; width:100%; margin:0.5em 0; font-size:12px; }
-.md-render th,.md-render td { border:1px solid var(--border); padding:4px 10px; text-align:left; }
-.md-render th { background:var(--bg2); font-weight:600; }
+.md-render th,.md-render td { border:1px solid var(--md-border); padding:4px 10px; text-align:left; }
+.md-render th { background:var(--md-surface); font-weight:600; }
 .icon-btn.active { border-color:var(--blue); color:var(--blue); }
 
 /* ── JSON / JSONL render ─────────────────────────────────────────────── */
@@ -2088,6 +2098,11 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
         <div class="set-fg">
           <label for="setTemp">采样温度 <span class="set-hint-inline">（LLM_TEMPERATURE，0~2，越高越发散，留空=默认 0.3）</span></label>
           <input type="number" id="setTemp" placeholder="（留空=默认 0.3）" min="0" max="2" step="0.1">
+        </div>
+
+        <div class="set-fg">
+          <label for="setCtxWindow">上下文窗口 tokens <span class="set-hint-inline">（LLM_CONTEXT_WINDOW，决定何时触发上下文压缩，留空=默认 153600；仅在服务端 /v1/models 未上报 max_model_len 时生效）</span></label>
+          <input type="number" id="setCtxWindow" placeholder="（留空=默认 153600）" min="1024">
         </div>
       </div>
     </div>
@@ -6426,6 +6441,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
       document.getElementById('setToolFeedback').value = env.MAX_TOOL_FEEDBACK_CHARS || '';
       document.getElementById('setMaxTokens').value    = env.LLM_MAX_TOKENS || '';
       document.getElementById('setTemp').value         = env.LLM_TEMPERATURE || '';
+      document.getElementById('setCtxWindow').value    = env.LLM_CONTEXT_WINDOW || '';
     } catch (e) {
       // Surface the failure instead of silently showing an empty form — most
       // commonly an old backend without /api/env (404), which used to look like
@@ -6558,6 +6574,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
       MAX_TOOL_FEEDBACK_CHARS: document.getElementById('setToolFeedback').value.trim(),
       LLM_MAX_TOKENS:  document.getElementById('setMaxTokens').value.trim(),
       LLM_TEMPERATURE: document.getElementById('setTemp').value.trim(),
+      LLM_CONTEXT_WINDOW: document.getElementById('setCtxWindow').value.trim(),
     };
     const btn = document.getElementById('setSave');
     btn.disabled = true; btn.textContent = '保存中…';

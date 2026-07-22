@@ -376,7 +376,7 @@ class OpenAIBackend(LLMBackend):
         Priority (highest to lowest):
           1. Server-reported max_model_len  — always preferred when reachable.
           2. LLM_CONTEXT_WINDOW env var     — fallback when probe fails.
-          3. Hardcoded 131072               — last resort.
+          3. Hardcoded 153600               — last resort.
 
         The env var is intentionally NOT used when the server probe succeeds,
         so that a stale or conservative env var never caps a larger real limit.
@@ -387,7 +387,7 @@ class OpenAIBackend(LLMBackend):
 
         if self._is_official_openai:
             # OpenAI's API does not expose max_model_len; rely on env var / default.
-            return int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
+            return int(os.environ.get("LLM_CONTEXT_WINDOW", "153600"))
 
         try:
             url = (self.base_url or "").rstrip("/") + "/models"
@@ -408,7 +408,7 @@ class OpenAIBackend(LLMBackend):
             pass
 
         # Probe failed: fall back to env var, then hardcoded default.
-        return int(os.environ.get("LLM_CONTEXT_WINDOW", "131072"))
+        return int(os.environ.get("LLM_CONTEXT_WINDOW", "153600"))
 
     @staticmethod
     def _normalize_messages(messages: list[dict]) -> list[dict]:

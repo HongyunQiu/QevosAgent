@@ -2235,6 +2235,7 @@ const server = http.createServer(async (req, res) => {
       MAX_TOOL_FEEDBACK_CHARS: process.env.MAX_TOOL_FEEDBACK_CHARS || '',
       LLM_MAX_TOKENS:  process.env.LLM_MAX_TOKENS  || '',
       LLM_TEMPERATURE: process.env.LLM_TEMPERATURE || '',
+      LLM_CONTEXT_WINDOW: process.env.LLM_CONTEXT_WINDOW || '',
       configured: !!process.env.OPENAI_BASE_URL,
     });
     return;
