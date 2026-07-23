@@ -380,12 +380,18 @@ class UserInterruptHandler:
             # "最后 N 条原文 + 400 字截断" 的窗口淹没。
             try:
                 from datetime import datetime, timezone
+                # 顺手记录"干预落点"：Agent 当时正要做/刚做的动作。
+                # 一次人工干预天然是一对 (Agent劣动作, 人类优动作)：
+                # agent_pending_action 是被打断的"劣动作"，content 是纠正后的"优动作"。
+                # 复盘据此复原偏好对，也为将来的 DPO/权重训练供数据。
+                _pending = _capture_pending_action(state)
                 _inj_list = state.meta.setdefault("_user_injections", [])
                 _inj_list.append({
                     "iter":    int(getattr(state, "iteration", 0) or 0),
                     "ts":      datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                     "content": arg,
                     "source":  "inject_cmd",
+                    "agent_pending_action": _pending,
                 })
             except Exception:
                 pass
@@ -442,6 +448,44 @@ class UserInterruptHandler:
 
         print(f"\n{BLUE}{t('interrupt.unknown_cmd', name=name)}{RESET}", flush=True)
         return "continue"
+
+
+# ── 干预落点抓取 ──────────────────────────────────────────────────────────────
+
+def _capture_pending_action(state) -> Optional[dict]:
+    """抓取干预发生时 Agent 最近一次动作（thought/tool/args 或 final_answer）。
+
+    从 short_term 反向找最后一条 assistant 消息解析。这是被人打断的"劣动作"，
+    与用户注入的"优动作"构成一对偏好对，供每日复盘复原、并为将来的 DPO/权重训练供数据。
+    解析失败回退到当前工具名；实在无从判断返回 None。
+    """
+    import json as _json
+
+    try:
+        for _m in reversed(getattr(state, "short_term", None) or []):
+            if not isinstance(_m, dict) or _m.get("role") != "assistant":
+                continue
+            _c = _m.get("content")
+            try:
+                _obj = _json.loads(_c) if isinstance(_c, str) else _c
+            except Exception:
+                return {"raw": str(_c)[:500]}
+            if not isinstance(_obj, dict):
+                return {"raw": str(_c)[:500]}
+            return {
+                "thought":      (_obj.get("thought") or "")[:500],
+                "tool":         _obj.get("tool") or "",
+                "args":         _obj.get("args") or {},
+                "final_answer": (_obj.get("final_answer") or "")[:500],
+            }
+    except Exception:
+        pass
+    # 回退：至少记下当前正在执行的工具名
+    try:
+        cur = state.meta.get("_current_tool")
+    except Exception:
+        cur = None
+    return {"tool": cur} if cur else None
 
 
 # ── 只读状态展示（可在任何线程安全调用） ─────────────────────────────────────
