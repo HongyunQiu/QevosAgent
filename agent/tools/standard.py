@@ -1686,6 +1686,8 @@ def tool_submit_completion_report(
         "confidence": (confidence or "medium").strip().lower(),
     }
     state.meta["completion_report"] = report
+    # 新报告基于当前上下文，重置"报告提交后又有新环境观察"的过期标记
+    state.meta.pop("_obs_since_report", None)
     return ToolResult(success=True, output=report)
 
 

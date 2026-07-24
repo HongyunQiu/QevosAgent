@@ -268,6 +268,18 @@ def _review_completion_report(state: AgentState, final_answer: Optional[str]) ->
 
     # 三态结果：done_partial / done_blocked → weak_pass（弱通过，暂停询问用户）
     if normalized["outcome"] in {"done_partial", "done_blocked"}:
+        # 过期检查：报告提交后 watcher/后台 job 又注入了新环境观察，
+        # 而 weak_pass 会把报告原文拼成 ask_user 展示给用户——若照搬旧快照，
+        # 用户会看到与最新进展自相矛盾的数字（如报告说 60/500、实际已 370/500）。
+        # 强制 agent 用最新观察重新提交一次。上限 2 次，防止 watcher 每迭代
+        # 都注入导致"刚提交又过期"的死循环。
+        if state.meta.get("_obs_since_report") and state.meta.get("_stale_report_rejections", 0) < 2:
+            state.meta["_stale_report_rejections"] = state.meta.get("_stale_report_rejections", 0) + 1
+            return "needs_more_work", {
+                "status": "needs_more_work",
+                "reason": "stale_completion_report",
+                "report": normalized,
+            }
         reason = "partial_completion" if normalized["outcome"] == "done_partial" else "blocked_completion"
         verdict_dict = {"status": "weak_pass", "reason": reason, "report": normalized}
         state.meta["completion_review"] = verdict_dict
@@ -945,6 +957,14 @@ def run(
                             f"[系统][验收失败] 以下宣称的产物文件不存在: {missing}。\n"
                             "请先用 write_file 生成这些文件，再重新 done。"
                         )
+                    elif reason == "stale_completion_report":
+                        feedback = (
+                            "[系统][验收失败] 完成报告已过期：报告提交后环境又有了新观察"
+                            "（watcher/后台任务注入了更新的进展数据）。\n"
+                            "该报告将原文展示给用户，不能引用过时数字。\n"
+                            "请根据上下文中最新的观察结果，重新调用 submit_completion_report"
+                            "（更新 completed_work / remaining_gaps 中的进度数据），然后再 done。"
+                        )
                     else:
                         feedback = (
                             f"[系统][验收失败] 验收未通过，原因: {reason}。\n"
@@ -1295,6 +1315,8 @@ def _poll_watchers(state: "AgentState", hooks: Optional["AgentHooks"] = None) ->
             # 双保险:再裁一次到 500 字符,即便 manager 漏了也不破
             content = content[:500]
             _append_short_term(state, {"role": "user", "content": content})
+            if state.meta.get("completion_report"):
+                state.meta["_obs_since_report"] = True
             if hooks and hooks.on_error:
                 kind = ev.get("kind", "?")
                 hooks.on_error(f"[watcher] {ev.get('name')} → {kind}")
@@ -1334,6 +1356,8 @@ def _notify_completed_jobs(state: "AgentState", hooks: Optional["AgentHooks"] = 
             )
             _append_short_term(state, {"role": "user", "content": content})
             notified.add(job_id)
+            if state.meta.get("completion_report"):
+                state.meta["_obs_since_report"] = True
             if hooks and hooks.on_error:
                 hooks.on_error(f"[job通知] {job_id} → {status_label}")
     except Exception:
