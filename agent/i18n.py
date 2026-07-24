@@ -366,8 +366,8 @@ _STRINGS: dict[str, dict[str, str]] = {
             "原因：Windows 路径（如 C:\\Users\\foo 或 runs\\20260413）中的 \\ 在 JSON 字符串里"
             "必须写成 \\\\，否则解析器会把 \\U、\\2 等当成非法的转义序列并丢失字段。\n"
             "错误修复示例：\n"
-            '  错误: {"thought": "路径是 C:\\Users\\92680"}\n'
-            '  正确: {"thought": "路径是 C:\\\\Users\\\\92680"}\n'
+            '  错误: {{"thought": "路径是 C:\\Users\\92680"}}\n'
+            '  正确: {{"thought": "路径是 C:\\\\Users\\\\92680"}}\n'
             "提示：在 thought / final_answer 中引用路径时，可以改用正斜杠（/）来避免此问题，"
             "例如 runs/20260413-140101 或 C:/Users/92680。\n"
             "原始输出(截断): {raw}"
@@ -376,8 +376,8 @@ _STRINGS: dict[str, dict[str, str]] = {
             "JSON 格式错误：字符串值缺少开头的双引号。\n"
             '原因：某字段的值直接写了内容，而没有先写开头的 "。\n'
             "错误示例：\n"
-            '  错误: {"thought": 用户要求做一个游戏, "action": "tool_call"}\n'
-            '  正确: {"thought": "用户要求做一个游戏", "action": "tool_call"}\n'
+            '  错误: {{"thought": 用户要求做一个游戏, "action": "tool_call"}}\n'
+            '  正确: {{"thought": "用户要求做一个游戏", "action": "tool_call"}}\n'
             "请确保每个字符串值都用双引号包裹，包括 thought、final_answer 等所有字段。\n"
             "原始输出(截断): {raw}"
         ),
@@ -386,15 +386,15 @@ _STRINGS: dict[str, dict[str, str]] = {
             '原因：thought / final_answer 等字段的值中，如果内容本身含有 " 引号（如引用文字、英文名称），\n'
             '必须将其写成 \\"，否则 JSON 解析器会误把它当作字符串结束符，导致后续字段全部丢失。\n'
             "错误示例：\n"
-            '  错误: {"thought": "描述为"the open-source code"，这是重名"}\n'
-            '  正确: {"thought": "描述为\\"the open-source code\\"，这是重名"}\n'
+            '  错误: {{"thought": "描述为"the open-source code"，这是重名"}}\n'
+            '  正确: {{"thought": "描述为\\"the open-source code\\"，这是重名"}}\n'
             "原始输出(截断): {raw}"
         ),
         "parse.incomplete_json": (
             "JSON 不完整：缺少闭合的大括号/中括号（不是引号问题）。\n"
-            "原因：对象或数组没有正确闭合——常见于 args 里嵌套了对象时漏写最外层的 }。\n"
+            "原因：对象或数组没有正确闭合——常见于 args 里嵌套了对象时漏写最外层的 }}。\n"
             "请逐字段检查括号配对：每个 {{ 都要有对应的 }}，每个 [ 都要有对应的 ]，"
-            "尤其确认 args 嵌套对象之后补齐了最外层的 }。请重新输出完整的 JSON。\n"
+            "尤其确认 args 嵌套对象之后补齐了最外层的 }}。请重新输出完整的 JSON。\n"
             "原始输出(截断): {raw}"
         ),
         "parse.prose_with_json": (
@@ -1068,4 +1068,13 @@ def t(key: str, **kwargs) -> str:
     """Return the localised string for *key*, interpolating any *kwargs*."""
     table = _STRINGS.get(LANG, _STRINGS["zh"])
     s = table.get(key) or _STRINGS["zh"].get(key, key)
-    return s.format(**kwargs) if kwargs else s
+    if not kwargs:
+        return s
+    try:
+        return s.format(**kwargs)
+    except (ValueError, KeyError, IndexError):
+        # 模板含未转义的字面 {/}（str.format 会炸）——降级为逐占位符替换，
+        # 翻译层绝不能把可恢复的解析错误升级成致命异常
+        for k, v in kwargs.items():
+            s = s.replace("{" + k + "}", str(v))
+        return s
