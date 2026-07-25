@@ -1059,6 +1059,16 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
   background:rgba(63,185,80,0.15); color:var(--green);
   padding:1px 7px; border-radius:10px; font-size:10.5px; font-weight:600;
 }
+/* 运行中由 agent 自己 read_skill 拉进上下文的，与启动时勾选注入的区分开：
+   实心绿 = 我勾的（下次启动也带上），虚线青 = 这一轮它自己读的。 */
+.skill-tag.read {
+  background:transparent; color:var(--cyan);
+  border:1px dashed rgba(86,211,222,0.55); padding:0 6px;
+}
+.skill-read-badge {
+  font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px;
+  background:rgba(86,211,222,0.15); color:var(--cyan); flex-shrink:0;
+}
 
 /* ── Apps pane (user-space executable programs) ──────────────────────── */
 .apps-body { flex:1; overflow-y:auto; padding:18px; background:var(--bg); }
@@ -2377,6 +2387,7 @@ function renderAll(data, runId) {
     _advisorOpenSet.clear();
     gAdvisorCacheRunId = rid;
   }
+  syncReadSkills(data.meta);
   renderTopBar(data, rid);
   renderSidebar(data, rid);
   renderMainArea(data);
@@ -4495,7 +4506,8 @@ function appOpenRunModal(id, token) {
 
 // ── Skills ────────────────────────────────────────────────────────────────
 let gSkills        = [];          // [{name, filename, size}]
-let gActiveSkills  = new Set();   // names checked for activation
+let gActiveSkills  = new Set();   // names checked for activation (next launch)
+let gReadSkills    = new Set();   // names the viewed run pulled in via read_skill
 let gSkillCurrent  = null;        // name of skill shown in editor
 let gSkillOrig     = '';          // original content before edit
 let gSkillAdding   = false;       // true while inline-new row is visible
@@ -4556,6 +4568,15 @@ function renderSkillsList() {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'skill-item-name';
     nameSpan.textContent = sk.name;
+    if (gReadSkills.has(sk.name)) {
+      // 勾选框保持不动：那是"下次启动带上什么"，而这条是"当前 run 自己读进去了"。
+      const badge = document.createElement('span');
+      badge.className = 'skill-read-badge';
+      badge.textContent = 'READ';
+      badge.title = '当前查看的任务运行中由 agent 自行 read_skill 读入上下文';
+      nameSpan.appendChild(document.createTextNode(' '));
+      nameSpan.appendChild(badge);
+    }
 
     const sizeSpan = document.createElement('span');
     sizeSpan.className = 'skill-item-size';
@@ -4579,12 +4600,31 @@ function renderSkillsSelCount() {
 function renderSkillsActiveBar() {
   const bar = document.getElementById('topbarSkills');
   bar.innerHTML = '';
-  for (const n of gActiveSkills) {
-    const tag = document.createElement('span');
-    tag.className = 'skill-tag';
-    tag.textContent = n;
-    bar.appendChild(tag);
-  }
+  const tag = (name, cls) => {
+    const el = document.createElement('span');
+    el.className = cls;
+    el.textContent = name;
+    bar.appendChild(el);
+  };
+  for (const n of gActiveSkills) tag(n, 'skill-tag');
+  // 自读的排在勾选的后面，且不重复显示已勾选的那些
+  for (const n of gReadSkills) if (!gActiveSkills.has(n)) tag(n, 'skill-tag read');
+}
+
+/**
+ * 把当前查看的 run 的 meta._read_skills 同步到 gReadSkills 并重绘。
+ *
+ * agent 自己 read_skill 拉进上下文的 SKILL，对本轮的作用和启动时勾选注入等价，
+ * 所以看板必须点亮它，否则 topbar 只反映"启动参数"、和实际上下文对不上。
+ * 每次整体替换而非合并：切换查看的 run / 新 run 开始时自然归零。
+ */
+function syncReadSkills(meta) {
+  const names = Array.isArray(meta && meta._read_skills) ? meta._read_skills : [];
+  const next  = new Set(names.filter(n => typeof n === 'string' && n));
+  if (next.size === gReadSkills.size && [...next].every(n => gReadSkills.has(n))) return;
+  gReadSkills = next;
+  renderSkillsActiveBar();
+  if (gSkills.length) renderSkillsList();   // 面板开过才需要重画勾选列表
 }
 
 async function openSkill(name) {
@@ -5832,10 +5872,44 @@ function onRunContextMenu(e, runId) {
     items.push({ sep: true });
     items.push({ label: '⇢ 参考这项任务中的信息', action: () => injectGoal(`参考「${runId}」任务中的信息，`, false) });
   } else {
-    items.push({ label: '▶ 继续进行该任务', action: () => injectGoal(`继续进行「${runId}」任务`, true)  });
-    items.push({ label: '✎ 基于这项任务…', action: () => injectGoal(`基于「${runId}」任务，`,   false) });
+    items.push({ label: '▶ 继续进行该任务', action: () => continueFromRun(runId, `继续进行「${runId}」任务`, true)  });
+    items.push({ label: '✎ 基于这项任务…', action: () => continueFromRun(runId, `基于「${runId}」任务，`,   false) });
   }
   _showCtxMenu(e.clientX, e.clientY, items);
+}
+
+/**
+ * 继续/基于某个历史任务：先把那次 run 用过的 SKILL 恢复出来（启动时勾选注入的 +
+ * 运行中 agent 自己 read_skill 读进去的，两者取并集），点亮勾选框和 topbar 标签，
+ * 再注入目标。两种来源的全文都进过那轮上下文，对续跑而言是等价的。
+ *
+ * 必须先恢复再 send：launchAgent() 读的是 gActiveSkills，而它只活在页面内存里，
+ * 刷新即清空、也从不跟 runId 绑定 —— 不恢复的话"继续任务"起的新进程就丢了原
+ * 任务的 SKILL 全文注入。取并集而非覆盖：用户手动勾的不会被悄悄取消。
+ */
+async function continueFromRun(runId, text, autoSend) {
+  try {
+    const res = await fetch('/api/run/' + encodeURIComponent(runId) + '/skills');
+    if (res.ok) {
+      const data  = await res.json();
+      const names = Array.isArray(data.skills) ? data.skills : [];
+      if (names.length) {
+        for (const n of names) gActiveSkills.add(n);
+        // Skills 面板没打开过时 gSkills 是空的，直接 render 点不亮任何勾选框，
+        // 先把列表拉回来再渲染。
+        if (!gSkills.length) await loadSkills(); else renderSkillsList();
+        // 标出哪些是那轮 agent 自己读进去的，免得用户以为自己勾过
+        const readOnly = names.filter(n => (data.read || []).includes(n)
+                                        && !(data.selected || []).includes(n));
+        toast('✓ 已恢复该任务的 SKILL：' + names.join(', ')
+              + (readOnly.length ? `（其中 ${readOnly.join(', ')} 为运行中自读）` : ''));
+      }
+      if (Array.isArray(data.missing) && data.missing.length) {
+        toast('⚠ 该任务用过但已删除的 SKILL：' + data.missing.join(', '));
+      }
+    }
+  } catch { /* 恢复失败不该挡住继续任务本身 */ }
+  injectGoal(text, autoSend);
 }
 
 function injectGoal(text, autoSend) {

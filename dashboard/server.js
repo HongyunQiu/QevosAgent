@@ -1830,6 +1830,41 @@ setImmediate(cronsProcessPending);
 
 // ── Load a historical run ──────────────────────────────────────────────────
 
+/**
+ * Skills a past run actually had in context, read back from runs/<id>/meta.json.
+ *
+ * Two sources, unioned:
+ *   meta._active_skills — resolved --skills, full text injected at launch
+ *   meta._read_skills   — pulled in mid-run by the agent's own read_skill tool
+ * Both end up as full SKILL text in that run's context, so for "continue this
+ * task" they are equivalent; the split is kept only so the UI can say which is
+ * which. Until this existed nothing ever read either back, so "继续进行该任务"
+ * started a fresh process with whatever happened to be ticked in the browser
+ * (in-memory only) — i.e. usually nothing, silently dropping the whole SKILL.
+ *
+ * Names whose SKILL file has since been deleted are reported separately instead
+ * of being passed to run_goal.py (which would only print "skill not found").
+ *
+ * Returns null when the run / its meta.json does not exist.
+ */
+function runActiveSkills(runId) {
+  if (!/^\d{8}-\d{6}$/.test(runId)) return null;
+  const fp = path.join(RUNS_DIR, runId, 'meta.json');
+  if (!fs.existsSync(fp)) return null;
+  const meta = readJSON(fp) || {};
+  const clean = key => (Array.isArray(meta[key]) ? meta[key] : [])
+    .filter(n => typeof n === 'string' && n.trim())
+    .map(n => n.trim());
+  const selected = clean('_active_skills');
+  const read     = clean('_read_skills');
+  const skills = [], missing = [];
+  for (const name of new Set([...selected, ...read])) {
+    if (fs.existsSync(path.join(SKILLS_DIR, name + '.md'))) skills.push(name);
+    else missing.push(name);
+  }
+  return { skills, missing, selected, read };
+}
+
 function loadRun(runId) {
   const dir = path.join(RUNS_DIR, runId);
   if (!fs.existsSync(dir)) return null;
@@ -2109,6 +2144,18 @@ const server = http.createServer(async (req, res) => {
       const skillList = Array.isArray(skills) ? skills.filter(Boolean) : [];
       const ap = (typeof agentsProfile  === 'string') ? agentsProfile.trim()  : '';
       const vp = (typeof advisorProfile === 'string') ? advisorProfile.trim() : '';
+      // Backstop for clients that don't restore skills themselves (hand-typed
+      // goal, mobile, curl): a "继续进行「<runId>」任务" / "基于「<runId>」…" goal
+      // with no skills selected inherits the referenced run's own skills.
+      // Only fires when the caller sent none — an explicit selection always wins.
+      if (!skillList.length) {
+        const m = goal.trim().match(/^(?:继续(?:进行)?|基于)\s*[「『"'\[]?\s*(\d{8}-\d{6})/);
+        const inherited = m ? runActiveSkills(m[1]) : null;
+        if (inherited && inherited.skills.length) {
+          skillList.push(...inherited.skills);
+          broadcastConsole('system', `↻ Inherited skills from ${m[1]}: ${inherited.skills.join(', ')}`);
+        }
+      }
       const result = launchAgent(goal.trim(), !!nostop, skillList, ap, vp);
       json(result.ok ? 200 : 409, result);
     } catch (e) { json(500, { error: String(e) }); }
@@ -2356,6 +2403,20 @@ const server = http.createServer(async (req, res) => {
       state.runs = state.runs.filter(r => r !== runId);
       if (state.activeRunId === runId) state.activeRunId = state.runs[state.runs.length - 1] || null;
       json(200, { ok: true, runId });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/run/:runId/skills  — SKILLs that run was launched with ───────
+  // Deliberately separate from GET /api/run/:runId, which ships the whole run
+  // blob (all events + scratchpad); the continue-task path only needs the names.
+  const runSkillsMatch = req.url.match(/^\/api\/run\/([^/?]+)\/skills$/);
+  if (req.method === 'GET' && runSkillsMatch) {
+    try {
+      const rid  = decodeURIComponent(runSkillsMatch[1]);
+      const info = runActiveSkills(rid);
+      if (!info) { json(404, { error: 'run not found' }); return; }
+      json(200, { ok: true, runId: rid, ...info });
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }

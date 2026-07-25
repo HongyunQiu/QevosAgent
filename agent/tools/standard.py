@@ -2753,6 +2753,17 @@ def tool_read_skill(state: AgentState, name: str) -> ToolResult:
         )
     try:
         content = fp.read_text(encoding="utf-8")
+        # 记一笔"本轮自读过的 SKILL"：渐进披露读进来的全文同样进了上下文，对本轮的
+        # 约束力与启动时 --skills 全文注入等价，所以 dashboard 要能点亮、"继续该任务"
+        # 也要能继承（消费方见 dashboard/server.js runActiveSkills）。
+        # 不并进 _active_skills：那个键被 advisor 和 build_skills_catalog 当"已全文
+        # 注入"用，混进去会让清单给自读项打上已加载标记，反而劝退模型不再去读。
+        try:
+            read = state.meta.setdefault("_read_skills", [])
+            if fp.stem not in read:
+                read.append(fp.stem)
+        except Exception:
+            pass  # 记账失败不该把一次成功的读取变成错误
         return ToolResult(success=True, output={"name": fp.stem, "content": content})
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
