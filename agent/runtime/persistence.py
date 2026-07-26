@@ -156,8 +156,18 @@ class RunPersistence:
         user_goal = (getattr(state, "meta", {}) or {}).get("_user_goal") if state is not None else None
         summary = summary_override if summary_override is not None else _make_summary(user_goal or goal)
 
+        # run_outcome 与 status 正交：status 是进程生命周期（dashboard 用），
+        # run_outcome 是任务完成质量（自动续作用）。status=done 既可能是完整完成，
+        # 也可能是部分完成后用户放行——只有 run_outcome 能区分。
+        run_outcome = (getattr(state, "meta", {}) or {}).get("run_outcome") if state is not None else None
+        if not isinstance(run_outcome, dict):
+            run_outcome = None
+
         return {
             "status": status,
+            "run_outcome": (run_outcome or {}).get("outcome"),
+            "resumable": bool((run_outcome or {}).get("resumable")),
+            "run_outcome_detail": run_outcome,
             "run_id": self.run_dir.name,
             "goal": goal,
             "summary": summary,
@@ -281,13 +291,25 @@ class RunPersistence:
             final_answer = (getattr(state, "meta", {}) or {}).get("final_answer") or ""
             goal = getattr(state, "goal", "") or ""
 
+        run_outcome = (getattr(state, "meta", {}) or {}).get("run_outcome") if state is not None else None
+        run_outcome = run_outcome if isinstance(run_outcome, dict) else {}
+
         lines = [
             "# Execution Summary",
             "",
             f"## Outcome",
             f"- status: {outcome}",
+            f"- run_outcome: {run_outcome.get('outcome') or '(unset)'}"
+            + (f" ({run_outcome['reason']})" if run_outcome.get("reason") else ""),
+            f"- resumable: {bool(run_outcome.get('resumable'))}",
             f"- error: {error or '(none)'}",
             "",
+        ]
+        if run_outcome.get("gaps"):
+            lines.append("## Remaining Gaps")
+            lines.extend(f"- {gap}" for gap in run_outcome["gaps"])
+            lines.append("")
+        lines += [
             "## Goal",
             goal or "(unknown)",
             "",

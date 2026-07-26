@@ -290,6 +290,107 @@ def _review_completion_report(state: AgentState, final_answer: Optional[str]) ->
     return "pass", verdict_dict
 
 
+# ── run 级终态 ────────────────────────────────────────────────────────────────
+# status（running/paused/done/failed）描述的是进程生命周期，供 dashboard 消费；
+# run_outcome 正交地描述"任务完成质量"，是后续自动续作的判定依据。两者必须都写——
+# 只看 status 无法区分"完整完成"和"部分完成后用户放行"（两者都落 done）。
+
+RUN_OUTCOME_COMPLETED = "completed"   # 验收 pass，无已知缺口
+RUN_OUTCOME_PARTIAL   = "partial"     # done_partial，主体完成但有已知缺口
+RUN_OUTCOME_BLOCKED   = "blocked"     # done_blocked，外部阻塞
+RUN_OUTCOME_EXHAUSTED = "exhausted"   # 迭代预算耗尽
+RUN_OUTCOME_ABORTED   = "aborted"     # 用户主动终止
+RUN_OUTCOME_FAILED    = "failed"      # 异常中断
+
+# 可被自动续作消费的终态。消费方应读 run_outcome["resumable"]，不要自行判断枚举，
+# 否则将来加新终态时每个消费点都得跟着改。
+_RESUMABLE_OUTCOMES = {RUN_OUTCOME_PARTIAL, RUN_OUTCOME_BLOCKED, RUN_OUTCOME_EXHAUSTED}
+
+# 续跑时必须清空的键：上一轮的验收结论与记忆门标记若残留，会让本轮的门失效。
+_RESUME_RESET_KEYS = (
+    "completion_report", "completion_review", "run_outcome",
+    "_episodic_appended", "_concept_evaluated", "_pending_final",
+    "_obs_since_report", "_stale_report_rejections",
+    "_wrapup_window", "_wrapup_window_used",
+    "_iter_warn_injected", "timeout",
+)
+
+
+def _set_run_outcome(
+    state: AgentState,
+    outcome: str,
+    *,
+    reason: str = "",
+    report: Optional[dict] = None,
+    error: Optional[str] = None,
+) -> dict:
+    """写入 run 级终态。已有终态不覆盖——先到达的路径最贴近真实结束原因。
+
+    gaps 从完成报告提取并原样带出，作为自动续作唯一的结构化输入。
+    """
+    from datetime import datetime, timezone
+
+    if isinstance(state.meta.get("run_outcome"), dict):
+        return state.meta["run_outcome"]
+
+    src = report if isinstance(report, dict) else state.meta.get("completion_report")
+    gaps: list[str] = []
+    if isinstance(src, dict) and isinstance(src.get("remaining_gaps"), list):
+        gaps = [str(g).strip() for g in src["remaining_gaps"] if str(g).strip()]
+
+    record = {
+        "outcome": outcome,
+        "reason": reason or outcome,
+        "resumable": outcome in _RESUMABLE_OUTCOMES,
+        "gaps": gaps,
+        "iteration": int(getattr(state, "iteration", 0) or 0),
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    if error:
+        record["error"] = str(error)[:500]
+
+    state.meta["run_outcome"] = record
+    return record
+
+
+# ── 迭代耗尽收尾窗口 ──────────────────────────────────────────────────────────
+# 耗尽若直接 break，agent 从来没有机会交代"做到哪了、还差什么"，exhausted 就只是
+# 一个光秃秃的布尔。自动续作拿不到 gaps 只能从零重建上下文，等于白跑一代。
+# 因此耗尽时额外给一小段预算，且只放行收尾类工具，防止 agent 拿它继续干新活。
+
+_WRAPUP_BUDGET = 2
+
+_WRAPUP_ALLOWED_TOOLS = {
+    "submit_completion_report",
+    "append_episodic",
+    "save_concept",
+    "scratchpad_set",
+    "scratchpad_append",
+}
+
+def _wrapup_blocks(state: AgentState, tool_name: str) -> bool:
+    """收尾窗口内是否应拦截该工具。窗口未开启时恒为 False。"""
+    return bool(state.meta.get("_wrapup_window")) and tool_name not in _WRAPUP_ALLOWED_TOOLS
+
+
+_WRAPUP_PROMPT = """\
+[系统][收尾窗口] 迭代预算已耗尽，本次任务即将强制结束。
+
+你还剩 {budget} 次迭代，且**只能用于收尾**——除 submit_completion_report、
+append_episodic、save_concept、scratchpad_* 外的工具已被暂时禁用，不要再开始任何新的执行工作。
+
+请立刻调用 submit_completion_report，如实交代：
+  - completed_work: 已经真正完成的部分（不要写计划中但没做的）
+  - remaining_gaps: 还差什么。**这是唯一会传递给后续任务的信息**，
+    每一条都要写清"差什么"以及"下一步具体该怎么做"，
+    不要写成"还需进一步完善"这类无法执行的笼统说法
+  - outcome: done_partial（有已知缺口）或 done_blocked（被外部因素卡住）
+然后调用 done 结束。
+
+这些信息决定后续能否在你已完成的工作上继续推进；写不清楚，前面的工作就等于作废。\
+"""
+
+
 def _finalize_run(state: AgentState, final_answer, verdict, verdict_dict, hooks, nostop) -> str:
     """收尾：保存最终答案 + 可选 RUN_OK 摘要 + 处理 weak_pass 暂停。
 
@@ -332,10 +433,29 @@ def _finalize_run(state: AgentState, final_answer, verdict, verdict_dict, hooks,
         except Exception:
             pass
 
+    # run 级终态：必须在 nostop 分支之外设置——nostop 下 weak_pass 不 pause，
+    # 但它仍然是一次"部分完成"，落盘时不能和完整完成混为一谈。
+    _report = (verdict_dict or {}).get("report", {})
+    if verdict == "weak_pass":
+        _outcome = _report.get("outcome", "done_partial")
+        _set_run_outcome(
+            state,
+            RUN_OUTCOME_BLOCKED if _outcome == "done_blocked" else RUN_OUTCOME_PARTIAL,
+            reason=(verdict_dict or {}).get("reason", ""),
+            report=_report,
+        )
+    else:
+        _set_run_outcome(
+            state,
+            RUN_OUTCOME_COMPLETED,
+            reason=(verdict_dict or {}).get("reason", ""),
+            report=_report,
+        )
+
     # weak_pass：系统主动发起 ask_user，让用户决定是否在当前基础上继续
     # nostop 模式下不 pause：人用下一条指令自然跟进即可
     if verdict == "weak_pass" and not nostop:
-        report = (verdict_dict or {}).get("report", {})
+        report = _report
         outcome = report.get("outcome", "done_partial")
         completed = report.get("completed_work", [])
         gaps = report.get("remaining_gaps", [])
@@ -549,6 +669,14 @@ def run(
         state.meta.pop("paused", None)
         state.meta.pop("awaiting_input", None)
         state.meta["_llm"] = llm  # 恢复运行时也更新引用
+        # 续跑 = 重新验收。上一轮的完成报告/验收结论/记忆门标记若残留：
+        #   - agent 本轮不重新提交报告时，门 1 会读到旧报告再判 weak_pass，
+        #     把刚解决掉的遗留项原样再问用户一遍（问题文本一字不差）；
+        #   - _episodic_appended/_concept_evaluated 残留会让门 2、门 3 直接跳过，
+        #     续跑做的工作没有任何记忆沉淀；
+        #   - _wrapup_window 残留会让续跑一开始就把工具全禁掉。
+        for _k in _RESUME_RESET_KEYS:
+            state.meta.pop(_k, None)
         # 用户提供了新指导，重置循环检测状态，给模型新的起点
         state.meta.pop("_loop_warn_counts", None)
         state.meta.pop("_call_sig_history", None)
@@ -601,7 +729,24 @@ def run(
             # ─────────────────────────────────────────────────────────────────────
 
             if not _nostop_mode and state.iteration >= max_iterations:
-                break
+                # 预算耗尽不直接退出：先开一次受限收尾窗口，让 agent 用
+                # submit_completion_report 交代进度与缺口，否则 exhausted 无
+                # 结构化输入，后续续作只能从零重建上下文。窗口只开一次。
+                if state.meta.get("_wrapup_window_used"):
+                    break
+                state.meta["_wrapup_window_used"] = True
+                state.meta["_wrapup_window"] = True
+                max_iterations += _WRAPUP_BUDGET
+                state.meta["_max_iterations"] = max_iterations
+                _append_short_term(
+                    state,
+                    {"role": "user", "content": _WRAPUP_PROMPT.format(budget=_WRAPUP_BUDGET)},
+                )
+                if hooks.on_error:
+                    hooks.on_error(
+                        f"[收尾窗口] 迭代预算耗尽，额外给予 {_WRAPUP_BUDGET} 次迭代用于提交完成报告"
+                    )
+                _checkpoint_state(state)
 
             # ── Iteration limit warning ───────────────────────────────────────
             if not _nostop_mode and not state.meta.get("_iter_warn_injected"):
@@ -1152,7 +1297,20 @@ def run(
                 if hooks.on_tool_call:
                     hooks.on_tool_call(action.tool, action.args)
 
-                result = execute(action, state)
+                # 收尾窗口：只放行收尾类工具。软提示挡不住 agent 拿最后的预算继续
+                # 干新活，而预算一旦烧完就再没有机会拿到 gaps 了。
+                if _wrapup_blocks(state, action.tool):
+                    result = ToolResult(
+                        success=False,
+                        output=None,
+                        error=(
+                            f"[收尾窗口] 工具 '{action.tool}' 已被暂时禁用。"
+                            f"迭代预算已耗尽，当前只允许: {sorted(_WRAPUP_ALLOWED_TOOLS)}。"
+                            "请立即调用 submit_completion_report 交代已完成的工作与剩余缺口，然后 done。"
+                        ),
+                    )
+                else:
+                    result = execute(action, state)
 
                 if hooks.on_tool_result:
                     hooks.on_tool_result(result)
@@ -1260,16 +1418,30 @@ def run(
 
             state.iteration += 1
     except Exception as e:
+        _set_run_outcome(state, RUN_OUTCOME_FAILED, reason="exception", error=f"{type(e).__name__}: {e}")
         persistence = _get_persistence(state)
         if persistence is not None:
             persistence.finish(state, outcome="failed", error=f"{type(e).__name__}: {e}")
         raise
     else:
-        if not _nostop_mode and state.iteration >= max_iterations and not state.meta.get("paused") and "final_answer" not in state.meta:
+        # 注意：这里不能再带 "final_answer" not in state.meta 条件。weak_pass 已经
+        # 写过 final_answer，续跑后再耗尽会因该条件为假而静默返回，外层把一个
+        # 跑爆的 run 记成 done——正是自动续作最常走的那条链。
+        # 改由 run_outcome 是否已定来防重复：正常完成时 _finalize_run 已设 completed。
+        if (
+            not _nostop_mode
+            and state.iteration >= max_iterations
+            and not state.meta.get("paused")
+            and "run_outcome" not in state.meta
+        ):
             if hooks.on_error:
                 hooks.on_error(f"达到最大迭代次数 {max_iterations}，强制退出。")
             state.meta["timeout"] = True
+            _set_run_outcome(state, RUN_OUTCOME_EXHAUSTED, reason="iteration_budget_exhausted")
             _checkpoint_state(state, status="failed")
+        elif state.meta.get("user_stopped") and "run_outcome" not in state.meta:
+            _set_run_outcome(state, RUN_OUTCOME_ABORTED, reason="user_stopped")
+            _checkpoint_state(state)
 
     return state
 

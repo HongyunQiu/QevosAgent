@@ -6,29 +6,46 @@
 
 ## 概览
 
-验收发生在 agent 调用 `done` 动作的那一刻。系统不会立即退出，而是先经过一个验收门（`_review_completion_report`），根据审核结果决定继续、暂停还是退出。
+一次 `done` 要穿过三道串联的门。门 1 产出验收 verdict（三态），门 2/3 是记忆沉淀的强制步骤。所有退出路径最终都要落下一个 **run 级终态**（`run_outcome`），它是后续自动续作的判定依据。
 
 ```
 agent 调用 done
        │
        ▼
-_review_completion_report()
+验收门 1：_review_completion_report()
        │
-       ├── needs_more_work ──► 注入错误提示，继续循环
+       ├── needs_more_work ──► 注入错误提示，继续循环（不产生终态）
        │
-       ├── weak_pass ────────► 保存结果，系统发起 ask_user，等待用户决策
+       ├── weak_pass ────────► run_outcome = partial / blocked
+       │                       保存结果，系统发起 ask_user，等待用户决策
        │                            │
-       │                            ├── 用户说"继续" ──► 恢复 loop，带完整上下文推进
-       │                            └── 用户说"完成" ──► 正式退出
+       │                            ├── 用户说"继续" ──► 恢复 loop（清空上一轮验收状态）
+       │                            └── 用户说"完成" ──► 退出，终态保留 partial
        │
-       └── pass ─────────────► 直接退出
+       └── pass ─────────────► 继续往下
+                                    │
+                                    ▼
+                        验收门 2：episodic 记忆（未调 append_episodic → 打回）
+                                    │
+                                    ▼
+                        验收门 3：concept 宏观记忆评估（必经一次，与成败无关）
+                                    │
+                                    ▼
+                              run_outcome = completed，退出
+
+其他退出路径（均绕过上述三门，但都会落终态）：
+  迭代预算耗尽 ──► 先开收尾窗口索取缺口 ──► run_outcome = exhausted
+  用户 /exit    ──────────────────────────► run_outcome = aborted
+  异常          ──────────────────────────► run_outcome = failed
 ```
+
+> **nostop 模式**几乎旁路整套机制：门 1 只要有 `final_answer` 就 pass（reason=`nostop_human_in_loop`），门 2 由 Python 层自动写入，门 3 整个跳过，`weak_pass` 也不 pause。人在回路即质量门。但 `run_outcome` 仍然照常记录。
 
 ---
 
 ## 完成报告
 
-验收门的核心输入是**完成报告**（`completion_report`），存放在 `state.meta["completion_report"]`。
+验收门 1 的核心输入是**完成报告**（`completion_report`），存放在 `state.meta["completion_report"]`。
 
 ### 提交方式：submit_completion_report 工具
 
@@ -52,19 +69,19 @@ agent 在调用 `done` 之前，应先调用 `submit_completion_report` 工具�
 |------|------|------|
 | `goal_understanding` | str | agent 对任务目标的理解。是验收门最先校验的字段，也是判断 agent 是否在做正确事情的唯一语义锚点。 |
 | `completed_work` | list[str] | 已完成事项列表，至少填一项（或 `final_answer` 非空）。 |
-| `remaining_gaps` | list[str] | 遗留/未完成事项。`outcome` 为 `done` 时可为空。 |
+| `remaining_gaps` | list[str] | 遗留/未完成事项。**会被原样带进 `run_outcome.gaps`，是自动续作唯一的结构化输入。** |
 | `evidence_type` | enum | 证据类型，见下表。 |
 | `evidence` | list[str] | 证据列表。`evidence_type=artifact` 时填文件路径；其他类型填描述文字。 |
 | `outcome` | enum | 完成状态，见下表。**这是驱动三态结果的核心字段。** |
-| `confidence` | enum | 完成信心：`low` / `medium` / `high`。当前用于记录，未来可用于差异化处理。 |
+| `confidence` | enum | 完成信心：`low` / `medium` / `high`。当前仅记录，未被任何判定消费。 |
 
 ### outcome 枚举
 
-| 值 | 含义 | 验收结果 |
-|----|------|----------|
-| `done` | 完整完成，无遗留 | `pass`，直接退出 |
-| `done_partial` | 主体完成，有已知缺口 | `weak_pass`，暂停询问用户 |
-| `done_blocked` | 外部阻塞，只完成了可做部分 | `weak_pass`，暂停询问用户 |
+| 值 | 含义 | 验收结果 | run 终态 |
+|----|------|----------|----------|
+| `done` | 完整完成，无遗留 | `pass` | `completed` |
+| `done_partial` | 主体完成，有已知缺口 | `weak_pass` | `partial` |
+| `done_blocked` | 外部阻塞，只完成了可做部分 | `weak_pass` | `blocked` |
 
 ### evidence_type 枚举
 
@@ -73,11 +90,11 @@ agent 在调用 `done` 之前，应先调用 `submit_completion_report` 工具�
 | `artifact` | 文件产物（路径） | 验收门会检查路径是否实际存在 |
 | `tool_result` | 工具调用的返回结果 | 无额外校验 |
 | `observation` | 观察到的现象或状态 | 无额外校验 |
-| `none` | 无具体证据 | 无额外校验 |
+| `none` | 无具体证据 | 无额外校验（也是非法枚举值的降级目标） |
 
 ---
 
-## 验收门逻辑（_review_completion_report）
+## 验收门 1：完成报告（_review_completion_report）
 
 位于 `agent/core/loop.py`，在每次 `ActionType.DONE` 触发时调用。
 
@@ -98,26 +115,29 @@ agent 在调用 `done` 之前，应先调用 `submit_completion_report` 工具�
        └── 有缺失 → needs_more_work (artifact_missing)，列出具体路径
 
 5. outcome in {done_partial, done_blocked}？
-   └── 是 → weak_pass
+   ├── 报告提交后又有新环境观察（watcher/后台 job 注入）？
+   │   └── 是 → needs_more_work (stale_completion_report)，最多打回 2 次
+   └── 否 → weak_pass
 
 6. 以上全部通过 → pass
 ```
 
 ### 三种 verdict
 
-**`needs_more_work`** — 继续循环补救
-
-系统将错误原因追加到 `short_term`，agent 继续执行。错误信息按原因定制：
+**`needs_more_work`** — 继续循环补救。**这不是终态**，它 `continue` 回主循环，不产生 `run_outcome`。
 
 | reason | 提示内容 |
 |--------|----------|
 | `missing_completion_report` | 提示调用 `submit_completion_report` 或追加 ACCEPTANCE 块 |
 | `missing_completed_work` | 提示补充 `completed_work` 或提供 `final_answer` |
 | `artifact_missing` | 列出缺失的文件路径，提示 `write_file` 后重试 |
+| `stale_completion_report` | 报告提交后环境有了新观察，要求用最新数据重新提交 |
+
+`stale_completion_report` 存在的原因：`weak_pass` 会把报告原文拼进 ask_user 展示给用户，若照搬提交时的旧快照，用户会看到与最新进展自相矛盾的数字。打回次数上限 2（`_stale_report_rejections`），防止 watcher 每迭代注入导致"刚提交又过期"的死循环。
 
 **`weak_pass`** — 保存结果，系统发起 ask_user
 
-`final_answer` 被保存到 `state.meta["final_answer"]` 并落盘，然后系统根据完成报告自动生成问题：
+`final_answer` 被保存并落盘，`run_outcome` 记为 `partial` / `blocked`，然后系统根据完成报告自动生成问题：
 
 ```
 [主体工作完成，有已知遗留]
@@ -134,9 +154,80 @@ agent 在调用 `done` 之前，应先调用 `submit_completion_report` 工具�
 
 状态被标记为 `paused`，循环暂停，控制权交回调用方（`run_goal.py`）。
 
-**`pass`** — 直接退出
+**`pass`** — 继续走门 2、门 3，最终 `run_outcome = completed` 后退出。
 
-`final_answer` 被保存，循环 `break`，返回 `AgentState`。
+---
+
+## 验收门 2 / 门 3：记忆沉淀
+
+| 门 | 触发条件 | 行为 |
+|----|----------|------|
+| 门 2：episodic | `_episodic_appended` 未置位 | 打回，要求调用 `append_episodic` |
+| 门 3：concept | `_concept_evaluated` 未置位 | 打回一次，要求评估是否 `save_concept`；无论是否保存都只走一次 |
+
+这两门的打回**不产生 verdict**，只往 `state.meta["acceptance_failures"]` 追加 `{"reason": "missing_episodic"}` 之类的记录。
+
+门 3 有一条收尾捷径：打回时把门 1 的结论暂存进 `_pending_final`，若 agent 接下来直接调用 `save_concept` 成功，则跳过"再 done 一次"的完整迭代，直接复用暂存结论收尾（`save_concept` 会改动 system prompt 前缀，那一次迭代的缓存失效代价最高）。两条路径共用 `_finalize_run`，行为一致。
+
+---
+
+## run 级终态（run_outcome）
+
+`status` 和 `run_outcome` 是**正交**的两个维度，必须都读：
+
+- **`status`** — 进程生命周期，dashboard 消费：`running` / `paused` / `done` / `failed`
+- **`run_outcome`** — 任务完成质量，自动续作消费
+
+只看 `status` 无法区分"完整完成"和"部分完成后用户放行"——两者都落 `done`。
+
+| run_outcome | 触发 | resumable |
+|-------------|------|-----------|
+| `completed` | 验收 pass | ❌ |
+| `partial` | `done_partial` → weak_pass | ✅ |
+| `blocked` | `done_blocked` → weak_pass | ✅ |
+| `exhausted` | 迭代预算耗尽 | ✅ |
+| `aborted` | 用户 `/exit`、暂停中退出 | ❌ |
+| `failed` | 异常中断 | ❌ |
+
+落盘位置：
+
+- `state.meta["run_outcome"]` — 完整记录
+- `status.json` — `run_outcome`（字符串）、`resumable`（布尔）、`run_outcome_detail`（完整记录）
+- `execution_summary.md` — 人读视图，含 `## Remaining Gaps` 章节
+
+记录结构：
+
+```json
+{
+  "outcome":   "partial",
+  "reason":    "partial_completion",
+  "resumable": true,
+  "gaps":      ["格式 C 的解析未实现"],
+  "iteration": 27,
+  "at":        "2026-07-26T08:31:00+00:00",
+  "error":     "仅 failed 时存在"
+}
+```
+
+两条约定：
+
+1. **先写者胜。** `_set_run_outcome` 不覆盖已有值——先到达的路径最贴近真实结束原因，后来的兜底不得篡改。
+2. **消费方读 `resumable`，不要自己判断枚举。** 否则将来加新终态时每个消费点都得跟着改。
+
+---
+
+## 迭代耗尽与收尾窗口
+
+预算耗尽若直接 `break`，agent 从来没有机会交代"做到哪了、还差什么"，`exhausted` 就只是一个光秃秃的布尔，续作只能从零重建上下文。
+
+因此耗尽时先开一次**收尾窗口**：
+
+1. 额外给 `_WRAPUP_BUDGET`（当前 2）次迭代
+2. 置 `_wrapup_window`，**只放行收尾类工具**：`submit_completion_report` / `append_episodic` / `save_concept` / `scratchpad_*`；其余工具返回错误提示而不真正执行
+3. 注入强指令，要求 agent 立刻提交完成报告，并明确告知 `remaining_gaps` 是唯一会传递给后续任务的信息
+4. 窗口只开一次（`_wrapup_window_used`），预算再耗尽即强制退出
+
+软提示挡不住 agent 拿最后的预算继续干新活，而预算一旦烧完就再没有机会拿到 gaps——所以这里用的是硬拦截。
 
 ---
 
@@ -145,7 +236,6 @@ agent 在调用 `done` 之前，应先调用 `submit_completion_report` 工具�
 如果 agent 没有调用 `submit_completion_report`，验收门会检查草稿本中是否有 `ACCEPTANCE` 关键字，并将其转换为结构化报告：
 
 ```
-# 草稿本中的旧格式（仍然有效）
 ACCEPTANCE
 criteria: 完成了 X 功能
 evidence_type: artifact
@@ -154,20 +244,21 @@ verdict: PASS
 ```
 
 转换规则：
+
 - `goal_understanding` ← `state.goal`（原始任务描述）
-- `completed_work` ← `final_answer` 首行（若有）
+- `completed_work` ← `final_answer` 首行（若有），兜底 `["已生成最终回答"]`
 - `remaining_gaps` ← 空列表
-- `evidence_type` / `evidence` ← 从 ACCEPTANCE 块解析
-- `outcome` ← 固定为 `done`（旧格式不支持三态，统一视为完整完成）
+- `evidence_type` / `evidence` ← 从 ACCEPTANCE 块解析（默认 `artifact`）
+- `outcome` ← 固定为 `done`
 - `confidence` ← 固定为 `medium`
 
-**这意味着旧格式只能走 `pass` 路径，无法触发 `weak_pass` 的用户询问环节。** 要使用三态结果和延续推进功能，需改用 `submit_completion_report`。
+**旧格式只能走 `pass` 路径，无法触发 `weak_pass`，也永远不会产出可续作的终态。** 要使用三态结果和延续推进功能，必须改用 `submit_completion_report`。
 
 ---
 
 ## 延续工作：ask_user 与多轮推进
 
-`weak_pass` 触发的暂停与 agent 主动调用 `ask_user` 工具走的是同一套机制：
+`weak_pass` 触发的暂停与 agent 主动调用 `ask_user` 走的是同一套机制：
 
 1. `state.meta["paused"] = True`
 2. `state.meta["awaiting_input"] = <问题文本>`
@@ -176,34 +267,53 @@ verdict: PASS
 5. 用户输入追加到 `state.short_term`
 6. 以**原始 goal** 重新调用 `agent.run(goal, state=state)`
 
-由于 `state.short_term` 和 `state.long_term` 完整保留，重新启动的 agent 拥有完整上下文：它知道已完成了什么、遗留了什么、用户的新指令是什么，可以直接从当前基础上推进，而不必重头开始。
+由于 `state.short_term` 和 `state.long_term` 完整保留，重新启动的 agent 拥有完整上下文。
+
+### 续跑 = 重新验收
+
+`run()` 的恢复分支会清空 `_RESUME_RESET_KEYS` 中的所有键：
+
+```
+completion_report      completion_review       run_outcome
+_episodic_appended     _concept_evaluated      _pending_final
+_obs_since_report      _stale_report_rejections
+_wrapup_window         _wrapup_window_used
+_iter_warn_injected    timeout
+```
+
+不清会出三类问题：
+
+- **旧报告残留** → agent 本轮若未重新提交，门 1 读到上一轮报告再判一次 `weak_pass`，把刚解决掉的遗留项**原样再问用户一遍**（问题文本一字不差）
+- **门 2/3 标记残留** → 续跑做的工作没有任何记忆沉淀
+- **收尾窗口标记残留** → 续跑一开始就把工具全禁掉
+
+`acceptance_failures` 不清——那是跨轮累积的诊断记录。
 
 ### 用户回复处理
 
-调用方（`run_goal.py`）收到 paused 状态后的处理逻辑：
-
 ```
-用户回复"完成" / 空回复  →  直接结束，state.meta["final_answer"] 已存在
-用户给出新指令         →  追加到 short_term → agent.run(goal, state=state)
-                            agent 带完整历史继续执行，completion_report 会在下轮 done 时重置
+用户回复"完成"/done/finish/ok/好/不用了  →  直接结束，终态保留 partial
+用户给出新指令                          →  追加到 short_term → agent.run(goal, state=state)
 ```
 
 ---
 
 ## 状态记录
 
-验收结果写入 `state.meta["completion_review"]`，格式：
+验收结果写入 `state.meta["completion_review"]`：
 
 ```json
 {
   "status":  "pass | weak_pass | needs_more_work",
-  "reason":  "completion_report_sufficient | partial_completion | blocked_completion | artifact_missing | ...",
+  "reason":  "completion_report_sufficient | partial_completion | blocked_completion | artifact_missing | stale_completion_report | ...",
   "report":  { ...normalized completion_report... },
   "missing": ["仅 artifact_missing 时存在，列出缺失路径"]
 }
 ```
 
-每次 `needs_more_work` 的失败记录追加到 `state.meta["acceptance_failures"]`，可用于事后分析或调试。
+> 已知不一致：`missing_completion_report` 与 `missing_completed_work` 两个分支直接 return，**不写 `completion_review`**，该字段会停留在上一轮的旧值。
+
+每次验收失败追加到 `state.meta["acceptance_failures"]`，可用于事后分析。
 
 ---
 
@@ -214,7 +324,14 @@ verdict: PASS
 | `_normalize_completion_report` | `agent/core/loop.py` | `_parse_acceptance_evidence` 之后 |
 | `_completion_report_from_legacy_acceptance` | `agent/core/loop.py` | 同上 |
 | `_review_completion_report` | `agent/core/loop.py` | 同上 |
-| DONE 处理块（验收门调用点） | `agent/core/loop.py` | `ActionType.DONE` 分支 |
+| `_set_run_outcome` / `RUN_OUTCOME_*` / `_RESUME_RESET_KEYS` | `agent/core/loop.py` | `_review_completion_report` 之后 |
+| `_wrapup_blocks` / `_WRAPUP_*` | `agent/core/loop.py` | 同上 |
+| `_finalize_run` | `agent/core/loop.py` | 同上 |
+| 三道门（DONE 处理块） | `agent/core/loop.py` | `ActionType.DONE` 分支 |
+| 收尾窗口开启 | `agent/core/loop.py` | 主循环 `iteration >= max_iterations` 处 |
+| 耗尽/中止终态兜底 | `agent/core/loop.py` | `run()` 的 `try/except/else` 尾部 |
+| 续跑重置 | `agent/core/loop.py` | `run()` 的 `else`（恢复）分支 |
 | `tool_submit_completion_report` | `agent/tools/standard.py` | 异步工具节之前 |
-| `submit_completion_report` 工具注册 | `agent/tools/standard.py` | `get_standard_tools()` |
-| ask_user 暂停机制（通用） | `agent/core/loop.py` | `action.tool == "ask_user"` 分支 |
+| run 终态落盘 | `agent/runtime/persistence.py` | `_status_payload` / `_write_execution_summary` |
+| 终态兜底 + nostop 键清理 | `run_goal.py` | `finally` 块 / `_NOSTOP_RESET_KEYS` |
+| 回归测试 | `test/tests_acceptance_gate.py` | — |

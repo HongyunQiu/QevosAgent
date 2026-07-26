@@ -612,8 +612,12 @@ def main():
     # ── nostop: keys cleared between tasks ───────────────────────────────
     _NOSTOP_RESET_KEYS = (
         "final_answer", "completion_report", "completion_review",
-        "acceptance_failures", "_episodic_appended",
+        "acceptance_failures", "_episodic_appended", "_concept_evaluated",
         "nostop_idle", "paused", "awaiting_input",
+        # run 级终态与收尾窗口标记：不清会让下一个任务继承上一个的结论，
+        # 且 _wrapup_window 残留会直接把新任务的工具全禁掉。
+        "run_outcome", "_wrapup_window", "_wrapup_window_used",
+        "_obs_since_report", "_stale_report_rejections", "_pending_final",
     )
 
     current_goal = full_goal
@@ -947,6 +951,31 @@ def main():
             else:
                 _finish_outcome = "done"
                 _finish_error   = None
+
+            # run 级终态兜底：loop 内的正常路径都会自设 run_outcome，但外层异常、
+            # stdin EOF、暂停中被杀等路径到不了那里。终态缺失会让自动续作把这些 run
+            # 当成"没有结论"而漏掉，所以在落盘前补齐。_set_run_outcome 不覆盖已有值。
+            try:
+                from agent.core.loop import (
+                    _set_run_outcome,
+                    RUN_OUTCOME_ABORTED,
+                    RUN_OUTCOME_EXHAUSTED,
+                    RUN_OUTCOME_FAILED,
+                )
+                if run_error is not None:
+                    _set_run_outcome(
+                        state, RUN_OUTCOME_FAILED, reason="run_goal_exception", error=_finish_error
+                    )
+                elif state.meta.get("timeout"):
+                    _set_run_outcome(state, RUN_OUTCOME_EXHAUSTED, reason="iteration_budget_exhausted")
+                elif state.meta.get("user_stopped"):
+                    _set_run_outcome(state, RUN_OUTCOME_ABORTED, reason="user_stopped")
+                elif state.meta.get("paused"):
+                    # 暂停中退出（EOF/被杀）：问题还挂着，等同于用户未作答的中止
+                    _set_run_outcome(state, RUN_OUTCOME_ABORTED, reason="exited_while_paused")
+            except Exception:
+                pass
+
             state.persistence.finish(state, outcome=_finish_outcome, error=_finish_error)
 
         # If web_notify was used this session, write a final web_chat message so
