@@ -922,6 +922,42 @@ class AnthropicBackend(LLMBackend):
 
 # ── System Prompt 构建器 ───────────────────────────────────────────────────────
 
+def _render_long_term(long_term: list[str]) -> str:
+    """把长期记忆渲染进 system prompt，并施加去重 + 条数上限。
+
+    long_term 是只增不减的列表（自我修复、压缩战报、工具进化…全往里 append），
+    而压缩只削 short_term —— 长跑时它会把 system prompt 顶穿，出现"压完还是超"
+    的死循环。这里只裁**渲染结果**，state.long_term 本身保持完整，
+    meta.json 里的审计轨迹不受影响。
+
+    重复条目（如反复出现的同一条 [自我修复]）只保留最后一次出现的位置。
+    """
+    if not long_term:
+        return ""
+
+    max_entries = int(os.environ.get("LONG_TERM_MAX_ENTRIES", "60"))
+
+    # 去重保留最后一次出现：倒着走一遍再翻回来
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in reversed(long_term):
+        key = str(item).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(key)
+    deduped.reverse()
+
+    omitted = len(deduped) - max_entries
+    if omitted > 0:
+        deduped = deduped[-max_entries:]
+
+    lines = [f"- {m}" for m in deduped]
+    if omitted > 0:
+        lines.insert(0, t("sys.memory_omitted", n=omitted))
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     tools: dict[str, ToolSpec],
     long_term: list[str],
@@ -963,10 +999,9 @@ def build_system_prompt(
         concept_section = f"\n\n{t('sys.concept_header')}\n{concept_memory.strip()}"
 
     memory_section = ""
-    if long_term:
-        memory_section = f"\n\n{t('sys.memory_header')}\n" + "\n".join(
-            f"- {m}" for m in long_term
-        )
+    rendered_memory = _render_long_term(long_term)
+    if rendered_memory:
+        memory_section = f"\n\n{t('sys.memory_header')}\n{rendered_memory}"
 
     import os as _os
     _note_mode = scratchpad_note_mode or _os.environ.get("SCRATCHPAD_NOTE_MODE", "mini_call")

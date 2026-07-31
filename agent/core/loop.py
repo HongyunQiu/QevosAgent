@@ -25,6 +25,7 @@ from .compression import (
     _rebuild_context_on_hard_block,
     _apply_runtime_patch,
 )
+from .artifact_index import register_artifact
 from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice, ensure_progress_log
 from agent.i18n import t
 
@@ -1486,6 +1487,14 @@ def _poll_watchers(state: "AgentState", hooks: Optional["AgentHooks"] = None) ->
                 continue
             # 双保险:再裁一次到 500 字符,即便 manager 漏了也不破
             content = content[:500]
+            # watcher 溢出落盘的路径同样只活在这一条消息里 → 登记进产物索引
+            _spill = ev.get("spill_path")
+            if _spill:
+                register_artifact(
+                    state, str(_spill), "watcher",
+                    tool=str(ev.get("name") or ""),
+                    chars=int(ev.get("spill_chars") or 0),
+                )
             _append_short_term(state, {"role": "user", "content": content})
             if state.meta.get("completion_report"):
                 state.meta["_obs_since_report"] = True
@@ -1649,6 +1658,12 @@ def _spill_large_output_to_disk(tool_name: str, content: str, state: "AgentState
         safe_name = tool_name.replace("/", "_").replace("\\", "_")
         filepath = artifacts_dir / f"tool_raw_{safe_name}_iter{iter_n}.txt"
         filepath.write_text(content, encoding="utf-8")
+        # 登记进产物索引：这条路径目前只存在于一条 feedback 消息里，
+        # 压缩硬重置 short_term 后就再也找不回来了。
+        register_artifact(
+            state, str(filepath), "spill",
+            tool=tool_name, chars=len(content), iter_n=iter_n,
+        )
         return str(filepath)
     except Exception:
         return None

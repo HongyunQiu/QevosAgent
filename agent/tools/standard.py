@@ -441,6 +441,9 @@ def tool_write_file(state: AgentState, path: str, content: str) -> ToolResult:
         p = Path(path2)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
+        # 登记进产物索引，压缩封段时会作为确定性清单附进交接文档
+        from ..core.artifact_index import register_artifact
+        register_artifact(state, str(p.resolve()), "write_file", chars=len(content))
         return ToolResult(
             success=True,
             output=f"已写入 {p.resolve()}（{len(content)} 字符）"

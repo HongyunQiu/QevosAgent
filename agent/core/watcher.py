@@ -436,6 +436,9 @@ class WatcherManager:
                 "kind": "path",
                 "content": content,
                 "image_block": None,
+                # 供 loop._poll_watchers 登记进产物索引（压缩后路径不至于丢失）
+                "spill_path": path,
+                "spill_chars": 0,
             }
 
         if kind == "image":
@@ -475,6 +478,9 @@ class WatcherManager:
             "kind": "path",
             "content": content,
             "image_block": None,
+            # 供 loop._poll_watchers 登记进产物索引（压缩后路径不至于丢失）
+            "spill_path": spill_path,
+            "spill_chars": len(text),
         }
 
     def _format_path_injection(self, entry: WatcherEntry, path: str, hint: str = "") -> str:

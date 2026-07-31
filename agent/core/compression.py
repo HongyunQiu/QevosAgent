@@ -27,6 +27,7 @@ from typing import Optional
 
 from .types_def import Action, AgentHooks, AgentState, ToolResult
 from .llm import LLMBackend, build_system_prompt, build_context_messages, _extract_json
+from .artifact_index import render_manifest
 from ..runtime.persistence import RunPersistence
 from ..i18n import t
 
@@ -131,6 +132,11 @@ def _trim_short_term(state: AgentState, keep_last: int = 8):
     else:
         bridge_content = t("compress.bridge_no_sp", dropped=dropped, keep=keep_last)
 
+    # 机械裁剪同样会丢掉记录落盘路径的那些消息，清单必须一起带过桥
+    manifest = render_manifest(state)
+    if manifest:
+        bridge_content = f"{bridge_content}\n\n{manifest}"
+
     bridge = {"role": "user", "content": bridge_content}
     state.short_term = head + [bridge] + tail
     _compact_short_term_messages(state, per_message_chars=2000)
@@ -169,19 +175,45 @@ def _llm_compress_full_history(messages: list[dict], state: AgentState, llm: LLM
         return ""
 
 
-def _overwrite_scratchpad(state: AgentState, new_content: str) -> None:
-    """用 LLM 压缩输出覆盖草稿本（保留任务描述头部 + 新的全量摘要）。"""
+def _attach_manifest(state: AgentState, handoff: str) -> str:
+    """把确定性落盘清单附到交接文档末尾。
+
+    清单每次压缩都从 state.meta["_artifact_index"] 重新渲染，不经过模型复述，
+    因此不会像 LLM 自行摘录的路径那样随压缩代数逐渐丢失。
+    """
+    manifest = render_manifest(state)
+    if not manifest:
+        return handoff
+    body = (handoff or "").rstrip()
+    return f"{body}\n\n{manifest}" if body else manifest
+
+
+def _store_handoff(state: AgentState, handoff: str, seg: int) -> None:
+    """保存交接文档，并把草稿本换成一条**指针**而非全文副本。
+
+    交接文档全文已经由 _collapse_to_bridge 放进 bridge 消息，而草稿本会被
+    build_context_messages 作为 suffix 拼到最后一条 user 消息（正是 bridge）
+    末尾 —— 若这里再写一份全文，同一份文档会在 prompt 里紧挨着出现两次，
+    且第二份还被 SCRATCHPAD_MAX_CHARS 拦腰截断，白烧 token 又自相矛盾。
+
+    正文改存 state.meta["_last_handoff"]，供 advisor 与上下文重建复用。存的是
+    **不含落盘清单**的正文 —— 清单由各处按需 render_manifest() 现渲染，混在
+    正文里会导致重建时清单出现两遍（一遍来自被截断的正文，一遍是新渲染的）。
+    """
+    full = (handoff or "").strip()
+    state.meta["_last_handoff"] = full
+    state.meta["_last_handoff_seg"] = int(seg)
+
     max_chars = int(os.environ.get("SCRATCHPAD_MAX_CHARS", "2000"))
     task_desc = (state.meta.get("_task_desc") or "").strip()
+    pointer = t("compress.scratchpad_pointer", seg=seg)
     if task_desc:
-        header = f"任务描述:\n{task_desc}\n\n"
-        body = new_content.strip()
-        new_sp = header + body
+        new_sp = f"任务描述:\n{task_desc}\n\n{pointer}"
     else:
-        new_sp = new_content.strip()
-    # 超限时截尾（头部任务描述优先保留）
+        new_sp = pointer
     if len(new_sp) > max_chars:
         new_sp = new_sp[:max_chars]
+
     state.meta["scratchpad"] = new_sp
     persistence = _get_persistence(state)
     if persistence is not None:
@@ -275,9 +307,10 @@ def compress_context(
 
     # ── 路径 1：agent 手动提供摘要 → 直接作为交接文档封段硬重置 ────────────────
     if summary and summary.strip():
-        handoff = summary.strip()
+        core = summary.strip()
+        handoff = _attach_manifest(state, core)
         seg = _seal_segment_and_handoff(state, handoff)
-        _overwrite_scratchpad(state, handoff)        # system prompt 留一份缩略图
+        _store_handoff(state, core, seg)             # 草稿本只留指针，不重复全文
         _collapse_to_bridge(state, handoff, seg)     # 硬重置为 [goal, handoff]
         method = "手动交接"
 
@@ -288,10 +321,11 @@ def compress_context(
             # 若调用方未传入已组装的 messages，则从 state 重建（带上草稿本，避免漏掉累积笔记）
             if messages is None:
                 messages = build_context_messages(state, scratchpad=state.meta.get("scratchpad", ""))
-            handoff = _llm_compress_full_history(messages, state, llm)
-            if handoff:
+            core = _llm_compress_full_history(messages, state, llm)
+            if core:
+                handoff = _attach_manifest(state, core)
                 seg = _seal_segment_and_handoff(state, handoff)
-                _overwrite_scratchpad(state, handoff)
+                _store_handoff(state, core, seg)
                 _collapse_to_bridge(state, handoff, seg)
                 method = "llm工作交接压缩"
             else:
@@ -675,11 +709,19 @@ def _rebuild_context_on_hard_block(
         goal_msg = state.short_term[0] if state.short_term else None
         raw_goal = (state.meta.get("_task_desc") or getattr(state, "goal", "")) or ""
 
-        # ── 2. 草稿本历史 ─────────────────────────────────────────────────
-        scratchpad = (state.meta.get("scratchpad") or "").strip()
-        sp_section = ""
-        if scratchpad:
-            sp_section = f"\n\n## 已记录的执行历史（草稿本）\n{scratchpad[:1500]}"
+        # ── 2. 历史路线：压缩过就用交接文档全文，否则用草稿本 ──────────────
+        # （压缩后草稿本只剩一条指针，_last_handoff 才是那一段的权威摘要）
+        history = (state.meta.get("_last_handoff") or "").strip()
+        history_title = "已封存的工作交接文档"
+        if not history:
+            history = (state.meta.get("scratchpad") or "").strip()
+            history_title = "已记录的执行历史（草稿本）"
+        sp_section = f"\n\n## {history_title}\n{history[:1500]}" if history else ""
+
+        # 重建会清空 short_term，落盘产物清单必须重新注入
+        manifest = render_manifest(state)
+        if manifest:
+            sp_section += f"\n\n{manifest}"
 
         # ── 3. 提取最近失败的该工具调用作为反例 ──────────────────────────
         failed_examples: list[str] = []

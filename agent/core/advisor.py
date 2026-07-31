@@ -373,12 +373,16 @@ def ensure_progress_log(state: AgentState, llm: LLMBackend) -> None:
         last_compress_method == "llm_full"
         and last_compress_iter > last_iter
     ):
-        sp = (state.meta.get("scratchpad") or "").strip()
-        if sp:
-            state.meta["_progress_log"] = sp
+        # 权威全量摘要在 _last_handoff —— 压缩后草稿本只剩一条指向它的指针，
+        # 直接读 scratchpad 会把"见文末交接消息"当成进展日志喂给 advisor。
+        summary = (state.meta.get("_last_handoff") or "").strip()
+        if not summary:
+            summary = (state.meta.get("scratchpad") or "").strip()
+        if summary:
+            state.meta["_progress_log"] = summary
             state.meta["_progress_log_iter"] = last_compress_iter
             state.meta["_progress_log_method"] = "main_compress_reuse"
-            _persist_progress_log(state, sp)
+            _persist_progress_log(state, summary)
             return
 
     # 路径 2：新鲜度判断 — 不太旧就复用

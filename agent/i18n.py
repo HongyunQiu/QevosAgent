@@ -100,12 +100,32 @@ _STRINGS: dict[str, dict[str, str]] = {
             "## 已完成\n（逐条列出已完成步骤及其关键结果）\n"
             "## 当前状态\n（现在进行到哪一步、正卡在什么地方）\n"
             "## 下一步\n（明确、可执行的后续动作）\n"
-            "## 关键事实与路径\n（文件路径、配置、ID、数据等不能丢失的硬信息）\n"
+            "## 关键事实与路径\n（配置、ID、参数、数据等不能丢失的硬信息。"
+            "已落盘文件的路径清单由系统自动附在文末，你**不必**逐一罗列文件路径，"
+            "只需说明某个文件为什么重要、里面该关注什么）\n"
             "## 待澄清 / 坑\n（悬而未决的问题、已知陷阱；没有就写「无」）\n\n"
             "提炼原则：\n"
             "- 保留：步骤结果、关键数据、重要决策、有效路径、硬信息（路径/ID/配置）\n"
             "- 丢弃：工具原始输出的冗长内容、重复失败的重试、无结论的中间思考\n"
             "- 总长控制在 1500 字以内，简洁、可直接据此行动"
+        ),
+        # ── artifact_index.py（确定性落盘清单，非 LLM 生成）──────────────────
+        "artifact.manifest_header": "## 已落盘文件清单（系统生成 · 完整可信）",
+        "artifact.manifest_hint": (
+            "以下文件已确实写入磁盘，其内容**不在**上下文中。"
+            "需要时用 read_file / shell / run_python 按需读取，不要臆测其内容，也不要重复生成。"
+        ),
+        "artifact.manifest_omitted": "（更早的 {n} 个产物已从清单省略，可在 artifacts/ 目录下自行查找）",
+        "artifact.chars":            "{n} 字符",
+        "artifact.src.spill":        "工具输出溢出",
+        "artifact.src.watcher":      "watcher 溢出",
+        "artifact.src.write_file":   "write_file",
+        "artifact.src.other":        "落盘",
+
+        "compress.scratchpad_pointer": (
+            "[压缩] 第 {seg} 段执行历史已封存为工作交接文档（handoff_{seg}.md），"
+            "全文见本轮上下文末尾的交接消息，此处不重复。"
+            "需要更早的原始逐条记录时调用 recall_history(seg={seg})。"
         ),
         "compress.handoff_bridge": (
             "[系统｜上下文已压缩] 此前的执行历史已封存为一份独立的工作交接文档"
@@ -210,6 +230,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "sys.params_label":   "  参数:",
         "sys.concept_header": "## 宏观工作记忆",
         "sys.memory_header":  "## 细粒度记忆（近期任务经验）",
+        "sys.memory_omitted": "（更早的 {n} 条记忆已省略，只保留最近的）",
         "sys.patches_header": "## 运行时格式规范（自动生成，必须严格遵守）",
         "sys.sp_header":      "## 草稿本（可编辑的工作短期记忆，去噪后的关键信息/计划）",
         "sys.sp_rules":       (
@@ -664,12 +685,34 @@ Tip: just type / to pause; enter the full command then press Enter.
             "## Done\n(list each completed step and its key result)\n"
             "## Current state\n(how far along the task is, and where it is currently stuck)\n"
             "## Next steps\n(clear, actionable follow-up actions)\n"
-            "## Key facts & paths\n(file paths, configs, IDs, data — hard information that must not be lost)\n"
+            "## Key facts & paths\n(configs, IDs, parameters, data — hard information that must not be lost. "
+            "A list of files already written to disk is appended automatically by the system, so you do "
+            "**not** need to enumerate file paths — just explain why a file matters and what to look for in it)\n"
             "## Open questions / pitfalls\n(unresolved issues, known traps; write 'none' if there are none)\n\n"
             "Distillation principles:\n"
             "- Keep: step results, key data, important decisions, effective paths, hard info (paths/IDs/configs)\n"
             "- Discard: verbose raw tool output, repeated failed retries, inconclusive intermediate thoughts\n"
             "- Keep the total under 1500 words; concise and directly actionable"
+        ),
+        # ── artifact_index.py (deterministic spill manifest, not LLM-generated) ──
+        "artifact.manifest_header": "## Files already written to disk (system-generated · authoritative)",
+        "artifact.manifest_hint": (
+            "The files below are definitely on disk; their contents are **not** in the context. "
+            "Read them on demand with read_file / shell / run_python — do not guess their contents "
+            "and do not regenerate them."
+        ),
+        "artifact.manifest_omitted": "({n} older artifacts omitted from this list; look under artifacts/ if needed)",
+        "artifact.chars":            "{n} chars",
+        "artifact.src.spill":        "tool output spill",
+        "artifact.src.watcher":      "watcher spill",
+        "artifact.src.write_file":   "write_file",
+        "artifact.src.other":        "written",
+
+        "compress.scratchpad_pointer": (
+            "[compressed] Segment {seg} of the execution history has been sealed into a handoff "
+            "document (handoff_{seg}.md); its full text is in the handoff message at the end of "
+            "this context and is not duplicated here. "
+            "Call recall_history(seg={seg}) for the earlier raw per-message records."
         ),
         "compress.handoff_bridge": (
             "[System | context compressed] The execution history so far has been sealed into a standalone "
@@ -781,6 +824,7 @@ Tip: just type / to pause; enter the full command then press Enter.
         "sys.params_label":   "  Parameters:",
         "sys.concept_header": "## Macro working memory",
         "sys.memory_header":  "## Fine-grained memory (recent task experience)",
+        "sys.memory_omitted": "({n} older entries omitted; only the most recent are kept)",
         "sys.patches_header": "## Runtime format rules (auto-generated — must be strictly followed)",
         "sys.sp_header":      "## Scratchpad (editable short-term working memory — distilled key info and plans)",
         "sys.sp_rules":       (
