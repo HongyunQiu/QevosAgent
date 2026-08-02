@@ -262,40 +262,40 @@ async function startDashboard() {
   dashboardStarted = true;
 
   PORT = await findFreePort(PORT);
-  const userData   = app.getPath('userData');
-  // On Windows the install directory is writable and each installation is
-  // independent, so SKILLS live directly in APP_ROOT (no seeding needed).
-  // On macOS/Linux the app bundle is read-only; seed built-in skills into
-  // userData on first launch so they remain editable across upgrades.
-  const userSkills = process.platform === 'win32'
-    ? path.join(APP_ROOT, 'SKILLS')
-    : path.join(userData, 'SKILLS');
+  const userData = app.getPath('userData');
   fs.mkdirSync(userData, { recursive: true });
 
-  if (process.platform !== 'win32' && !fs.existsSync(userSkills)) {
-    const bundleSkills = path.join(APP_ROOT, 'SKILLS');
-    if (fs.existsSync(bundleSkills)) {
-      fs.mkdirSync(userSkills, { recursive: true });
-      for (const f of fs.readdirSync(bundleSkills)) {
-        fs.copyFileSync(path.join(bundleSkills, f), path.join(userSkills, f));
-      }
-    }
-  }
+  // On Windows the install directory is writable and each installation is
+  // independent, so the bundled SKILLS / crons / apps stay in APP_ROOT and need
+  // no seeding. On macOS/Linux the app bundle is read-only; copy them into
+  // userData on first launch so they remain editable across upgrades.
+  const inUserData = name => process.platform === 'win32'
+    ? path.join(APP_ROOT, name)
+    : path.join(userData, name);
 
-  // Same first-launch seeding for the bundled example cron files. On Windows
-  // the install dir is writable and is itself APP_ROOT, so the bundled
-  // crons/ folder is already in place.
-  if (process.platform !== 'win32') {
-    const userCrons   = path.join(userData, 'crons');
-    const bundleCrons = path.join(APP_ROOT, 'crons');
-    if (!fs.existsSync(userCrons) && fs.existsSync(bundleCrons)) {
-      fs.mkdirSync(userCrons, { recursive: true });
-      for (const f of fs.readdirSync(bundleCrons)) {
-        if (f.startsWith('.')) continue;
-        fs.copyFileSync(path.join(bundleCrons, f), path.join(userCrons, f));
-      }
+  // `every: true` re-copies on every launch, so the bundled files track the
+  // installed version — only for content that is purely demonstrative. Anything
+  // the user is expected to own is seeded once and then left alone.
+  const seedFromBundle = (name, { every = false } = {}) => {
+    if (process.platform === 'win32') return;
+    const dest   = path.join(userData, name);
+    const bundle = path.join(APP_ROOT, name);
+    if (!fs.existsSync(bundle) || (fs.existsSync(dest) && !every)) return;
+    fs.mkdirSync(dest, { recursive: true });
+    for (const f of fs.readdirSync(bundle)) {
+      if (f.startsWith('.')) continue;
+      fs.copyFileSync(path.join(bundle, f), path.join(dest, f));
     }
-  }
+  };
+
+  const userSkills = inUserData('SKILLS');
+  const userApps   = inUserData('apps');
+  seedFromBundle('SKILLS');
+  seedFromBundle('crons');
+  // apps/ holds only the example apps on the bundle side, so refreshing them
+  // every launch keeps the samples current; user-authored apps have their own
+  // filenames and are never touched.
+  seedFromBundle('apps', { every: true });
 
   process.env.DASHBOARD_PORT   = String(PORT);
   process.env.PYTHONUTF8       = '1';
@@ -313,6 +313,8 @@ async function startDashboard() {
   process.env.AGENT_EPISODIC   = path.join(userDataDir, 'memory_episodic.jsonl');
   process.env.SKILLS_DIR       = userSkills;
   process.env.CRONS_DIR        = path.join(userDataDir, 'crons');
+  process.env.APPS_DIR         = userApps;
+  process.env.APP_DATA_DIR     = path.join(userDataDir, 'app-data');
   // Tell server.js where the real .env lives so its /api/env write endpoint
   // (used by the in-dashboard settings panel) targets the same file main.js reads.
   process.env.DOTENV_PATH      = path.join(DOT_ENV_DIR, '.env');

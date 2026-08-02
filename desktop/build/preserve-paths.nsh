@@ -2,6 +2,8 @@
   !insertmacro ${Callback} "resources\app\vendor\app\AGENTS.md"
   !insertmacro ${Callback} "resources\app\vendor\app\ADVISOR.md"
   !insertmacro ${Callback} "resources\app\vendor\app\SKILLS"
+  !insertmacro ${Callback} "resources\app\vendor\app\apps"
+  !insertmacro ${Callback} "resources\app\vendor\app\app-data"
   !insertmacro ${Callback} "resources\app\vendor\app\runs"
   !insertmacro ${Callback} "resources\app\vendor\app\memory_episodic.jsonl"
   !insertmacro ${Callback} "resources\app\vendor\app\memory_macro.md"

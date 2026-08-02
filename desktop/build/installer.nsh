@@ -221,7 +221,7 @@ FunctionEnd
   ${EndIf}
 
   MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON1 \
-    "是否保留现有工作内容？$\r$\n$\r$\n选择“是”将保留 AGENTS.md、ADVISOR.md、SKILLS、runs、记忆文件和自定义工具文件。" \
+    "是否保留现有工作内容？$\r$\n$\r$\n选择“是”将保留 AGENTS.md、ADVISOR.md、SKILLS、Apps 及其数据、runs、记忆文件和自定义工具文件。" \
     IDYES done
 
   MessageBox MB_ICONEXCLAMATION|MB_YESNO|MB_DEFBUTTON2 \

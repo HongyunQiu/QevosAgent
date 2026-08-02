@@ -37,8 +37,19 @@ const VENDOR_APP_DIR = path.join(DESKTOP_DIR, 'vendor', 'app');
 const REQS_FILE      = path.join(REPO_ROOT, 'requirements.txt');
 const FORCE          = process.argv.includes('--force');
 
+// Example apps shipped with the installer so a fresh install isn't an empty
+// Apps page. Listed file-by-file rather than copying all of apps/: a dev tree
+// also holds multi-file UI Apps whose built bundle lives in apps-dist/ (not in
+// this repo), and shipping those would put a "build output missing" card on
+// every fresh install.
+const SEED_APPS = ['hello_app.md', 'distdemo.md', 'flowchart.md', 'runs_search.md'];
+
 // Files/dirs to copy from repo root → vendor/app/ for the packaged build.
 const APP_COPY_MAP = [
+  ...SEED_APPS.map(f => ({
+    src:  path.join(REPO_ROOT, 'apps', f),
+    dest: path.join(VENDOR_APP_DIR, 'apps', f),
+  })),
   { src: path.join(REPO_ROOT, 'agent'),       dest: path.join(VENDOR_APP_DIR, 'agent') },
   { src: path.join(REPO_ROOT, 'dashboard'),   dest: path.join(VENDOR_APP_DIR, 'dashboard') },
   { src: path.join(REPO_ROOT, 'SKILLS'),      dest: path.join(VENDOR_APP_DIR, 'SKILLS') },

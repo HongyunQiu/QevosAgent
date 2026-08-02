@@ -20,7 +20,8 @@ function readMacroPaths(macroName) {
     .slice(start + 1, end)
     .map(line => line.match(/^!insertmacro \$\{Callback\} "([^"]+)"$/))
     .filter(Boolean)
-    .map(([, preservePath]) => preservePath);
+    // The .nsh uses Windows separators; compare on a normalised form.
+    .map(([, preservePath]) => preservePath.replace(/\\/g, '/'));
 }
 
 test('preserve path list contains the required protected paths', () => {
@@ -30,6 +31,8 @@ test('preserve path list contains the required protected paths', () => {
     'resources/app/vendor/app/AGENTS.md',
     'resources/app/vendor/app/ADVISOR.md',
     'resources/app/vendor/app/SKILLS',
+    'resources/app/vendor/app/apps',
+    'resources/app/vendor/app/app-data',
     'resources/app/vendor/app/runs',
     'resources/app/vendor/app/memory_episodic.jsonl',
     'resources/app/vendor/app/memory_macro.md',
@@ -51,4 +54,15 @@ test('install overwrite protected path list contains only shipped mutable files'
     'resources/app/vendor/app/ADVISOR.md',
     'resources/app/vendor/app/SKILLS',
   ]);
+});
+
+// apps/ is deliberately absent above: the shipped apps are samples, so each
+// install should refresh them. It stays in DefinePreservePaths so a user's own
+// apps (different filenames) survive an uninstall.
+test('example apps are not install-overwrite protected', () => {
+  const protectedPaths = readMacroPaths('DefineInstallOverwriteProtectedPaths');
+  const preservedPaths = readMacroPaths('DefinePreservePaths');
+
+  assert.ok(!protectedPaths.includes('resources/app/vendor/app/apps'));
+  assert.ok(preservedPaths.includes('resources/app/vendor/app/apps'));
 });
