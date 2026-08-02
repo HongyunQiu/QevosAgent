@@ -42,13 +42,23 @@ const FORCE          = process.argv.includes('--force');
 // also holds multi-file UI Apps whose built bundle lives in apps-dist/ (not in
 // this repo), and shipping those would put a "build output missing" card on
 // every fresh install.
-const SEED_APPS = ['hello_app.md', 'distdemo.md', 'flowchart.md', 'runs_search.md'];
+const SEED_APPS = ['hello_app.md', 'distdemo.md', 'sidecar_demo.md', 'flowchart.md', 'runs_search.md'];
+
+// apps-dist/<id>/ folders that ship too. Normally apps-dist/ is build output and
+// stays out of the repo, but a sidecar worker must live there (the platform only
+// spawns workers from apps-dist/<id>/), so the sidecar sample's hand-written
+// worker.py is checked in and shipped like any other sample.
+const SEED_APP_DIST = ['sidecar_demo'];
 
 // Files/dirs to copy from repo root → vendor/app/ for the packaged build.
 const APP_COPY_MAP = [
   ...SEED_APPS.map(f => ({
     src:  path.join(REPO_ROOT, 'apps', f),
     dest: path.join(VENDOR_APP_DIR, 'apps', f),
+  })),
+  ...SEED_APP_DIST.map(d => ({
+    src:  path.join(REPO_ROOT, 'apps-dist', d),
+    dest: path.join(VENDOR_APP_DIR, 'apps-dist', d),
   })),
   { src: path.join(REPO_ROOT, 'agent'),       dest: path.join(VENDOR_APP_DIR, 'agent') },
   { src: path.join(REPO_ROOT, 'dashboard'),   dest: path.join(VENDOR_APP_DIR, 'dashboard') },

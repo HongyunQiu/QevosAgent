@@ -42,7 +42,10 @@ app-data/
 # UI App 源码工程工作区（含 node_modules；只 ship 构建产物 dist/，源码不入库）
 app-src/
 # UI App 构建产物（工程型 App 的 dist/；本地/运行时产物，不入库）
-apps-dist/
+apps-dist/*
+# 例外：sidecar 示例的 worker.py 是手写源码而非构建产物，只是平台要求
+# sidecar 文件必须落在 apps-dist/<id>/ 内。要随安装包 ship，故入库。
+!apps-dist/sidecar_demo/
 
 # Misc
 .DS_Store
