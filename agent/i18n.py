@@ -574,6 +574,15 @@ _STRINGS: dict[str, dict[str, str]] = {
         "graph.tool.replace_active": "（原活动图 {gid} 已自动标记为 abandoned：同时只能有一张活动图）",
         "graph.tool.abandoned":     "执行图 {gid} 已放弃：{reason}。后续回到自由模式，不再注入图。",
         "graph.tool.revised":       "执行图已修订：{ok} 项成功，{failed} 项失败。",
+        "graph.tool.orphans": (
+            "⚠ 以下节点在 edges 里没有入边，已按 nodes 的给出顺序补链：{ids}。"
+            "如果不是你想要的结构，请用 plan_revise 修正。"
+            "提醒：n0 是系统自动生成的根节点，你给的第一个节点是 n1。"
+        ),
+        "graph.tool.dropped_edges": (
+            "⚠ 以下边引用了不存在的节点 id，已忽略：{edges}。"
+            "节点按 nodes 的给出顺序编号 n1、n2…（n0 保留给根节点）。"
+        ),
 
         "graph.op.no_graph":       "当前没有活动的执行图。若要用图的方式推进，请先调用 plan_create。",
         "graph.op.unknown":        "未知的 graph_op 操作: {op}。可用：enter / exit / extend / fork / abandon / block。",
@@ -1182,6 +1191,15 @@ Before calling action='done', you MUST complete the following two steps:
         "graph.tool.replace_active": "(Previous active graph {gid} was automatically marked abandoned — only one graph can be active at a time.)",
         "graph.tool.abandoned":     "Execution graph {gid} abandoned: {reason}. Returning to free-form mode; the graph will no longer be injected.",
         "graph.tool.revised":       "Execution graph revised: {ok} operation(s) succeeded, {failed} failed.",
+        "graph.tool.orphans": (
+            "⚠ These nodes had no incoming edge and were chained in the order they appear in `nodes`: {ids}. "
+            "Use plan_revise if that is not the structure you intended. "
+            "Reminder: n0 is the auto-generated root node — your first node is n1."
+        ),
+        "graph.tool.dropped_edges": (
+            "⚠ These edges referenced node ids that do not exist and were ignored: {edges}. "
+            "Nodes are numbered n1, n2, … in the order given in `nodes` (n0 is reserved for the root)."
+        ),
 
         "graph.op.no_graph":       "There is no active execution graph. Call plan_create first if you want to work through a graph.",
         "graph.op.unknown":        "Unknown graph_op: {op}. Valid ops: enter / exit / extend / fork / abandon / block.",

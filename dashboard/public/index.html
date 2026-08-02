@@ -4390,11 +4390,21 @@ function layoutGraphSvg(g) {
   const ids   = Object.keys(nodes);
   if (!ids.length) return '';
 
-  // 深度（带环保护：parent 链最多走 ids.length 步）
+  // 有效父节点：显式入边优先，其次才是 node.parent。
+  // 两者本应一致（后端保证），但历史文件可能存在 parent 说 n0、edges 却另有说法
+  // 的分歧；此时以 edges 为准，并且不再从 parent 补画那条线，
+  // 否则画面上会出现一条数据里根本不存在的边。
+  const edgeParent = {};
+  (g.edges || []).forEach(e => {
+    if (e && nodes[e.from] && nodes[e.to] && edgeParent[e.to] == null) edgeParent[e.to] = e.from;
+  });
+  const parentOf = id => edgeParent[id] != null ? edgeParent[id] : (nodes[id] && nodes[id].parent);
+
+  // 深度（带环保护：父链最多走 ids.length 步）
   const depth = {};
   const depthOf = (id, guard = 0) => {
     if (depth[id] != null) return depth[id];
-    const p = nodes[id] && nodes[id].parent;
+    const p = parentOf(id);
     const d = (!p || !nodes[p] || guard > ids.length) ? 0 : depthOf(p, guard + 1) + 1;
     return (depth[id] = d);
   };
@@ -4436,7 +4446,8 @@ function layoutGraphSvg(g) {
       + `d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}"/>`);
   };
   (g.edges || []).forEach(e => e && pushEdge(e.from, e.to, e.kind));
-  ids.forEach(id => { const p = nodes[id].parent; if (p) pushEdge(p, id, 'then'); });
+  // 只为没有任何显式入边的节点用 parent 补线，避免与 edges 分歧时画出幽灵边
+  ids.forEach(id => { if (edgeParent[id] == null && nodes[id].parent) pushEdge(nodes[id].parent, id, 'then'); });
 
   const nodeParts = ids.map(id => {
     const n = nodes[id], p = pos[id];

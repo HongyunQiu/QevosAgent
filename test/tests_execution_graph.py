@@ -69,6 +69,47 @@ class CreateGraphTests(unittest.TestCase):
         self.assertIsNone(g)
         self.assertTrue(msg)
 
+    def test_node_without_incoming_edge_chains_to_previous_not_root(self):
+        """复刻实战失误：模型以为自己的节点是 n0..n6，整套边错位一格，末节点漏了入边。
+
+        nodes 的顺序就是模型自己的排序，据此补链远比"扔到根下"接近本意——
+        挂到根上会让末节点在图上看起来与整条链毫无关系。
+        """
+        st = _state()
+        g, msg = G.create_graph(st, title="复刻", nodes=[
+            {"title": "初始化"}, {"title": "搜 A"}, {"title": "搜 B"},
+            {"title": "综合"}, {"title": "出报告"}, {"title": "展示"},
+        ], edges=[
+            {"from": "n0", "to": "n1"}, {"from": "n0", "to": "n2"},
+            {"from": "n1", "to": "n3"}, {"from": "n2", "to": "n3"},
+            {"from": "n3", "to": "n4"}, {"from": "n4", "to": "n5"},
+        ])
+        self.assertEqual(g["nodes"]["n6"]["parent"], "n5")
+        self.assertTrue(any(e["from"] == "n5" and e["to"] == "n6" for e in g["edges"]))
+        self.assertIn("n6", msg)   # 必须把纠正过的结构告诉模型
+
+    def test_parent_and_edges_never_diverge(self):
+        """只设 parent 不补边会让渲染层画出 edges 里根本不存在的幽灵边。"""
+        st = _state()
+        for edges in (None, [{"from": "n0", "to": "n1"}], [{"from": "nope", "to": "n2"}]):
+            g, _ = G.create_graph(st, title="一致性", nodes=[
+                {"title": "a"}, {"title": "b"}, {"title": "c"},
+            ], edges=edges)
+            for nid, node in g["nodes"].items():
+                if nid == G.ROOT_ID:
+                    continue
+                self.assertTrue(
+                    any(e["from"] == node["parent"] and e["to"] == nid for e in g["edges"]),
+                    f"{nid} 的 parent={node['parent']} 在 edges 里没有对应边（edges={edges}）",
+                )
+
+    def test_dropped_edges_are_reported(self):
+        """引用了不存在 id 的边被静默丢弃，模型会以为图就是它画的那样。"""
+        st = _state()
+        _g, msg = G.create_graph(st, title="坏边", nodes=[{"title": "a"}, {"title": "b"}],
+                                 edges=[{"from": "n1", "to": "n99"}, {"from": "n1", "to": "n2"}])
+        self.assertIn("n99", msg)
+
     def test_second_graph_archives_the_first(self):
         """同时只能有一张活动图；旧图归档而非删除，最终产物是一串地图。"""
         st = _state()

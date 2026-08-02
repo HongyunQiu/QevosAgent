@@ -356,7 +356,9 @@ def create_graph(
     # 边：模型给了就用；没给则按给出顺序串成一条链（最常见的用法）
     parent_of: dict[str, str] = {}
     explicit: list[tuple[str, str, str]] = []
-    if isinstance(edges, (list, tuple)) and edges:
+    dropped: list[str] = []
+    edges_given = isinstance(edges, (list, tuple)) and bool(edges)
+    if edges_given:
         valid_ids = used
         for e in edges:
             if not isinstance(e, dict):
@@ -364,6 +366,7 @@ def create_graph(
             src = str(e.get("from") or "").strip()
             dst = str(e.get("to") or "").strip()
             if src not in valid_ids or dst not in valid_ids or src == dst:
+                dropped.append(f"{src or '?'}→{dst or '?'}")
                 continue
             kind = str(e.get("kind") or "then").strip().lower()
             explicit.append((src, dst, kind))
@@ -375,19 +378,32 @@ def create_graph(
             parent_of.setdefault(node_id, prev)
             prev = node_id
 
+    # 无入边的节点：按**给出顺序**接到前一个节点之后，而不是一律挂到根上。
+    # nodes 的顺序就是模型自己的排序，据此补链远比"扔到根下"接近它的本意
+    # （模型漏写最后一条边是常见失误，挂根会让末节点看起来与整条链无关）。
+    # 并且必须同时补边——只设 parent 不补边会让 parent 与 edges 各说各话，
+    # 渲染层就会画出一条 edges 里根本不存在的线。
+    orphans: list[str] = []
+    prev_id = ROOT_ID
+    for node_id, _raw in assigned:
+        if node_id not in parent_of:
+            parent_of[node_id] = prev_id
+            explicit.append((prev_id, node_id, "then"))
+            if edges_given:
+                orphans.append(f"{node_id}（已接到 {prev_id} 之后）")
+        prev_id = node_id
+
     for node_id, raw in assigned:
-        g["nodes"][node_id] = _normalize_node(raw, node_id, parent=parent_of.get(node_id, ROOT_ID))
+        g["nodes"][node_id] = _normalize_node(raw, node_id, parent=parent_of[node_id])
 
     for src, dst, kind in explicit:
         _add_edge(g, src, dst, kind)
 
-    # 没有入边的节点挂到根上，避免出现游离节点
-    for node_id, node in g["nodes"].items():
-        if node_id == ROOT_ID:
-            continue
-        if not node.get("parent"):
-            node["parent"] = ROOT_ID
-            _add_edge(g, ROOT_ID, node_id, "then")
+    # 结构没按模型预期落地时必须让它知道——静默纠正会让它以为图就是它画的那样
+    if orphans:
+        notes.append(t("graph.tool.orphans", ids="; ".join(orphans)))
+    if dropped:
+        notes.append(t("graph.tool.dropped_edges", edges="; ".join(dropped[:8])))
 
     root["graphs"].append(g)
     save(state)
