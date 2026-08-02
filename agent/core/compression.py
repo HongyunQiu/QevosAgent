@@ -403,7 +403,17 @@ def _maybe_compress_for_context(state: AgentState, llm: LLMBackend, system: str,
                 concept_memory=state.meta.get("concept_memory", ""),
                 skills_catalog=state.meta.get("_skills_catalog", ""),
             )
-            messages2 = build_context_messages(state, scratchpad=state.meta.get("scratchpad", ""), runtime_patches=state.meta.get("runtime_patches"))
+            # 必须带上执行图投影：压缩刚把 short_term 重置掉，图正是此刻唯一
+            # 幸存的结构化记忆，这里漏传等于在最需要它的时刻把它弄丢。
+            from . import graph as _graph
+
+            messages2 = build_context_messages(
+                state,
+                scratchpad=state.meta.get("scratchpad", ""),
+                runtime_patches=state.meta.get("runtime_patches"),
+                thought_rigor=state.meta.get("thought_rigor"),
+                graph_projection=_graph.render(state),
+            )
             est2 = int(llm.estimate_tokens(messages2, system2))
             state.meta["prompt_tokens_est"] = est2
             return {"system": system2, "messages": messages2}

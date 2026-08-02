@@ -25,6 +25,7 @@ from .compression import (
     _rebuild_context_on_hard_block,
     _apply_runtime_patch,
 )
+from . import graph as _graph
 from .artifact_index import register_artifact
 from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice, ensure_progress_log
 from agent.i18n import t
@@ -308,6 +309,8 @@ RUN_OUTCOME_FAILED    = "failed"      # 异常中断
 _RESUMABLE_OUTCOMES = {RUN_OUTCOME_PARTIAL, RUN_OUTCOME_BLOCKED, RUN_OUTCOME_EXHAUSTED}
 
 # 续跑时必须清空的键：上一轮的验收结论与记忆门标记若残留，会让本轮的门失效。
+# ⚠️ 绝不要把 "_graph" 加进来。这份名单清的是"上一轮的结论"，而执行图恰恰相反——
+# 它是必须跨续跑延续的结构化记忆载体，清掉等于每次续跑都把地图撕了重画。
 _RESUME_RESET_KEYS = (
     "completion_report", "completion_review", "run_outcome",
     "_episodic_appended", "_concept_evaluated", "_pending_final",
@@ -859,7 +862,13 @@ def run(
                 concept_memory=state.meta.get("concept_memory", ""),
                 skills_catalog=state.meta.get("_skills_catalog", ""),
             )
-            messages = build_context_messages(state, scratchpad=state.meta.get("scratchpad", ""), runtime_patches=state.meta.get("runtime_patches"), thought_rigor=state.meta.get("thought_rigor"))
+            messages = build_context_messages(
+                state,
+                scratchpad=state.meta.get("scratchpad", ""),
+                runtime_patches=state.meta.get("runtime_patches"),
+                thought_rigor=state.meta.get("thought_rigor"),
+                graph_projection=_graph.render(state),
+            )
 
             pack = _maybe_compress_for_context(state, llm, system, messages)
             system = pack["system"]
@@ -904,6 +913,7 @@ def run(
                     state,
                     scratchpad=state.meta.get("scratchpad", ""),
                     runtime_patches=state.meta.get("runtime_patches"),
+                    graph_projection=_graph.render(state),
                 )
                 if hooks.on_thought:
                     hooks.on_thought(t("warn.context_limit_console", pct=_ctx_pct))
@@ -1064,6 +1074,18 @@ def run(
             if action.type == ActionType.DONE:
                 _nostop  = state.meta.get("nostop", False)
                 _final   = (action.final_answer or "").strip()
+
+                # done 可以顺带闭合最后一个节点。先应用再过验收门：出口证据校验
+                # 失败时模型必须看到原因，否则它无从知道图上还挂着一个没关的节点。
+                if action.graph_op:
+                    _g_ok, _g_text = _graph.apply_op(state, action.graph_op)
+                    if _g_text and hooks.on_thought:
+                        hooks.on_thought(f"{t('graph.feedback_prefix')} {_g_text}")
+                    if not _g_ok and _g_text:
+                        _append_short_term(
+                            state,
+                            {"role": "user", "content": f"{t('graph.feedback_prefix')} {_g_text}"},
+                        )
 
                 # ── 验收门 1：完成报告 ────────────────────────────────────────
                 # nostop 模式：人在回路，人就是质量门。
@@ -1326,6 +1348,17 @@ def run(
                 elif _note_mode not in ("off", "0") and os.environ.get("AUTO_SCRATCHPAD_NOTE", "1") != "0":
                     _auto_scratchpad_note(action, result, state, llm, hooks=hooks)
 
+                # ── 执行图 inline 推进 ────────────────────────────────────────
+                # 与 scratchpad_note 同属"记账不收税"的 inline 字段：模型在同一响应里
+                # 顺带推进图，不消耗额外迭代。操作失败只回一条说明，绝不打断本轮工具调用。
+                _graph_msg = ""
+                if action.graph_op:
+                    _g_ok, _g_text = _graph.apply_op(state, action.graph_op)
+                    if _g_text:
+                        _graph_msg = f"{t('graph.feedback_prefix')} {_g_text}"
+                        if hooks.on_thought:
+                            hooks.on_thought(_graph_msg)
+
                 if action.tool == "ask_user":
                     q = action.args.get("question") or (result.output or {}).get("question")
                     state.meta["awaiting_input"] = q or "(no question provided)"
@@ -1336,6 +1369,9 @@ def run(
                     break
 
                 feedback = _build_feedback(action, result, state=state)
+                if _graph_msg:
+                    # ACK-only 工具的 feedback 为 None，此时图的回执仍要送达模型
+                    feedback = f"{feedback}\n\n{_graph_msg}" if feedback else _graph_msg
                 if feedback is not None:
                     _append_short_term(
                         state,

@@ -1043,8 +1043,14 @@ def _build_context_suffix(
     scratchpad: str = "",
     runtime_patches: Optional[list[str]] = None,
     thought_rigor: Optional[bool] = None,
+    graph_projection: str = "",
 ) -> str:
-    """构建每轮注入到最后一条 user 消息末尾的动态内容（scratchpad + runtime_patches + 严密度补丁）。"""
+    """构建每轮注入到最后一条 user 消息末尾的动态内容。
+
+    顺序：runtime_patches → scratchpad → 执行图 → 严密度补丁（越靠后离生成点越近）。
+    执行图排在 scratchpad 之后：草稿本是明细笔记，图是驱动下一步动作的骨架，
+    应当更靠近生成点。图的投影由调用方（loop）渲染后传入，llm 层不反向依赖 graph 模块。
+    """
     parts: list[str] = []
     if runtime_patches:
         parts.append(
@@ -1057,6 +1063,9 @@ def _build_context_suffix(
             + t("sys.sp_rules") + "\n\n"
             + scratchpad.strip()
         )
+    # 执行图投影：仅在模型主动建过图时非空，未建图的 run 完全零成本。
+    if graph_projection and graph_projection.strip():
+        parts.append(graph_projection.strip())
     # thought 严密度补丁：以尾部注入实现，保持 system prompt 前缀稳定、不破坏 KV Cache。
     # 优先级：显式入参（如 /rigor 命令写入 state.meta）> 环境变量 THOUGHT_RIGOR > 默认关。
     # 放在最后 → 离生成点最近，遵守度最好。
@@ -1394,6 +1403,11 @@ def parse_response(raw: str) -> Action:
     thought = data.get("thought", "")
     action_str = data.get("action", "tool_call")
     _sp_note = (data.get("scratchpad_note") or "").strip() or None
+    # 执行图 inline 推进：只接受对象；模型偶尔会给列表或字符串，一律忽略而不报错——
+    # graph_op 是附带记账，格式不对不该拖垮这一轮的工具调用。
+    _graph_op = data.get("graph_op")
+    if not isinstance(_graph_op, dict):
+        _graph_op = None
 
     if action_str == "done":
         return Action(
@@ -1401,6 +1415,7 @@ def parse_response(raw: str) -> Action:
             thought=thought,
             final_answer=data.get("final_answer", ""),
             scratchpad_note=_sp_note,
+            graph_op=_graph_op,
         )
 
     # 检测 LLM 把工具名写成了 action 值（如 action="shell"）
@@ -1450,6 +1465,7 @@ def parse_response(raw: str) -> Action:
         tool=tool,
         args=args if isinstance(args, dict) else {},
         scratchpad_note=_sp_note,
+        graph_op=_graph_op,
     )
 
 
@@ -1460,14 +1476,15 @@ def build_context_messages(
     scratchpad: str = "",
     runtime_patches: Optional[list[str]] = None,
     thought_rigor: Optional[bool] = None,
+    graph_projection: str = "",
 ) -> list[dict]:
     """
     把 AgentState.short_term 转换成 LLM 的 messages 列表。
-    scratchpad、runtime_patches 和 thought 严密度补丁动态拼接到最后一条 user 消息末尾，
-    避免写入 system prompt 导致 KV Cache 每轮失效。
+    scratchpad、runtime_patches、执行图投影和 thought 严密度补丁动态拼接到最后一条
+    user 消息末尾，避免写入 system prompt 导致 KV Cache 每轮失效。
     """
     msgs = [dict(m) for m in state.short_term]
-    suffix = _build_context_suffix(scratchpad, runtime_patches, thought_rigor)
+    suffix = _build_context_suffix(scratchpad, runtime_patches, thought_rigor, graph_projection)
     if not suffix:
         return msgs
     # 找最后一条 user 消息追加；若不存在则新增一条
