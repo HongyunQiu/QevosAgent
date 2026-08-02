@@ -983,6 +983,93 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 /* TAB 栏右侧位置紧张：去掉按钮框只留图标，配色仍走 icon-btn 的 muted→blue */
 #paneZenBtn { border:none; padding:2px 4px; font-size:13px; }
 
+/* ── Execution graph pane ────────────────────────────────────────────── */
+.graph-toolbar {
+  display:flex; align-items:center; gap:10px;
+  padding:0 16px; height:25px; border-bottom:1px solid var(--border);
+  background:var(--bg2); flex-shrink:0;
+}
+.graph-title { font-size:11.5px; font-weight:600; color:var(--text); }
+.graph-stats { font-size:11px; color:var(--muted); font-family:var(--mono); }
+.graph-select {
+  background:var(--bg3); color:var(--text); border:1px solid var(--border);
+  border-radius:4px; font-size:11px; padding:1px 4px; outline:none;
+}
+.graph-tab-dot {
+  display:inline-block; width:5px; height:5px; border-radius:50%;
+  background:var(--blue); margin-left:5px; vertical-align:middle;
+}
+.graph-body { flex:1; display:flex; overflow:hidden; }
+.graph-canvas { flex:1; overflow:auto; background:var(--bg); position:relative; }
+.graph-canvas svg { display:block; }
+.graph-side {
+  width:262px; flex-shrink:0; border-left:1px solid var(--border);
+  background:var(--bg2); overflow-y:auto; padding:12px 14px;
+  font-size:11.5px; line-height:1.7; color:var(--text);
+}
+.graph-empty {
+  display:flex; align-items:center; justify-content:center; height:100%;
+  color:var(--muted); font-size:12px; text-align:center; padding:30px; line-height:1.9;
+}
+/* 节点：状态即配色。done 绿 / active 蓝(呼吸) / planned 灰虚线 /
+   abandoned 灰虚线+删除线 / blocked 橙 —— 与投影里的 ✓▶·✗⏸ 一一对应 */
+.gn { cursor:pointer; }
+.gn rect { transition:filter .12s ease; }
+.gn:hover rect { filter:brightness(1.25); }
+.gn text { font-family:var(--sans); pointer-events:none; }
+.gn-title { font-size:11px; font-weight:600; }
+.gn-meta  { font-size:9.5px; opacity:.75; }
+.gn-done      rect { fill:color-mix(in srgb, var(--green) 16%, var(--bg2)); stroke:var(--green); }
+.gn-active    rect { fill:color-mix(in srgb, var(--blue) 20%, var(--bg2));  stroke:var(--blue); stroke-width:2; }
+.gn-planned   rect { fill:var(--bg2); stroke:var(--muted); stroke-dasharray:4 3; }
+.gn-abandoned rect { fill:var(--bg2); stroke:var(--muted); stroke-dasharray:4 3; opacity:.55; }
+.gn-blocked   rect { fill:color-mix(in srgb, var(--orange) 16%, var(--bg2)); stroke:var(--orange); }
+.gn-done      .gn-title { fill:var(--green); }
+.gn-active    .gn-title { fill:var(--blue); }
+.gn-planned   .gn-title { fill:var(--muted); }
+.gn-abandoned .gn-title { fill:var(--muted); text-decoration:line-through; opacity:.8; }
+.gn-blocked   .gn-title { fill:var(--orange); }
+.gn text.gn-meta { fill:var(--muted); }
+.gn-sel rect { stroke-width:2.5; }
+@keyframes gn-breathe { 0%,100% { opacity:1 } 50% { opacity:.55 } }
+.gn-active rect { animation:gn-breathe 2.2s ease-in-out infinite; }
+/* 边：then 实线 / alt 虚线（同一分叉点的平行备选）/ fallback 点线 */
+.ge { fill:none; stroke:var(--border); stroke-width:1.4; }
+.ge-alt      { stroke-dasharray:5 4; }
+.ge-fallback { stroke-dasharray:2 3; }
+.ge-dead     { opacity:.4; }
+.graph-side h4 {
+  margin:0 0 6px; font-size:11px; text-transform:uppercase;
+  letter-spacing:.5px; color:var(--muted); font-weight:600;
+}
+.graph-side .gs-block { margin-bottom:14px; }
+.graph-side .gs-goal { color:var(--text); opacity:.9; word-break:break-word; }
+.graph-side .gs-kv { color:var(--muted); font-family:var(--mono); font-size:10.5px; }
+.graph-side .gs-tag {
+  display:inline-block; padding:0 6px; border-radius:3px; font-size:10px;
+  font-family:var(--mono); border:1px solid var(--border); color:var(--muted);
+}
+.graph-side ul { margin:4px 0 0; padding-left:16px; }
+.graph-side li { margin-bottom:3px; word-break:break-word; }
+.gs-residue li { color:var(--orange); }
+.gs-reason { color:var(--muted); font-style:italic; }
+.gs-jump {
+  display:inline-block; margin-top:6px; padding:2px 9px; cursor:pointer;
+  background:var(--bg3); border:1px solid var(--border); border-radius:4px;
+  color:var(--blue); font-size:11px;
+}
+.gs-jump:hover { border-color:var(--blue); }
+.graph-filter-bar {
+  display:flex; align-items:center; gap:8px; padding:5px 12px;
+  background:color-mix(in srgb, var(--blue) 12%, var(--bg2));
+  border-bottom:1px solid var(--border); font-size:11px; color:var(--text);
+}
+.graph-filter-bar button {
+  background:none; border:1px solid var(--border); border-radius:4px;
+  color:var(--muted); cursor:pointer; font-size:11px; padding:1px 8px;
+}
+.graph-filter-bar button:hover { color:var(--blue); border-color:var(--blue); }
+
 /* ── AGENTS.md pane ──────────────────────────────────────────────────── */
 .agents-toolbar {
   display:flex; align-items:center; gap:8px;
@@ -1622,6 +1709,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
       <button class="center-tab active" id="ctab-events" onclick="setCenterTab('events')">Events</button>
       <span class="count-badge" id="evCount">0</span>
       <div class="ctab-sep"></div>
+      <button class="center-tab" id="ctab-graph" onclick="setCenterTab('graph')" style="display:none">Graph<span class="graph-tab-dot" id="graphTabDot"></span></button>
       <button class="center-tab" id="ctab-crons" onclick="setCenterTab('crons')">Crons</button>
       <button class="center-tab" id="ctab-skills" onclick="setCenterTab('skills')">Skills</button>
       <button class="center-tab" id="ctab-apps" onclick="setCenterTab('apps')">Apps</button>
@@ -1653,6 +1741,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 
     <!-- Events pane -->
     <div class="center-pane active" id="cpane-events">
+      <div class="graph-filter-bar" id="graphFilterBar" style="display:none"></div>
       <div class="events-log" id="eventsLog">
         <div class="empty-state" id="eventsEmpty" style="display:none">
           <div class="empty-icon">⚡</div>
@@ -1660,6 +1749,21 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
             <span style="opacity:.6;font-size:12px">Type a goal in the bar below to start.</span>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Execution graph pane -->
+    <div class="center-pane" id="cpane-graph">
+      <div class="graph-toolbar">
+        <span class="graph-title" id="graphTitle">执行图</span>
+        <span class="graph-stats" id="graphStats"></span>
+        <div class="bar-gap"></div>
+        <select class="graph-select" id="graphSelect" onchange="onGraphSelect(this.value)" style="display:none"></select>
+        <button class="icon-btn" onclick="fitGraph()" title="适应窗口">⤢ Fit</button>
+      </div>
+      <div class="graph-body" id="graphBody">
+        <div class="graph-canvas" id="graphCanvas"></div>
+        <div class="graph-side" id="graphSide"></div>
       </div>
     </div>
 
@@ -2388,9 +2492,13 @@ function renderAll(data, runId) {
     gAdvisorCacheRunId = rid;
   }
   syncReadSkills(data.meta);
+  // 切换到别的 run 时清掉图过滤：过滤条件属于上一个 run 的节点，带过来只会误导
+  if (rid !== gGraphFilterRunId) { gGraphFilter = null; gGraphSelNode = null; gGraphUserPicked = false; gGraphFilterRunId = rid; }
+  updateGraphTab(data);
   renderTopBar(data, rid);
   renderSidebar(data, rid);
   renderMainArea(data);
+  renderGraph(data);
   renderScratchpad(data.scratchpad || '');
   renderJobs(data.events || []);
   updateCmdBarMode(data);
@@ -3125,6 +3233,12 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = [], aw
   const log   = document.getElementById('eventsLog');
   const badge = document.getElementById('evCount');
   badge.textContent = events.length;
+
+  // ── 执行图节点过滤 ────────────────────────────────────────────────────────
+  // 注意：节点的 iter_range 来自 agent 的 state.iteration，而 ev.iter 是看板
+  // 自己重建的计数（会丢弃畸形行），两把尺子可能有几格偏差。这里做的是"导航"
+  // 而非"取证"，因此接受近似，并在条上如实说明；过滤为空时退回全量。
+  events = applyGraphNodeFilter(events);
 
   // Detect pending tool call and manage stream buffer
   const pendingCall = getActivePendingToolCall(events);
@@ -4047,6 +4161,7 @@ function setCenterTab(name) {
   });
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
   if (name === 'agentsmd')       loadProfileTab('agents');
+  if (name === 'graph')          renderGraph(gAdvisorView || gState);
   if (name === 'skills')         loadSkills();
   if (name === 'apps')           loadApps();
   if (name === 'crons')          loadCrons();
@@ -4177,6 +4292,277 @@ window.addEventListener('message', e => {
     if (b) b.classList.toggle('term-agent', m.who === 'agent');
   }
 });
+
+// ── Execution graph (runs/<id>/graph.json) ─────────────────────────────────
+// 手写分层 SVG——受纯本地约束不引外部图库，且计划图很浅（深度个位数），
+// Sugiyama 简化版足够，不需要力导向。
+let gGraphData   = null;   // 当前 run 的 graph.json 全文
+let gGraphIdx    = 0;      // 串行多图时看第几张
+let gGraphSelNode = null;  // 侧栏正在展示的节点 id
+let gGraphFilter = null;   // {node,title,from,to} —— 时间线按节点迭代区间过滤
+let gGraphFilterRunId = null;  // 过滤条件属于哪个 run，换 run 时据此清掉
+
+const GN_W = 168, GN_H = 46, GN_HGAP = 26, GN_VGAP = 54, GN_PAD = 26;
+
+function graphsOf(data) {
+  const g = data && data.graphs;
+  return Array.isArray(g) ? g.filter(x => x && x.nodes) : [];
+}
+
+/** Graph 标签只在这个 run 真的建过图时才出现——建图是能力，不是每个 run 都有。 */
+function updateGraphTab(data) {
+  const graphs = graphsOf(data && data.graph);
+  const tab = document.getElementById('ctab-graph');
+  if (!tab) return;
+  const has = graphs.length > 0;
+  tab.style.display = has ? '' : 'none';
+  const active = graphs.find(g => g.status === 'active');
+  document.getElementById('graphTabDot').style.display = active ? '' : 'none';
+  if (!has && gCenterTab === 'graph') setCenterTab('events');
+}
+
+function renderGraph(data) {
+  const next = (data && data.graph) || null;
+  const changed = JSON.stringify(next) !== JSON.stringify(gGraphData);
+  gGraphData = next;
+  const graphs = graphsOf(next);
+  const canvas = document.getElementById('graphCanvas');
+  const side   = document.getElementById('graphSide');
+  if (!canvas) return;
+
+  if (!graphs.length) {
+    canvas.innerHTML = '<div class="graph-empty">本次运行没有建立执行图。<br>'
+      + '<span style="opacity:.65">建图是模型自主启用的能力——简单任务不需要图，'
+      + '模型认为值得时才会调用 plan_create。</span></div>';
+    side.innerHTML = '';
+    document.getElementById('graphStats').textContent = '';
+    return;
+  }
+
+  // 默认停在活动图；模型换图后自动跟过去（用户手动选过的除外）
+  if (changed && !gGraphUserPicked) {
+    const ai = graphs.findIndex(g => g.status === 'active');
+    gGraphIdx = ai >= 0 ? ai : graphs.length - 1;
+  }
+  if (gGraphIdx >= graphs.length) gGraphIdx = graphs.length - 1;
+  const g = graphs[gGraphIdx];
+
+  const sel = document.getElementById('graphSelect');
+  sel.style.display = graphs.length > 1 ? '' : 'none';
+  if (graphs.length > 1) {
+    sel.innerHTML = graphs.map((x, i) =>
+      `<option value="${i}"${i === gGraphIdx ? ' selected' : ''}>${esc(x.gid)} · ${esc(x.title || '')}</option>`).join('');
+  }
+
+  const nodes = Object.values(g.nodes || {});
+  const done  = nodes.filter(n => n.status === 'done' && n.id !== 'n0').length;
+  const total = nodes.length - 1;
+  const open  = nodes.filter(n => ['planned', 'active', 'blocked'].includes(n.status)).length;
+  const granted = (next && next.budget_granted) || 0;
+  document.getElementById('graphTitle').textContent = `${g.gid} · ${g.title || ''}`;
+  document.getElementById('graphStats').textContent =
+    `${statusLabel(g.status)} · 节点 ${done}/${total} 已闭合 · 未闭合 ${open}`
+    + (granted ? ` · 图授予迭代 ${granted}` : '');
+
+  canvas.innerHTML = layoutGraphSvg(g);
+  if (!gGraphSelNode || !g.nodes[gGraphSelNode]) {
+    const act = nodes.find(n => n.status === 'active');
+    gGraphSelNode = act ? act.id : (g.cursor || 'n0');
+  }
+  renderGraphSide(g);
+}
+
+let gGraphUserPicked = false;
+function onGraphSelect(i) {
+  gGraphUserPicked = true;
+  gGraphIdx = parseInt(i, 10) || 0;
+  gGraphSelNode = null;
+  renderGraph(gGraphData ? { graph: gGraphData } : null);
+}
+
+function statusLabel(s) {
+  return { active: '进行中', completed: '已完成', abandoned: '已放弃' }[s] || s || '';
+}
+
+/** 分层布局：深度按 parent 链计算，同层横排居中。 */
+function layoutGraphSvg(g) {
+  const nodes = g.nodes || {};
+  const ids   = Object.keys(nodes);
+  if (!ids.length) return '';
+
+  // 深度（带环保护：parent 链最多走 ids.length 步）
+  const depth = {};
+  const depthOf = (id, guard = 0) => {
+    if (depth[id] != null) return depth[id];
+    const p = nodes[id] && nodes[id].parent;
+    const d = (!p || !nodes[p] || guard > ids.length) ? 0 : depthOf(p, guard + 1) + 1;
+    return (depth[id] = d);
+  };
+  ids.forEach(id => depthOf(id));
+
+  const layers = {};
+  ids.forEach(id => (layers[depth[id]] = layers[depth[id]] || []).push(id));
+  const numOf = id => { const m = /^n(\d+)$/.exec(id); return m ? +m[1] : 1e9; };
+  Object.values(layers).forEach(l => l.sort((a, b) => numOf(a) - numOf(b)));
+
+  const maxPerLayer = Math.max(...Object.values(layers).map(l => l.length));
+  const width  = GN_PAD * 2 + maxPerLayer * GN_W + (maxPerLayer - 1) * GN_HGAP;
+  const depths = Object.keys(layers).map(Number).sort((a, b) => a - b);
+  const height = GN_PAD * 2 + depths.length * GN_H + (depths.length - 1) * GN_VGAP;
+
+  const pos = {};
+  depths.forEach((d, di) => {
+    const row = layers[d];
+    const rowW = row.length * GN_W + (row.length - 1) * GN_HGAP;
+    const x0 = (width - rowW) / 2;
+    row.forEach((id, i) => {
+      pos[id] = { x: x0 + i * (GN_W + GN_HGAP), y: GN_PAD + di * (GN_H + GN_VGAP) };
+    });
+  });
+
+  // 边：优先用显式 edges 的 kind，缺失时按 parent 补一条 then
+  const drawn = new Set();
+  const edgeParts = [];
+  const pushEdge = (from, to, kind) => {
+    const key = from + '>' + to;
+    if (drawn.has(key) || !pos[from] || !pos[to]) return;
+    drawn.add(key);
+    const a = pos[from], b = pos[to];
+    const x1 = a.x + GN_W / 2, y1 = a.y + GN_H;
+    const x2 = b.x + GN_W / 2, y2 = b.y;
+    const my = (y1 + y2) / 2;
+    const dead = ['abandoned', 'blocked'].includes((nodes[to] || {}).status);
+    edgeParts.push(`<path class="ge ge-${esc(kind || 'then')}${dead ? ' ge-dead' : ''}" `
+      + `d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}"/>`);
+  };
+  (g.edges || []).forEach(e => e && pushEdge(e.from, e.to, e.kind));
+  ids.forEach(id => { const p = nodes[id].parent; if (p) pushEdge(p, id, 'then'); });
+
+  const nodeParts = ids.map(id => {
+    const n = nodes[id], p = pos[id];
+    const mark = { done: '✓', active: '▶', planned: '·', abandoned: '✗', blocked: '⏸' }[n.status] || '·';
+    const rng = n.iter_range || [];
+    const meta = rng[0] != null ? `${id} · ${rng[0]}–${rng[1] != null ? rng[1] : '…'}` : id;
+    const selCls = id === gGraphSelNode ? ' gn-sel' : '';
+    const tip = `${id} ${n.title || ''}\n${n.goal || ''}`
+      + (n.abandon_reason ? `\n废弃：${n.abandon_reason}` : '');
+    return `<g class="gn gn-${esc(n.status)}${selCls}" transform="translate(${p.x},${p.y})" `
+      + `onclick="selectGraphNode('${esc(id)}')"><title>${esc(tip)}</title>`
+      + `<rect width="${GN_W}" height="${GN_H}" rx="7"/>`
+      + `<text class="gn-title" x="10" y="19">${esc(mark)} ${esc(trunc(n.title || id, 18))}</text>`
+      + `<text class="gn-meta" x="10" y="34">${esc(meta)}</text></g>`;
+  });
+
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" `
+    + `xmlns="http://www.w3.org/2000/svg">${edgeParts.join('')}${nodeParts.join('')}</svg>`;
+}
+
+function trunc(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+
+function selectGraphNode(id) {
+  gGraphSelNode = id;
+  const graphs = graphsOf(gGraphData);
+  const g = graphs[gGraphIdx];
+  if (!g) return;
+  document.getElementById('graphCanvas').innerHTML = layoutGraphSvg(g);
+  renderGraphSide(g);
+}
+
+function renderGraphSide(g) {
+  const side = document.getElementById('graphSide');
+  const n = (g.nodes || {})[gGraphSelNode];
+  if (!n) { side.innerHTML = ''; return; }
+
+  const rng = n.iter_range || [];
+  const ex  = n.exit || {};
+  const parts = [];
+  parts.push(`<div class="gs-block"><h4>${esc(n.id)} · ${esc(statusCn(n.status))}</h4>`
+    + `<div style="font-weight:600;margin-bottom:4px">${esc(n.title || '')}</div>`
+    + `<div class="gs-goal">${esc(n.goal || '(无目标描述)')}</div></div>`);
+
+  const kv = [];
+  if (rng[0] != null) kv.push(`迭代 ${rng[0]}–${rng[1] != null ? rng[1] : '进行中'}`);
+  if (n.budget) kv.push(`自估 ${n.budget}`);
+  if (rng[0] != null && rng[1] != null) kv.push(`实用 ${rng[1] - rng[0]}`);
+  if (n.visits > 1) kv.push(`进入 ${n.visits} 次`);
+  if (kv.length) parts.push(`<div class="gs-block gs-kv">${esc(kv.join(' · '))}</div>`);
+
+  parts.push(`<div class="gs-block"><h4>出口证据</h4><span class="gs-tag">${esc(ex.evidence_type || '-')}</span>`
+    + (n.closed_by ? ` <span class="gs-tag">${esc(closedByCn(n.closed_by))}</span>` : '')
+    + ((ex.expect || []).length ? `<ul>${ex.expect.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : '')
+    + `</div>`);
+
+  if (n.outcome && (n.outcome.summary || (n.outcome.gaps || []).length)) {
+    parts.push(`<div class="gs-block"><h4>结论</h4>`
+      + (n.outcome.summary ? `<div class="gs-goal">${esc(n.outcome.summary)}</div>` : '')
+      + ((n.outcome.gaps || []).length ? `<ul>${n.outcome.gaps.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '')
+      + `</div>`);
+  }
+  if (n.abandon_reason) {
+    parts.push(`<div class="gs-block"><h4>废弃原因</h4><div class="gs-reason">${esc(n.abandon_reason)}</div></div>`);
+  }
+  // 环境残留：废弃分支不回滚环境，这一节是"逻辑回溯"能成立的前提
+  if ((n.side_effects || []).length) {
+    parts.push(`<div class="gs-block"><h4>环境残留（不会自动回滚）</h4>`
+      + `<ul class="gs-residue">${n.side_effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`);
+  }
+  if (rng[0] != null) {
+    parts.push(`<div class="gs-block"><span class="gs-jump" onclick="jumpToNodeEvents('${esc(n.id)}')">`
+      + `→ 在 Events 里只看这一段</span></div>`);
+  }
+  side.innerHTML = parts.join('');
+}
+
+function statusCn(s) {
+  return { done: '已闭合', active: '进行中', planned: '待办', abandoned: '已废弃', blocked: '受阻' }[s] || s;
+}
+function closedByCn(s) {
+  return { evidence_verified: '产物已核验', self_certified: '自证', implicit: '隐式' }[s] || s;
+}
+
+/** 点节点 → 跳到 Events 并按该节点的迭代区间过滤。 */
+function jumpToNodeEvents(id) {
+  const g = graphsOf(gGraphData)[gGraphIdx];
+  const n = g && g.nodes[id];
+  if (!n || !n.iter_range || n.iter_range[0] == null) return;
+  gGraphFilter = {
+    node: id,
+    title: n.title || '',
+    from: n.iter_range[0],
+    to: n.iter_range[1] != null ? n.iter_range[1] : Infinity,
+  };
+  setCenterTab('events');
+  if (gAdvisorView) renderAll(gAdvisorView, gViewRunId);
+}
+
+function clearGraphFilter() {
+  gGraphFilter = null;
+  if (gAdvisorView) renderAll(gAdvisorView, gViewRunId);
+}
+
+/** 按当前选中的图节点过滤事件；同时维护顶部提示条。返回要渲染的事件数组。 */
+function applyGraphNodeFilter(events) {
+  const bar = document.getElementById('graphFilterBar');
+  if (!bar) return events;
+  if (!gGraphFilter) { bar.style.display = 'none'; return events; }
+
+  const f = gGraphFilter;
+  const kept = events.filter(ev => ev.iter >= f.from && ev.iter <= f.to);
+  const toLabel = f.to === Infinity ? '…' : f.to;
+  bar.style.display = '';
+  bar.innerHTML =
+    `<span>只看节点 <b>${esc(f.node)}</b> ${esc(f.title)} · 迭代 ${esc(String(f.from))}–${esc(String(toLabel))}</span>`
+    + (kept.length
+        ? `<span style="opacity:.55">（迭代号是看板重建值，与图上区间可能差几格）</span>`
+        : `<span style="opacity:.55">（该区间内没有可显示的事件，已退回全量）</span>`)
+    + `<div class="bar-gap"></div><button onclick="clearGraphFilter()">清除过滤</button>`;
+  return kept.length ? kept : events;
+}
+
+function fitGraph() {
+  const c = document.getElementById('graphCanvas');
+  if (c) c.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+}
 
 // ── Apps (user-space executable programs) ──────────────────────────────────
 let gApps        = [];      // [{id,name,icon,description,runtime,enabled,size}]

@@ -525,6 +525,10 @@ let state = {
   // The full per-entry payload is available via GET /api/run/:runId/advisor/:idx
   advisorLast:    null,
   advisorHistory: [],
+  // Execution graph (run_dir/graph.json) — the single source of truth shared by
+  // the agent's context projection and this dashboard's rendering.
+  // null when the model never created a graph (most runs).
+  graph:          null,
   instanceName: process.env.INSTANCE_NAME || '',  // display-only label shown as "name:port"
 };
 
@@ -990,6 +994,7 @@ function poll() {
     _advisorLinesProcessed = 0;
     state.advisorLast     = null;
     state.advisorHistory  = [];
+    state.graph           = null;
     dirty = true;
     // Once a new run directory appears, launching phase is over
     if (isLaunching) {
@@ -1023,6 +1028,12 @@ function poll() {
     if (changed(path.join(dir, 'meta.json'))) {
       const m = readJSON(path.join(dir, 'meta.json'));
       if (m) { state.meta = m; dirty = true; }
+    }
+    // graph.json is absent for the vast majority of runs (building a graph is a
+    // capability the model opts into), so a missing file is normal, not an error.
+    if (changed(path.join(dir, 'graph.json'))) {
+      state.graph = readJSON(path.join(dir, 'graph.json'));
+      dirty = true;
     }
     if (updateShortTerm(dir)) dirty = true;
     // After short_term so the fallback anchor (_linesProcessed) is current.
@@ -1903,7 +1914,8 @@ function loadRun(runId) {
       });
     } catch {}
   }
-  return { runId, status, scratchpad, meta, events, advisorLast, advisorHistory };
+  const graph = readJSON(path.join(dir, 'graph.json'));
+  return { runId, status, scratchpad, meta, events, advisorLast, advisorHistory, graph };
 }
 
 // ── HTTP server ────────────────────────────────────────────────────────────
@@ -2417,6 +2429,24 @@ const server = http.createServer(async (req, res) => {
       const info = runActiveSkills(rid);
       if (!info) { json(404, { error: 'run not found' }); return; }
       json(200, { ok: true, runId: rid, ...info });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/run/:runId/graph  — that run's execution graph ──────────────
+  // Reads graph.json directly rather than digging _graph out of meta.json: the
+  // graph must have one addressable source, or the frontend starts depending on
+  // internal meta keys that were never meant to be a contract.
+  // 200 with graph:null when the run never built one (the common case).
+  const runGraphMatch = req.url.match(/^\/api\/run\/([^/?]+)\/graph$/);
+  if (req.method === 'GET' && runGraphMatch) {
+    try {
+      const rid = decodeURIComponent(runGraphMatch[1]);
+      const dir = path.resolve(path.join(RUNS_DIR, rid));
+      const rel = path.relative(RUNS_DIR, dir);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) { json(403, { error: 'forbidden' }); return; }
+      if (!fs.existsSync(dir)) { json(404, { error: 'run not found' }); return; }
+      json(200, { ok: true, runId: rid, graph: readJSON(path.join(dir, 'graph.json')) });
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }
