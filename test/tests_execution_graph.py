@@ -390,6 +390,108 @@ class ConvergenceMetricTests(unittest.TestCase):
             self.assertIn(way_out, hint)
 
 
+class BudgetGrantTests(unittest.TestCase):
+    """预算按节点发放：这是"图激活期不设迭代上限"的落地方式。"""
+
+    def test_grant_happens_on_entry_with_the_node_s_own_estimate(self):
+        st = _state()
+        _two_node_graph(st)                       # n1.budget=8, n2 无 budget
+        self.assertEqual(st.meta.get("_add_iterations"), None)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        self.assertEqual(st.meta["_add_iterations"], 8)
+        self.assertEqual(G.get_root(st)["budget_granted"], 8)
+
+    def test_planning_nodes_you_never_enter_mints_nothing(self):
+        """画了不走的节点一分钱不发——否则模型能靠画图凭空铸造预算。
+
+        这不是"模型想作弊"，是结构诱导：快没预算时画图恰好是它眼前
+        最像"推进"的动作。堵住的是这个诱导。
+        """
+        st = _state()
+        G.create_graph(st, title="铸币尝试", nodes=[
+            {"title": f"步骤{i}", "goal": "x", "budget": 50} for i in range(10)
+        ])
+        self.assertIsNone(st.meta.get("_add_iterations"))
+        self.assertEqual(G.get_root(st)["budget_granted"], 0)
+
+    def test_each_node_grants_only_once(self):
+        """反复进出同一个节点不能重复领取。"""
+        st = _state()
+        _two_node_graph(st)
+        for _ in range(4):
+            G.apply_op(st, {"op": "enter", "node": "n1"})
+            G.apply_op(st, {"op": "exit", "node": "n1", "summary": "ok"})
+        self.assertEqual(G.get_root(st)["budget_granted"], 8)
+
+    def test_revising_budget_does_not_re_grant(self):
+        st = _state()
+        _two_node_graph(st)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        G.apply_revision(st, [{"op": "update", "node": "n1", "budget": 99}])
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        self.assertEqual(G.get_root(st)["budget_granted"], 8)
+
+    def test_topup_only_while_there_is_open_work(self):
+        st = _state()
+        _two_node_graph(st)
+        self.assertGreater(G.topup_budget(st), 0)
+        for nid in ("n1", "n2"):
+            G.apply_op(st, {"op": "enter", "node": nid})
+            G.apply_op(st, {"op": "exit", "node": nid, "summary": "ok"})
+        self.assertEqual(G.topup_budget(st), 0)       # 图上没活了，不再补
+        self.assertFalse(G.has_open_work(st))
+
+    def test_topup_is_recorded_even_though_uncapped(self):
+        """不设上限是产品决策，但每一笔都要看得见。"""
+        st = _state()
+        _two_node_graph(st)
+        before = G.get_root(st)["budget_granted"]
+        total = sum(G.topup_budget(st) for _ in range(5))
+        self.assertEqual(G.get_root(st)["budget_granted"], before + total)
+        self.assertEqual(G.summary(st)["budget_granted"], before + total)
+
+    def test_no_graph_means_no_grants_at_all(self):
+        st = _state()
+        self.assertEqual(G.topup_budget(st), 0)
+        self.assertFalse(G.has_open_work(st))
+        self.assertIsNone(st.meta.get("_add_iterations"))
+
+    def test_read_paths_never_implant_an_empty_graph(self):
+        """绝大多数 run 从不建图。"问一句有没有图"就在 meta 里种下空壳，
+        会让每个 run 的 meta.json 都多出这块噪声，"这个 run 用过图吗"
+        也就没法再靠键是否存在来回答。"""
+        st = _state()
+        for probe in (G.has_open_work, G.active_graph, G.metrics, G.summary,
+                      G.open_nodes, G.render, G.gap_lines, G.topup_budget,
+                      G.pending_isolate, G.peek_root):
+            probe(st)
+            self.assertNotIn("_graph", st.meta, f"{probe.__name__} 不该创建图根")
+        G.save(st)
+        self.assertNotIn("_graph", st.meta)
+
+
+class IsolateTests(unittest.TestCase):
+    def test_nodes_do_not_seal_by_default(self):
+        """封段等于 KV 缓存清零，每个节点都封会比规划本身贵一个量级。"""
+        st = _state()
+        _two_node_graph(st)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        self.assertIsNone(G.pending_isolate(st))
+
+    def test_isolate_node_is_flagged_once_then_marked_sealed(self):
+        st = _state()
+        G.create_graph(st, title="隔离", nodes=[
+            {"title": "重活", "goal": "过程细节很多", "isolate": True},
+        ])
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        node = G.pending_isolate(st)
+        self.assertIsNotNone(node)
+        self.assertEqual(node["id"], "n1")
+        G.mark_sealed(st, node, 3)
+        self.assertIsNone(G.pending_isolate(st))      # 封过就不再重复
+        self.assertEqual(st.meta["_graph"]["graphs"][0]["nodes"]["n1"]["seg"], 3)
+
+
 class GapHandoffTests(unittest.TestCase):
     def test_open_nodes_flow_into_run_outcome_gaps(self):
         """未闭合节点是迄今最好的结构化 gaps，自动续作层直接消费。"""

@@ -88,8 +88,11 @@ def save(state: AgentState) -> None:
     fn = getattr(persistence, "save_graph", None)
     if fn is None:
         return
+    root = peek_root(state)
+    if root is None:
+        return   # 从没建过图 → 不落一个空的 graph.json
     try:
-        fn(get_root(state))
+        fn(root)
     except Exception:
         pass
 
@@ -123,6 +126,12 @@ def _str_list(value: Any, limit: int = 20, item_chars: int = 300) -> list[str]:
 # ── 数据访问 ──────────────────────────────────────────────────────────────────
 
 def get_root(state: AgentState) -> dict:
+    """取图根，不存在则建。**只有写路径可以调用它。**
+
+    读路径一律走 peek_root：绝大多数 run 从不建图，如果"问一句有没有图"就
+    在 meta 里种下一个空壳，每个 run 的 meta.json 都会多出这块噪声，
+    "这个 run 用过图吗"也就没法再靠键是否存在来回答。
+    """
     root = state.meta.get("_graph")
     if not isinstance(root, dict):
         root = {"version": 1, "budget_granted": 0, "graphs": []}
@@ -134,8 +143,17 @@ def get_root(state: AgentState) -> dict:
     return root
 
 
+def peek_root(state: AgentState) -> Optional[dict]:
+    """只读地取图根；从未建过图时返回 None，不产生任何副作用。"""
+    root = state.meta.get("_graph")
+    return root if isinstance(root, dict) and isinstance(root.get("graphs"), list) else None
+
+
 def active_graph(state: AgentState) -> Optional[dict]:
-    for g in get_root(state).get("graphs", []):
+    root = peek_root(state)
+    if root is None:
+        return None
+    for g in root.get("graphs", []):
         if isinstance(g, dict) and g.get("status") == "active":
             return g
     return None
@@ -252,6 +270,70 @@ def _free_node_id(used: set[str]) -> str:
 
 def _next_node_id(g: dict) -> str:
     return _free_node_id(set(_nodes(g).keys()))
+
+
+def has_open_work(state: AgentState) -> bool:
+    """活动图上还有未达终态的节点。"""
+    g = active_graph(state)
+    if g is None:
+        return False
+    return any(n.get("status") in _OPEN_STATUS for n in _nodes(g).values())
+
+
+def _grant_budget(state: AgentState, node: dict) -> int:
+    """节点首次进入时按它自报的 budget 发放迭代预算。
+
+    **按进入发放、每个节点只发一次**是关键：画了却从不进入的节点一分钱不发，
+    否则模型可以靠画图凭空铸造预算——快没预算时画图恰好是它眼前最像"推进"
+    的动作，这不是作弊动机，是结构诱导。
+    不设总量上限（真正的停止条件是收敛检测），但全量记账。
+    """
+    if node.get("granted"):
+        return 0
+    node["granted"] = True
+    amount = int(node.get("budget") or 0)
+    if amount <= 0:
+        return 0
+    state.meta["_add_iterations"] = int(state.meta.get("_add_iterations") or 0) + amount
+    root = get_root(state)
+    root["budget_granted"] = int(root.get("budget_granted") or 0) + amount
+    return amount
+
+
+def topup_budget(state: AgentState) -> int:
+    """预算耗尽、但图上还有活要干时补一笔，让运行继续。
+
+    这是"图激活期不设迭代上限"的落地方式：只要图还有未闭合节点就继续供给，
+    真正的停止条件交给收敛检测（stall → advisor → 求助用户）。
+    补发不设总次数上限，但每一笔都记进 budget_granted，可在看板上看见。
+    """
+    if not has_open_work(state):
+        return 0
+    amount = max(1, _env_int("GRAPH_TOPUP", 10))
+    root = get_root(state)
+    root["budget_granted"] = int(root.get("budget_granted") or 0) + amount
+    save(state)
+    return amount
+
+
+def pending_isolate(state: AgentState) -> Optional[dict]:
+    """当前活动节点声明了 isolate 且尚未封段时返回该节点，否则 None。
+
+    节点默认**不**封段——封段等于 KV 缓存清零，每个节点都封会比规划本身
+    贵一个量级。只有模型明确表示"下一段不需要看到本节点的过程细节"才封。
+    """
+    g = active_graph(state)
+    if g is None:
+        return None
+    node = _active_node(g)
+    if node and node.get("isolate") and node.get("seg") is None:
+        return node
+    return None
+
+
+def mark_sealed(state: AgentState, node: dict, seg: Any) -> None:
+    node["seg"] = seg
+    save(state)
 
 
 def _merge_side_effects(node: dict, items: Any) -> None:
@@ -518,8 +600,12 @@ def _op_enter(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
         node["iter_range"][0] = _iter(state)
     node["iter_range"][1] = None
     g["cursor"] = node_id
+    granted = _grant_budget(state, node)
     save(state)
-    return True, t("graph.op.entered", id=node_id, title=node.get("title", ""))
+    msg = t("graph.op.entered", id=node_id, title=node.get("title", ""))
+    if granted:
+        msg += " " + t("graph.op.granted", n=granted)
+    return True, msg
 
 
 def _op_exit(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
@@ -954,8 +1040,13 @@ def metrics(state: AgentState) -> dict:
                 break
 
         active = _active_node(g)
+        active_used = 0
+        if active and isinstance(active.get("iter_range"), list) and active["iter_range"][0] is not None:
+            active_used = max(0, now - int(active["iter_range"][0]))
         return {
             "gid": g.get("gid", ""),
+            "active_used": active_used,
+            "active_budget": int((active or {}).get("budget") or 0),
             "stall_iters": max(0, now - int(last_progress)),
             "node_revisits": max([int(n.get("visits") or 0) for n in nodes] or [0]),
             "revisit_node": max(nodes, key=lambda n: int(n.get("visits") or 0)).get("id", ""),

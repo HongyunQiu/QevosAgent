@@ -667,6 +667,12 @@ _STRINGS: dict[str, dict[str, str]] = {
             "请问您有什么建议？例如：指出更可行的分解方式、告知某个节点可以跳过、"
             "或者提供绕过当前障碍的思路。"
         ),
+        "graph.op.granted": "（已按你的自估发放 {n} 次迭代预算）",
+        "graph.overrun": (
+            "[执行图] 节点 {node}「{title}」已用 {used} 轮，你自估 {budget} 轮。"
+            "这不扣预算、也不强制你做什么，只是提醒：估算差这么多，通常说明这个节点"
+            "比预想的复杂——考虑用 extend 把它拆小分步闭合，或者重新判断这条路是否走得通。"
+        ),
         "graph.gaps.line": "[图 {node}「{title}」/{status}] {goal}（出口: {etype} — {expect}）",
         "graph.done_open_nodes": (
             "[执行图] 你正要结束任务，但图 {gid} 上还有 {n} 个节点没有闭合：{ids}。\n"
@@ -1323,6 +1329,12 @@ Before calling action='done', you MUST complete the following two steps:
             "{open} node(s) still open.\n\n"
             "Do you have any guidance? For example: a better decomposition, permission to skip a node, "
             "or a way around the current obstacle."
+        ),
+        "graph.op.granted": "({n} iterations of budget granted from your own estimate.)",
+        "graph.overrun": (
+            "[Execution graph] Node {node} \"{title}\" has used {used} iterations; you estimated {budget}. "
+            "Nothing is deducted and nothing is forced — but a gap that large usually means the node is more "
+            "complex than expected. Consider splitting it with extend, or re-checking whether this route works at all."
         ),
         "graph.gaps.line": "[graph {node} \"{title}\"/{status}] {goal} (exit: {etype} — {expect})",
         "graph.done_open_nodes": (

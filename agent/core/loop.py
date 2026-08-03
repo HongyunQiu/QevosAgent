@@ -736,19 +736,36 @@ def run(
                         _checkpoint_state(state, status="paused")
                         _stop_loop = True
                         break
-                # Apply any /+N extensions accumulated by process_command
-                _extra = state.meta.pop('_add_iterations', 0)
-                if _extra:
-                    max_iterations += _extra
-                    if not _nostop_mode:
-                        state.meta['_max_iterations'] = max_iterations
                 if _stop_loop:
                     if not state.meta.get("paused"):
                         state.meta['user_stopped'] = True
                     break
             # ─────────────────────────────────────────────────────────────────────
 
+            # 预算增发的统一出口。原先这段嵌在 `if _ih is not None` 里，只有存在
+            # 中断处理器时才生效——执行图按节点发放预算走的是同一个通道，挂在
+            # 里面会让无人值守的运行（没有 interrupt handler）永远拿不到发放。
+            _extra = state.meta.pop('_add_iterations', 0)
+            if _extra:
+                max_iterations += _extra
+                if not _nostop_mode:
+                    state.meta['_max_iterations'] = max_iterations
+
             if not _nostop_mode and state.iteration >= max_iterations:
+                # 图还有未闭合节点 → 补一笔继续跑，而不是收尾退出。
+                # 这就是"图激活期不设迭代上限"的落地：供给跟着图上的活走，
+                # 真正的停止条件是收敛检测（stall → advisor → 求助用户）。
+                _topup = _graph.topup_budget(state)
+                if _topup:
+                    max_iterations += _topup
+                    state.meta['_max_iterations'] = max_iterations
+                    if hooks.on_thought:
+                        hooks.on_thought(
+                            f"[执行图] 预算耗尽但图上还有未闭合节点，补发 {_topup} 次迭代"
+                        )
+                    _checkpoint_state(state)
+                    continue
+
                 # 预算耗尽不直接退出：先开一次受限收尾窗口，让 agent 用
                 # submit_completion_report 交代进度与缺口，否则 exhausted 无
                 # 结构化输入，后续续作只能从零重建上下文。窗口只开一次。
@@ -769,7 +786,10 @@ def run(
                 _checkpoint_state(state)
 
             # ── Iteration limit warning ───────────────────────────────────────
-            if not _nostop_mode and not state.meta.get("_iter_warn_injected"):
+            # 图上还有活时不发这个警告：供给会自动补，"剩余 N 次"是误导，
+            # 只会诱使模型仓促收尾或去求用户加预算。
+            if (not _nostop_mode and not state.meta.get("_iter_warn_injected")
+                    and not _graph.has_open_work(state)):
                 _remaining = max_iterations - state.iteration
                 if 0 < _remaining <= 10:
                     _iter_warn_msg = {
@@ -1397,6 +1417,8 @@ def run(
                         _graph_msg = f"{t('graph.feedback_prefix')} {_g_text}"
                         if hooks.on_thought:
                             hooks.on_thought(_graph_msg)
+                    if _g_ok:
+                        _graph_boundary_compress(state, llm, action.graph_op, hooks)
 
                 if action.tool == "ask_user":
                     q = action.args.get("question") or (result.output or {}).get("question")
@@ -1525,6 +1547,55 @@ def run(
 # ── 内部辅助 ──────────────────────────────────────────────────────────────────
 
 
+def _graph_boundary_compress(state: "AgentState", llm, op: dict, hooks=None) -> None:
+    """节点边界上的封段：isolate 显式声明，或上下文已逼近阈值时顺势对齐。
+
+    节点默认**不**封段——封段等于 KV 缓存清零，每个节点都封会比规划本身贵一个
+    量级。这里只处理两种该封的情况：
+
+      1. enter 了一个 isolate 节点：模型明确表示下一段不需要本节点的过程细节
+      2. exit 之后上下文已经逼近压缩阈值：与其等它撞线时就地开炸（可能切在
+         一次工具调用半途），不如提前到刚刚闭合的这个节点边界上——
+         handoff 因此天然是一个完整语义单元。这是加图之后白拿的压缩质量提升。
+    """
+    try:
+        kind = str((op or {}).get("op") or "").lower()
+        if kind not in ("enter", "exit"):
+            return
+
+        node = None
+        reason = ""
+        if kind == "enter":
+            node = _graph.pending_isolate(state)
+            reason = "isolate"
+        else:
+            est = int(state.meta.get("prompt_tokens_est") or 0)
+            ctx = int(state.meta.get("context_window") or 0)
+            if not est or not ctx:
+                return
+            try:
+                ratio = float(os.environ.get("GRAPH_BOUNDARY_COMPRESS_RATIO", "0.75"))
+            except Exception:
+                ratio = 0.75
+            if est < int(ctx * ratio):
+                return
+            reason = "boundary"
+
+        if kind == "enter" and node is None:
+            return
+
+        from .compression import compress_context as _cc
+
+        _cc(state, use_llm_summary=True)
+        seg = state.meta.get("_last_handoff_seg")
+        if node is not None:
+            _graph.mark_sealed(state, node, seg)
+        if hooks and hooks.on_thought:
+            hooks.on_thought(f"[执行图] 节点边界封段（{reason}），段号 {seg}")
+    except Exception:
+        return
+
+
 def _graph_convergence_check(state: "AgentState", llm, hooks: Optional["AgentHooks"] = None) -> bool:
     """执行图收敛检测 + 升级梯。返回 True 表示已暂停求助用户，主循环应退出。
 
@@ -1539,6 +1610,19 @@ def _graph_convergence_check(state: "AgentState", llm, hooks: Optional["AgentHoo
             return False
         level, reason = _graph.stall_level(m)
         now = int(getattr(state, "iteration", 0) or 0)
+
+        # ── 自估 vs 实用：只提示，不拦 ─────────────────────────────────────
+        # 单点是噪声，但"估 8 实用 40"这个比值是很硬的校准信号，也是换路的时机。
+        _budget = int(m.get("active_budget") or 0)
+        _used = int(m.get("active_used") or 0)
+        _node = m.get("active_node") or ""
+        if _budget > 0 and _used >= _budget * 2 and state.meta.get("_graph_overrun_node") != _node:
+            state.meta["_graph_overrun_node"] = _node
+            _append_short_term(state, {"role": "user", "content": t(
+                "graph.overrun", node=_node, title=m.get("active_title", ""),
+                used=_used, budget=_budget,
+            )})
+            _checkpoint_state(state)
 
         if level == 0:
             # 恢复推进 → 清空梯子状态，下次停滞重新从 L1 起步
