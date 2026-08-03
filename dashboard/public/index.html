@@ -1060,6 +1060,12 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 .graph-side ul { margin:4px 0 0; padding-left:16px; }
 .graph-side li { margin-bottom:3px; word-break:break-word; }
 .gs-residue li { color:var(--orange); }
+.gs-override {
+  border-left:2px solid var(--orange); padding-left:9px;
+  background:color-mix(in srgb, var(--orange) 8%, transparent);
+  border-radius:0 4px 4px 0; padding-top:4px; padding-bottom:4px;
+}
+.gs-override h4 { color:var(--orange); }
 .gs-reason { color:var(--muted); font-style:italic; }
 .gs-jump {
   display:inline-block; margin-top:6px; padding:2px 9px; cursor:pointer;
@@ -4533,6 +4539,14 @@ function renderGraphSide(g) {
       + ((n.outcome.gaps || []).length ? `<ul>${n.outcome.gaps.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '')
       + `</div>`);
   }
+  // 降级闭合：节点显示为"已完成"，但承诺没完全兑现。这块必须显眼——
+  // 这类遗留会在后继工作里被放大，甚至成为关键阻塞。
+  if (n.closed_by === 'unverified_override' && n.outcome && n.outcome.residue) {
+    parts.push(`<div class="gs-block gs-override"><h4>⚠ 降级通过的遗留</h4>`
+      + `<div class="gs-goal">${esc(n.outcome.residue)}</div>`
+      + (n.outcome.impact ? `<div class="gs-kv" style="margin-top:6px">影响评估：${esc(n.outcome.impact)}</div>` : '')
+      + `</div>`);
+  }
   if (n.abandon_reason) {
     parts.push(`<div class="gs-block"><h4>废弃原因</h4><div class="gs-reason">${esc(n.abandon_reason)}</div></div>`);
   }
@@ -4552,7 +4566,8 @@ function statusCn(s) {
   return { done: '已闭合', active: '进行中', planned: '待办', abandoned: '已废弃', blocked: '受阻' }[s] || s;
 }
 function closedByCn(s) {
-  return { evidence_verified: '产物已核验', self_certified: '自证', implicit: '隐式' }[s] || s;
+  return { evidence_verified: '产物已核验', self_certified: '自证', implicit: '隐式',
+           unverified_override: '降级通过' }[s] || s;
 }
 
 /** 点节点 → 跳到 Events 并按该节点的迭代区间过滤。 */

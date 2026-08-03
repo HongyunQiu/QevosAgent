@@ -194,7 +194,21 @@ def _ancestors(g: dict, node_id: str) -> list[dict]:
     return chain
 
 
-def _descendants(g: dict, node_id: str) -> list[dict]:
+def _descendants(g: dict, node_id: str, *, only_then: bool = False) -> list[dict]:
+    """后代节点。
+
+    only_then=True 时只沿 `then` 边下行，跳过 alt / fallback 分支。
+    这个区分是必须的：退路在结构上是"被它兜底的那个节点"的子节点，
+    如果废弃时连 alt/fallback 一起级联废掉，等于亲手掐死自己写下的退路——
+    而那正是最需要它的时刻。
+    then = 依赖它的下游工作，随它一起死；alt/fallback = 它的替代品，必须活着。
+    """
+    kind_of: dict[tuple[str, str], str] = {}
+    if only_then:
+        for e in g.get("edges", []) or []:
+            if isinstance(e, dict):
+                kind_of[(e.get("from"), e.get("to"))] = e.get("kind") or "then"
+
     out: list[dict] = []
     frontier = [node_id]
     seen: set[str] = {node_id}
@@ -203,6 +217,8 @@ def _descendants(g: dict, node_id: str) -> list[dict]:
         for child in _children(g, cur):
             cid = child.get("id")
             if cid in seen:
+                continue
+            if only_then and kind_of.get((cur, cid), "then") != "then":
                 continue
             seen.add(cid)
             out.append(child)
@@ -356,7 +372,36 @@ def _add_edge(g: dict, src: str, dst: str, kind: str) -> None:
     for e in edges:
         if isinstance(e, dict) and e.get("from") == src and e.get("to") == dst:
             return
-    edges.append({"from": src, "to": dst, "kind": kind, "cond": ""})
+    # 刻意不带 cond：条件求值器不存在，留一个永不被读取的字段等于对模型撒谎
+    edges.append({"from": src, "to": dst, "kind": kind})
+
+
+def _routes_from(g: dict, node_id: str) -> list[dict]:
+    """从 node_id 出发、指向尚未走过的节点的备选/退路边。
+
+    运行时**不**做条件求值——那是工作流引擎，不是这套东西该干的。
+    但模型自己写下的 alt / fallback 是它当初的意图，在它撞墙的那一刻
+    原样还给它，是零决策成本的帮助。
+    """
+    out: list[dict] = []
+    for e in g.get("edges", []) or []:
+        if not isinstance(e, dict) or e.get("from") != node_id:
+            continue
+        if e.get("kind") not in ("alt", "fallback"):
+            continue
+        target = _nodes(g).get(e.get("to"))
+        if target is None or target.get("status") not in ("planned",):
+            continue
+        out.append(target)
+    return out
+
+
+def _route_hint(g: dict, node_id: str) -> str:
+    routes = _routes_from(g, node_id)
+    if not routes:
+        return ""
+    return " " + t("graph.op.route_hint", routes="; ".join(
+        f"{r.get('id')}「{r.get('title', '')}」" for r in routes[:3]))
 
 
 # ── 建图 ──────────────────────────────────────────────────────────────────────
@@ -514,6 +559,27 @@ def abandon_graph(state: AgentState, reason: str) -> tuple[bool, str]:
 
 # ── 出口证据校验 ──────────────────────────────────────────────────────────────
 
+# 光秃秃的结论——单独出现时等于什么都没说，续作时毫无价值。
+# "不影响"本身是合法结论，但必须带上依据，所以这里拦的是"只有结论"。
+_PERFUNCTORY = frozenset({
+    "无", "没有", "不影响", "有影响", "略", "同上", "有点问题", "还有问题", "小问题",
+    "n/a", "na", "none", "no", "yes", "nil", "tbd", "unknown", "no impact", "minor",
+})
+
+
+def _is_perfunctory(text: str, min_len: int) -> bool:
+    """判断一段交代是否敷衍。
+
+    长度阈值按**中文密度**定：中文一个字顶英文好几个字符，阈值定高了会把
+    "会影响 n2 的对比分析" 这种完全站得住的评估误杀。所以阈值压低，
+    另外单独拦"只有结论没有依据"的那一类。
+    """
+    s = (text or "").strip().strip("。.！!，,、；;：: ")
+    if len(s) < min_len:
+        return True
+    return s.lower() in _PERFUNCTORY
+
+
 def _path_exists(path: str, state: AgentState) -> bool:
     """产物存在性检查：依次按 原样 / run_dir 相对 / cwd 相对 解析。"""
     s = str(path or "").strip().strip("`\"'")
@@ -623,12 +689,31 @@ def _op_exit(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
     evidence_type = exit_spec.get("evidence_type", "observation")
     expect = exit_spec.get("expect") or []
 
+    residue = _clip(op.get("residue"), 800)
+    impact = _clip(op.get("impact"), 800)
+    forced = False
+
     if evidence_type == "artifact" and expect:
         missing = [p for p in expect if not _path_exists(p, state)]
         if missing:
-            save(state)
-            return False, t("graph.op.exit_missing_artifact", missing=", ".join(missing))
-        closed_by = "evidence_verified"
+            if not op.get("force"):
+                save(state)
+                return False, (
+                    t("graph.op.exit_missing_artifact", missing=", ".join(missing))
+                    + " " + t("graph.op.force_available")
+                    + _route_hint(g, node_id)
+                )
+            # ── 降级通过：允许，但遗留叙述是硬门 ──────────────────────────
+            # 降级产生的遗留会在后继工作里被放大，甚至成为关键阻塞，而到那时
+            # 当初的上下文早被压缩掉了。所以这里既要写清"缺什么"，也要当场
+            # 评估"会不会影响后面"——含糊其辞的一律打回。
+            if _is_perfunctory(residue, 8) or _is_perfunctory(impact, 10):
+                save(state)
+                return False, t("graph.op.force_needs_detail", missing=", ".join(missing))
+            forced = True
+            closed_by = "unverified_override"
+        else:
+            closed_by = "evidence_verified"
     else:
         closed_by = "self_certified"
 
@@ -638,10 +723,21 @@ def _op_exit(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
     node["outcome"] = {
         "summary": _clip(op.get("summary"), 600),
         "gaps": _str_list(op.get("gaps"), limit=10),
+        "residue": residue if forced else "",
+        "impact": impact if forced else "",
     }
     g["cursor"] = node_id
 
     msg = t("graph.op.exited", id=node_id, closed_by=t(f"graph.closed_by.{closed_by}"))
+    if forced:
+        # 立刻把"这个遗留会不会影响后继"摆到它面前，并明确给出重新规划这条路。
+        # 遗留同时进投影常驻区（见 _render），压缩打不掉。
+        msg += "\n" + t(
+            "graph.op.force_followup",
+            id=node_id, residue=residue, impact=impact,
+            downstream=", ".join(n.get("id", "") for n in _descendants(g, node_id)
+                                 if n.get("status") in _OPEN_STATUS)[:200] or "-",
+        )
     save(state)
     return True, msg
 
@@ -695,9 +791,10 @@ def _op_abandon(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
     if isinstance(node.get("iter_range"), list) and len(node["iter_range"]) == 2:
         node["iter_range"][1] = _iter(state)
 
-    # 级联：下游还没开始的节点一起废弃，避免留下孤儿
+    # 级联：依赖它的下游（then）里还没开始的一起废弃，避免留下孤儿。
+    # 但 alt / fallback 指向的是它的**替代方案**，必须留着——见 _descendants。
     cascaded: list[str] = []
-    for child in _descendants(g, node_id):
+    for child in _descendants(g, node_id, only_then=True):
         if child.get("status") == "planned":
             child["status"] = "abandoned"
             child["abandon_reason"] = t("graph.op.cascade_reason", id=node_id)
@@ -706,6 +803,7 @@ def _op_abandon(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
     msg = t("graph.op.abandoned", id=node_id, reason=reason or "-")
     if cascaded:
         msg = msg + " " + t("graph.op.cascade", ids=", ".join(cascaded))
+    msg += _route_hint(g, node_id)   # 它当初为这个节点写下的退路，此刻还给它
     save(state)
     return True, msg
 
@@ -922,6 +1020,21 @@ def _render(state: AgentState) -> str:
     if residue:
         sections.append(t("graph.proj.residue", items="\n".join(residue[:10])))
 
+    # ── 降级闭合的遗留（常驻）──────────────────────────────────────────────
+    # 这一节刻意排在"前方待办"之前，且永不折叠：降级遗留会在后继工作里被放大，
+    # 甚至成为关键阻塞，而那时当初的上下文早就被压缩掉了。图是唯一扛得住压缩的
+    # 结构化记忆，这条信息必须挂在这里。
+    overrides = [
+        n for n in nodes.values()
+        if n.get("closed_by") == "unverified_override" and (n.get("outcome") or {}).get("residue")
+    ]
+    if overrides:
+        sections.append(t("graph.proj.overrides", items="\n".join(
+            f"  - [{n.get('id')}「{n.get('title', '')}」] {(n.get('outcome') or {}).get('residue')}"
+            f"\n    影响评估：{(n.get('outcome') or {}).get('impact') or '-'}"
+            for n in overrides[:6]
+        )))
+
     # ── 前方 planned ───────────────────────────────────────────────────────
     upcoming = [n for n in nodes.values() if n.get("status") == "planned"]
     upcoming.sort(key=lambda n: n.get("id", ""))
@@ -1034,7 +1147,7 @@ def metrics(state: AgentState) -> dict:
         # 一串"我观察到了 X"把闭合率刷绿——这里只统计、只当软信号，不禁止。
         unverified = 0
         for n in reversed(closed):
-            if n.get("closed_by") == "self_certified":
+            if n.get("closed_by") in ("self_certified", "unverified_override"):
                 unverified += 1
             else:
                 break
@@ -1125,6 +1238,33 @@ def open_nodes(state: AgentState) -> list[dict]:
         return []
 
 
+def override_nodes(state: AgentState) -> list[dict]:
+    """以降级方式闭合的节点。它们状态是 done，但**带着未兑现的承诺**，
+    因此同样是遗留缺口——不进 gaps 就等于在续作时把这笔账抹掉了。"""
+    try:
+        g = active_graph(state)
+        if g is None:
+            return []
+        out = []
+        for n in _nodes(g).values():
+            if n.get("closed_by") != "unverified_override":
+                continue
+            outcome = n.get("outcome") or {}
+            out.append({
+                "node": n.get("id", ""),
+                "title": n.get("title", ""),
+                "status": "done_unverified",
+                "residue": outcome.get("residue", ""),
+                "impact": outcome.get("impact", ""),
+                "exit": n.get("exit", {}),
+                "parent": n.get("parent", ""),
+            })
+        out.sort(key=lambda n: n.get("node", ""))
+        return out
+    except Exception:
+        return []
+
+
 def gap_lines(state: AgentState) -> list[str]:
     """未闭合节点渲染成 gaps 文本行。
 
@@ -1143,5 +1283,11 @@ def gap_lines(state: AgentState) -> list[str]:
             goal=_clip(n.get("goal"), 200) or "-",
             etype=exit_spec.get("evidence_type", "-"),
             expect=expect or "-",
+        ))
+    for n in override_nodes(state):
+        lines.append(t(
+            "graph.gaps.override_line",
+            node=n.get("node", "?"), title=n.get("title", ""),
+            residue=n.get("residue", ""), impact=n.get("impact", "") or "-",
         ))
     return lines

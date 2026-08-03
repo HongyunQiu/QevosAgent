@@ -200,6 +200,162 @@ class ExitEvidenceTests(unittest.TestCase):
                       st.meta["_graph"]["graphs"][0]["nodes"]["n1"]["side_effects"])
 
 
+class DowngradeCloseTests(unittest.TestCase):
+    """降级通过：给节点出口补上 run 级验收门早就有的第三态。
+
+    但降级产生的遗留会在后继工作里被放大、甚至成为关键阻塞，而那时当初的
+    上下文早已被压缩——所以遗留叙述是硬门，且必须常驻。
+    """
+
+    def _stuck(self):
+        st = _state()
+        _two_node_graph(st, expect=["never_written.txt"])
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        return st
+
+    def test_force_without_narrative_is_rejected(self):
+        st = self._stuck()
+        ok, msg = G.apply_op(st, {"op": "exit", "node": "n1", "force": True})
+        self.assertFalse(ok)
+        self.assertIn("residue", msg)
+        self.assertEqual(st.meta["_graph"]["graphs"][0]["nodes"]["n1"]["status"], "active")
+
+    def test_vague_narrative_is_rejected(self):
+        """"还有点小问题"这种写法等于没写，续作时毫无价值。"""
+        st = self._stuck()
+        for residue, impact in (("有点问题", "不影响"),
+                                ("无", "没有"),
+                                ("产物落在了别的目录里", "不影响"),      # 结论无依据
+                                ("n/a", "none")):
+            ok, _ = G.apply_op(st, {"op": "exit", "node": "n1", "force": True,
+                                    "residue": residue, "impact": impact})
+            self.assertFalse(ok, f"应被拒: {residue!r}/{impact!r}")
+
+    def test_dense_chinese_assessment_is_not_over_rejected(self):
+        """阈值按中文密度定：中文一个字顶英文好几个字符，
+        定高了会把"会影响 n2 的对比分析"这种完全站得住的评估误杀。"""
+        st = self._stuck()
+        ok, _ = G.apply_op(st, {
+            "op": "exit", "node": "n1", "force": True,
+            "residue": "第 3 节图表没渲染出来",
+            "impact": "会影响 n2 的对比分析",
+        })
+        self.assertTrue(ok)
+
+    def test_detailed_narrative_allows_the_close(self):
+        st = self._stuck()
+        ok, msg = G.apply_op(st, {
+            "op": "exit", "node": "n1", "force": True,
+            "residue": "报告生成了，但第 3 节图表渲染失败，那一节目前是空的",
+            "impact": "会影响 n2：n2 的对比分析要引用第 3 节的数据，届时会缺一块",
+        })
+        self.assertTrue(ok)
+        node = st.meta["_graph"]["graphs"][0]["nodes"]["n1"]
+        self.assertEqual(node["closed_by"], "unverified_override")
+        self.assertIn("第 3 节", node["outcome"]["residue"])
+        # 必须当场把"要不要重新规划"摆到模型面前
+        self.assertIn("plan_revise", msg)
+
+    def test_residue_is_pinned_in_the_projection(self):
+        """遗留必须扛过压缩——图是唯一能做到这点的结构化记忆。"""
+        st = self._stuck()
+        G.apply_op(st, {"op": "exit", "node": "n1", "force": True,
+                        "residue": "第 3 节图表缺失，report.md 那一节是空的",
+                        "impact": "会影响 n2 的对比分析，需要补数据源"})
+        proj = G.render(st)
+        self.assertIn("第 3 节图表缺失", proj)
+        self.assertIn("会影响 n2", proj)
+
+    def test_downgraded_nodes_reach_run_gaps(self):
+        """节点状态是 done，但承诺没兑现——不进 gaps 就等于把这笔账抹掉。"""
+        from agent.core.loop import RUN_OUTCOME_PARTIAL, _set_run_outcome
+        st = self._stuck()
+        G.apply_op(st, {"op": "exit", "node": "n1", "force": True,
+                        "residue": "第 3 节图表缺失，report.md 那一节是空的",
+                        "impact": "会影响 n2 的对比分析"})
+        rec = _set_run_outcome(st, RUN_OUTCOME_PARTIAL)
+        self.assertTrue(any("第 3 节图表缺失" in g for g in rec["gaps"]))
+        self.assertIn("n1", [g["node"] for g in rec["graph_gaps"]])
+
+    def test_downgrade_counts_as_unverified(self):
+        st = self._stuck()
+        G.apply_op(st, {"op": "exit", "node": "n1", "force": True,
+                        "residue": "产物落不到 expect 指定的位置，实际写到了别处",
+                        "impact": "不影响 n2，n2 读的是数据库不是这个文件"})
+        self.assertEqual(G.metrics(st)["unverified_streak"], 1)
+
+    def test_force_is_offered_when_the_check_blocks(self):
+        """模型得知道有这条路，否则只能反复重试或违心地 abandon。"""
+        st = self._stuck()
+        _ok, msg = G.apply_op(st, {"op": "exit", "node": "n1", "summary": "做完了"})
+        self.assertIn("force", msg)
+
+
+class RouteHintTests(unittest.TestCase):
+    """运行时不做条件求值，但把模型自己写下的退路在它撞墙那一刻还给它。"""
+
+    def _with_fallback(self):
+        st = _state()
+        G.create_graph(st, title="带退路", nodes=[
+            {"id": "n1", "title": "主方案", "goal": "走 A",
+             "exit": {"evidence_type": "artifact", "expect": ["nope.txt"]}},
+            {"id": "n2", "title": "退路方案", "goal": "走 B"},
+        ], edges=[{"from": "n0", "to": "n1", "kind": "then"},
+                  {"from": "n1", "to": "n2", "kind": "fallback"}])
+        return st
+
+    def test_abandon_surfaces_the_recorded_fallback(self):
+        st = self._with_fallback()
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        _ok, msg = G.apply_op(st, {"op": "abandon", "node": "n1", "reason": "不通"})
+        self.assertIn("n2", msg)
+        self.assertIn("退路方案", msg)
+
+    def test_cascade_never_kills_the_fallback_it_should_offer(self):
+        """退路在结构上是"被它兜底的那个节点"的子节点。级联若不区分边的种类，
+        废弃主方案时会连退路一起废掉——正好在最需要它的时刻掐死它。"""
+        st = self._with_fallback()
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        G.apply_op(st, {"op": "abandon", "node": "n1", "reason": "不通"})
+        self.assertEqual(st.meta["_graph"]["graphs"][0]["nodes"]["n2"]["status"], "planned")
+        self.assertTrue(G.apply_op(st, {"op": "enter", "node": "n2"})[0])
+
+    def test_then_downstream_still_cascades(self):
+        """依赖它的下游（then）该死还是要死，否则会留下孤儿节点。"""
+        st = _state()
+        G.create_graph(st, title="混合", nodes=[
+            {"id": "n1", "title": "主", "goal": "A"},
+            {"id": "n2", "title": "下游", "goal": "依赖 A"},
+            {"id": "n3", "title": "退路", "goal": "A 的替代"},
+        ], edges=[{"from": "n0", "to": "n1", "kind": "then"},
+                  {"from": "n1", "to": "n2", "kind": "then"},
+                  {"from": "n1", "to": "n3", "kind": "fallback"}])
+        G.apply_op(st, {"op": "abandon", "node": "n1", "reason": "不通"})
+        nodes = st.meta["_graph"]["graphs"][0]["nodes"]
+        self.assertEqual(nodes["n2"]["status"], "abandoned")   # then → 随之死
+        self.assertEqual(nodes["n3"]["status"], "planned")     # fallback → 活着
+
+    def test_blocked_exit_surfaces_the_fallback_too(self):
+        st = self._with_fallback()
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        _ok, msg = G.apply_op(st, {"op": "exit", "node": "n1"})
+        self.assertIn("n2", msg)
+
+    def test_no_fallback_no_noise(self):
+        st = _state()
+        _two_node_graph(st)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        _ok, msg = G.apply_op(st, {"op": "abandon", "node": "n1", "reason": "x"})
+        self.assertNotIn("退路", msg)
+
+    def test_cond_field_is_gone(self):
+        """留一个永不被读取的字段等于对模型撒谎。"""
+        st = _state()
+        g, _ = _two_node_graph(st)
+        for e in g["edges"]:
+            self.assertNotIn("cond", e)
+
+
 class GraphLifecycleTests(unittest.TestCase):
     def test_reaching_planned_frontier_does_not_close_graph(self):
         """局部前向规划下走到已规划末端是常态；自动关图会让紧接着的 extend 撞空。"""

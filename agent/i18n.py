@@ -596,6 +596,30 @@ _STRINGS: dict[str, dict[str, str]] = {
             "节点保持进行中，请先真正生成这些文件，再 exit。"
         ),
         "graph.op.exited":         "节点 {id} 已闭合（{closed_by}）。",
+        "graph.op.route_hint":     "图上你为它准备过退路：{routes}——要走的话用 enter 进入。",
+        "graph.op.force_available": (
+            "若你确认工作实际已完成、只是产物无法按 expect 落盘，可以降级闭合："
+            "在 exit 里加 force=true，并同时给出 residue（具体缺了什么，要能被别人核对）"
+            "与 impact（这个遗留会不会影响后续节点，为什么）。"
+        ),
+        "graph.op.force_needs_detail": (
+            "降级闭合被拒：force=true 时 residue 与 impact 都是必填，且必须具体。\n"
+            "  residue: 究竟缺了什么（当前缺失产物：{missing}）——写到别人能照着核对的程度，"
+            "不要写\"还有一点小问题\"\n"
+            "  impact:  这个遗留会不会影响后续节点？为什么？"
+            "即使结论是\"不影响\"，也要说明依据（例如\"n5 只用第 1 节数据，不碰缺失的第 3 节\"）\n"
+            "降级闭合产生的遗留会在后继工作里被放大，甚至成为关键阻塞，"
+            "而那时当初的上下文早已被压缩。这两句话就是留给那时的唯一线索。"
+        ),
+        "graph.op.force_followup": (
+            "⚠ 节点 {id} 以**降级方式**闭合，遗留已记入执行图并会常驻上下文：\n"
+            "  遗留：{residue}\n"
+            "  你的影响评估：{impact}\n"
+            "下游未闭合节点：{downstream}\n"
+            "现在请落实这个评估：如果该遗留会影响下游，**立即用 plan_revise 调整方案**"
+            "（补一个补救节点、改写受影响节点的 goal/exit、或换一条路），不要带着它往前走；"
+            "如果确认不影响，继续即可，无需额外动作。"
+        ),
         "graph.op.graph_completed": "执行图 {gid} 已标记为完成，不再注入图。",
         "graph.op.complete_pending": "还有未达终态的节点：{ids}。请先把它们 exit / abandon / block，再声明图完成。",
         "graph.op.single_node_only": "extend / fork 每次只能追加一个节点；要成批修改结构请用 plan_revise。",
@@ -614,6 +638,12 @@ _STRINGS: dict[str, dict[str, str]] = {
 
         "graph.closed_by.evidence_verified": "产物已核验",
         "graph.closed_by.self_certified":    "自证",
+        "graph.closed_by.unverified_override": "降级通过（产物未核验）",
+        "graph.proj.overrides": (
+            "降级闭合的遗留（这些节点标记为已完成，但**承诺未完全兑现**；"
+            "遗留会在后继工作里被放大，动到相关部分前先回看这里）：\n{items}"
+        ),
+        "graph.gaps.override_line": "[图 {node}「{title}」/降级通过] 遗留: {residue}；影响评估: {impact}",
 
         "graph.proj.header":  "## 执行图 {gid}「{title}」· 节点 {done}/{total} 已闭合",
         "graph.proj.current": "**当前节点 {id}「{title}」** — 第 {entered} 轮进入，已用 {used} 轮（自估 {budget}）",
@@ -635,7 +665,9 @@ _STRINGS: dict[str, dict[str, str]] = {
             "提示：可在工具调用的同一个 JSON 里附带 graph_op 推进本图（零额外迭代）：\n"
             "enter{node} / exit{node,summary,side_effects,gaps} / extend{after,node} / "
             "fork{from,node} / abandon{node,reason,side_effects} / block{node,reason} / complete。\n"
-            "extend、fork 每次限一个节点；批量改结构用 plan_revise。exit 与 abandon 请如实申报 side_effects。"
+            "extend、fork 每次限一个节点；批量改结构用 plan_revise。exit 与 abandon 请如实申报 side_effects。\n"
+            "产物核验不过但工作确已完成时，可 exit 加 force=true 降级闭合，"
+            "此时必须同时给出 residue（缺什么）与 impact（是否影响后续、为什么）。"
         ),
         "graph.stall.hint_stall": (
             "[执行图] 已连续 {n} 轮没有任何节点闭合（当前节点 {node}）。"
@@ -1258,6 +1290,30 @@ Before calling action='done', you MUST complete the following two steps:
             "The node stays in progress; actually produce these files before exiting."
         ),
         "graph.op.exited":         "Node {id} closed ({closed_by}).",
+        "graph.op.route_hint":     "You planned fallbacks for it on the graph: {routes} — enter one to take it.",
+        "graph.op.force_available": (
+            "If the work really is done and only the artifact could not be written where expect says, "
+            "you may close it as a downgrade: add force=true to exit, together with residue (exactly what is "
+            "missing, in checkable terms) and impact (whether this affects later nodes, and why)."
+        ),
+        "graph.op.force_needs_detail": (
+            "Downgrade close rejected: with force=true, both residue and impact are required and must be specific.\n"
+            "  residue: what exactly is missing (currently absent: {missing}) — detailed enough for someone "
+            "else to check against; not \"a few small issues left\"\n"
+            "  impact:  will this affect later nodes? why? Even if the answer is \"no\", give the reasoning "
+            "(e.g. \"n5 only uses section 1 and never touches the missing section 3\")\n"
+            "Residue from a downgrade close gets amplified by later work and can become the blocking issue — "
+            "by then the original context is long compressed. These two sentences are the only trace left."
+        ),
+        "graph.op.force_followup": (
+            "⚠ Node {id} was closed as a **downgrade**. The residue is recorded on the graph and stays in context:\n"
+            "  Residue: {residue}\n"
+            "  Your impact assessment: {impact}\n"
+            "Open downstream nodes: {downstream}\n"
+            "Now act on that assessment: if the residue does affect downstream work, **use plan_revise right now** "
+            "(add a remediation node, rewrite the affected node's goal/exit, or take another route) — do not carry it "
+            "forward silently. If you confirmed it does not, simply continue."
+        ),
         "graph.op.graph_completed": "Execution graph {gid} marked complete; it will no longer be injected.",
         "graph.op.complete_pending": "Some nodes are not terminal yet: {ids}. Exit / abandon / block them before declaring the graph complete.",
         "graph.op.single_node_only": "extend / fork may append only one node at a time; use plan_revise for bulk structural changes.",
@@ -1276,6 +1332,12 @@ Before calling action='done', you MUST complete the following two steps:
 
         "graph.closed_by.evidence_verified": "artifacts verified",
         "graph.closed_by.self_certified":    "self-certified",
+        "graph.closed_by.unverified_override": "downgraded (artifacts unverified)",
+        "graph.proj.overrides": (
+            "Residue from downgraded closes (these nodes are marked done but their promise was **not fully kept**; "
+            "such residue gets amplified by later work — re-read this before touching the related parts):\n{items}"
+        ),
+        "graph.gaps.override_line": "[graph {node} \"{title}\"/downgraded] residue: {residue}; impact: {impact}",
 
         "graph.proj.header":  "## Execution graph {gid} \"{title}\" · {done}/{total} nodes closed",
         "graph.proj.current": "**Current node {id} \"{title}\"** — entered at iteration {entered}, {used} iterations spent (self-estimated {budget})",
@@ -1298,7 +1360,9 @@ Before calling action='done', you MUST complete the following two steps:
             "Note: you may advance this graph by attaching a `graph_op` field to the same JSON as a normal tool call (no extra iteration):\n"
             "enter{node} / exit{node,summary,side_effects,gaps} / extend{after,node} / "
             "fork{from,node} / abandon{node,reason,side_effects} / block{node,reason} / complete.\n"
-            "extend and fork take one node at a time; use plan_revise for bulk changes. Report side_effects truthfully on exit and abandon."
+            "extend and fork take one node at a time; use plan_revise for bulk changes. Report side_effects truthfully on exit and abandon.\n"
+            "If artifact verification fails but the work really is done, exit with force=true to downgrade-close — "
+            "you must then also give residue (what is missing) and impact (whether it affects later nodes, and why)."
         ),
         "graph.stall.hint_stall": (
             "[Execution graph] No node has closed for {n} consecutive iterations (current node {node}). "

@@ -344,7 +344,9 @@ def _set_run_outcome(
 
     # 图上未闭合的节点是迄今最好的结构化 gaps：带标题、目标、出口契约、父节点，
     # 比 remaining_gaps 的自由文本强得多，而且零成本产出。
-    graph_gaps = _graph.open_nodes(state)
+    # 降级闭合的节点状态是 done，但带着未兑现的承诺——不并进来就等于在续作时
+    # 把这笔账抹掉，而这类遗留恰恰最容易在后继工作里被放大。
+    graph_gaps = _graph.open_nodes(state) + _graph.override_nodes(state)
     for line in _graph.gap_lines(state):
         if line not in gaps:
             gaps.append(line)
