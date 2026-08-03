@@ -898,8 +898,120 @@ def summary(state: AgentState) -> dict:
         return {}
 
 
+# ── 收敛检测 ──────────────────────────────────────────────────────────────────
+# 现有防呆全是签名式的（同工具同参数重复、逐字相同输出、连续格式错误），抓不住
+# 最贵的那类失败：每轮都在调不同工具、写不同文件，四十轮下来一个节点都没关掉。
+# 下面四个指标全是 graph.json 上的算术，零 LLM 调用。
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except Exception:
+        return default
+
+
+def _closure_order(g: dict) -> list[dict]:
+    """已闭合节点按闭合轮次排序（根节点不计——它是隐式闭合的）。"""
+    closed = [
+        n for n in _nodes(g).values()
+        if n.get("status") == "done" and n.get("id") != ROOT_ID
+        and isinstance(n.get("iter_range"), list) and n["iter_range"][1] is not None
+    ]
+    closed.sort(key=lambda n: n["iter_range"][1])
+    return closed
+
+
+def metrics(state: AgentState) -> dict:
+    """计算收敛指标。没有活动图时返回 {}。异常一律吞掉，绝不影响主循环。"""
+    try:
+        g = active_graph(state)
+        if g is None:
+            return {}
+        nodes = [n for n in _nodes(g).values() if n.get("id") != ROOT_ID]
+        if not nodes:
+            return {}
+
+        now = _iter(state)
+        closed = _closure_order(g)
+        # 废弃不算推进：它省下了力气，但没有把目标往前推。真正的进展是节点闭合。
+        last_progress = closed[-1]["iter_range"][1] if closed else int(g.get("created_iter") or 0)
+        # 用户中途给了新指导（续跑）→ 停滞时钟从那一刻重新起算。否则一次 L3 求助
+        # 之后，stall_iters 仍是那个大数，用户刚答完就会被立刻再问一遍。
+        baseline = state.meta.get("_graph_stall_baseline")
+        if isinstance(baseline, int):
+            last_progress = max(int(last_progress), baseline)
+
+        done_count = len(closed)
+        open_count = sum(1 for n in nodes if n.get("status") in _OPEN_STATUS)
+
+        # 连续自证闭合：artifact 类出口能实证，其余三类只能自证。模型可以靠连关
+        # 一串"我观察到了 X"把闭合率刷绿——这里只统计、只当软信号，不禁止。
+        unverified = 0
+        for n in reversed(closed):
+            if n.get("closed_by") == "self_certified":
+                unverified += 1
+            else:
+                break
+
+        active = _active_node(g)
+        return {
+            "gid": g.get("gid", ""),
+            "stall_iters": max(0, now - int(last_progress)),
+            "node_revisits": max([int(n.get("visits") or 0) for n in nodes] or [0]),
+            "revisit_node": max(nodes, key=lambda n: int(n.get("visits") or 0)).get("id", ""),
+            "open_fanout": round(open_count / max(1, done_count), 2),
+            "open_count": open_count,
+            "done_count": done_count,
+            "unverified_streak": unverified,
+            "active_node": (active or {}).get("id", ""),
+            "active_title": (active or {}).get("title", ""),
+        }
+    except Exception:
+        return {}
+
+
+def stall_level(m: dict) -> tuple[int, str]:
+    """把指标翻译成升级层级 (0..2, 触发原因)。L3 由 loop 按 L2 之后的持续停滞判定。
+
+    只给建议，不做动作——动作全部由 loop 走既有的升级梯，避免两套机制打架。
+    """
+    if not m:
+        return 0, ""
+    stall = int(m.get("stall_iters") or 0)
+    revisits = int(m.get("node_revisits") or 0)
+    fanout = float(m.get("open_fanout") or 0)
+    unverified = int(m.get("unverified_streak") or 0)
+
+    if (stall >= _env_int("GRAPH_STALL_L2", 40)
+            or revisits >= _env_int("GRAPH_REVISIT_L2", 5)
+            or fanout >= float(_env_int("GRAPH_FANOUT_L2", 5))):
+        if stall >= _env_int("GRAPH_STALL_L2", 40):
+            return 2, "stall"
+        return 2, "revisit" if revisits >= _env_int("GRAPH_REVISIT_L2", 5) else "fanout"
+
+    if stall >= _env_int("GRAPH_STALL_L1", 20):
+        return 1, "stall"
+    if revisits >= _env_int("GRAPH_REVISIT_L1", 3):
+        return 1, "revisit"
+    if unverified >= _env_int("GRAPH_UNVERIFIED_L1", 5):
+        return 1, "unverified"
+    return 0, ""
+
+
+def stall_hint(m: dict, reason: str) -> str:
+    """L1 软提示文字。措辞要给出路，不能只报警。"""
+    node = m.get("active_node") or "-"
+    if reason == "stall":
+        return t("graph.stall.hint_stall", n=m.get("stall_iters", 0), node=node)
+    if reason == "revisit":
+        return t("graph.stall.hint_revisit", node=m.get("revisit_node", node), n=m.get("node_revisits", 0))
+    if reason == "fanout":
+        return t("graph.stall.hint_fanout", open=m.get("open_count", 0), done=m.get("done_count", 0))
+    return t("graph.stall.hint_unverified", n=m.get("unverified_streak", 0))
+
+
 def open_nodes(state: AgentState) -> list[dict]:
-    """未达终态的节点，供 run 收尾时并入 run_outcome.gaps（批 3 消费）。"""
+    """未达终态的节点，供 run 收尾时并入 run_outcome.gaps。"""
     try:
         g = active_graph(state)
         if g is None:
@@ -912,6 +1024,7 @@ def open_nodes(state: AgentState) -> list[dict]:
                 "node": node.get("id", ""),
                 "title": node.get("title", ""),
                 "goal": node.get("goal", ""),
+                "status": node.get("status", ""),
                 "exit": node.get("exit", {}),
                 "parent": node.get("parent", ""),
             })
@@ -919,3 +1032,25 @@ def open_nodes(state: AgentState) -> list[dict]:
         return out
     except Exception:
         return []
+
+
+def gap_lines(state: AgentState) -> list[str]:
+    """未闭合节点渲染成 gaps 文本行。
+
+    run_outcome["gaps"] 的既有契约是 list[str]，消费方（自动续作）按字符串处理，
+    这里不改契约、只把结构化信息压进一行；结构化原文另放 graph_gaps。
+    """
+    lines: list[str] = []
+    for n in open_nodes(state):
+        exit_spec = n.get("exit") or {}
+        expect = ", ".join(exit_spec.get("expect") or [])
+        lines.append(t(
+            "graph.gaps.line",
+            node=n.get("node", "?"),
+            title=n.get("title", ""),
+            status=n.get("status", ""),
+            goal=_clip(n.get("goal"), 200) or "-",
+            etype=exit_spec.get("evidence_type", "-"),
+            expect=expect or "-",
+        ))
+    return lines

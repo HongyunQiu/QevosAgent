@@ -342,6 +342,13 @@ def _set_run_outcome(
     if isinstance(src, dict) and isinstance(src.get("remaining_gaps"), list):
         gaps = [str(g).strip() for g in src["remaining_gaps"] if str(g).strip()]
 
+    # 图上未闭合的节点是迄今最好的结构化 gaps：带标题、目标、出口契约、父节点，
+    # 比 remaining_gaps 的自由文本强得多，而且零成本产出。
+    graph_gaps = _graph.open_nodes(state)
+    for line in _graph.gap_lines(state):
+        if line not in gaps:
+            gaps.append(line)
+
     record = {
         "outcome": outcome,
         "reason": reason or outcome,
@@ -352,6 +359,10 @@ def _set_run_outcome(
     }
     if error:
         record["error"] = str(error)[:500]
+    # 结构化原文另存一份：gaps 保持 list[str] 的既有契约不动，
+    # 想按节点消费（重建图、逐节点续作）的下游读这里。
+    if graph_gaps:
+        record["graph_gaps"] = graph_gaps
 
     state.meta["run_outcome"] = record
     return record
@@ -687,6 +698,11 @@ def run(
         state.meta.pop("_need_user_help", None)
         state.meta.pop("_loop_advisor_pending", None)
         state.meta.pop("_advisor_tried_for_loop", None)
+        # 执行图的停滞梯子同理：用户刚给完指导，不能拿着旧的停滞计数把他再问一遍。
+        # 图本身（_graph）必须保留——重置的只是"卡了多久"这个判断，不是地图。
+        state.meta.pop("_graph_l1_at", None)
+        state.meta.pop("_graph_l2_at", None)
+        state.meta["_graph_stall_baseline"] = int(getattr(state, "iteration", 0) or 0)
         _checkpoint_state(state)
 
     _nostop_mode = state.meta.get("nostop", False)
@@ -780,6 +796,12 @@ def run(
             # 遍历已注册 watcher，按 interval 触发执行，输出注入 short_term。
             # 单条注入硬上限 500 字符，超限自动落 artifacts/ 降级为路径。
             _poll_watchers(state, hooks)
+
+            # ── 执行图收敛检测 ─────────────────────────────────────────────────
+            # 现有防呆全是签名式的，抓不住"每轮都在换工具、但一个节点都没关掉"
+            # 这类最贵的失败。图提供了不依赖迭代数的进展度量，在这里接进既有升级梯。
+            if _graph_convergence_check(state, llm, hooks):
+                break   # L3：已暂停求助用户，状态与终态已落盘
 
             # ── wait_for_job 轻量 yield 模式 ──────────────────────────────────────
             # agent 调用 wait_for_job 后进入此分支：跳过 LLM 调用，仅等待 job 完成，
@@ -1086,6 +1108,23 @@ def run(
                             state,
                             {"role": "user", "content": f"{t('graph.feedback_prefix')} {_g_text}"},
                         )
+
+                # 图上还有没闭合的节点就结束：提醒一次，不硬拦——模型可能合理地
+                # 认定剩余节点已无必要。但那些节点会原样进 gaps，所以值得它先交代清楚。
+                _open = _graph.open_nodes(state)
+                if _open and not state.meta.get("_graph_done_hint"):
+                    state.meta["_graph_done_hint"] = True
+                    _gsum = _graph.summary(state)
+                    _append_short_term(state, {"role": "user", "content": t(
+                        "graph.done_open_nodes",
+                        gid=_gsum.get("gid", "?"), n=len(_open),
+                        ids=", ".join(f"{o['node']}「{o['title']}」" for o in _open[:6]),
+                    )})
+                    if hooks.on_error:
+                        hooks.on_error(f"[执行图] done 时仍有 {len(_open)} 个节点未闭合，已提醒一次")
+                    _checkpoint_state(state)
+                    state.iteration += 1
+                    continue
 
                 # ── 验收门 1：完成报告 ────────────────────────────────────────
                 # nostop 模式：人在回路，人就是质量门。
@@ -1484,6 +1523,82 @@ def run(
 
 
 # ── 内部辅助 ──────────────────────────────────────────────────────────────────
+
+
+def _graph_convergence_check(state: "AgentState", llm, hooks: Optional["AgentHooks"] = None) -> bool:
+    """执行图收敛检测 + 升级梯。返回 True 表示已暂停求助用户，主循环应退出。
+
+    梯子沿用签名式循环那一条（软提示 → advisor → ask_user），只是换了触发源：
+    那条抓的是"反复做同一件事"，这条抓的是"一直在做不同的事却什么都没完成"。
+
+    任何异常都被吞掉——收敛检测是辅助设施，绝不能因为它自己出错而打断一次运行。
+    """
+    try:
+        m = _graph.metrics(state)
+        if not m:
+            return False
+        level, reason = _graph.stall_level(m)
+        now = int(getattr(state, "iteration", 0) or 0)
+
+        if level == 0:
+            # 恢复推进 → 清空梯子状态，下次停滞重新从 L1 起步
+            state.meta.pop("_graph_l1_at", None)
+            state.meta.pop("_graph_l2_at", None)
+            return False
+
+        # ── L2：advisor 介入（带图上下文）──────────────────────────────────
+        if level >= 2:
+            _l2_at = state.meta.get("_graph_l2_at")
+            if _l2_at is None:
+                _advisor_sys = state.meta.get("_advisor_system", "")
+                state.meta["_graph_l2_at"] = now   # 先记账再调用，失败也不重复触发
+                if hooks and hooks.on_error:
+                    hooks.on_error(t(
+                        "graph.stall.l2_console",
+                        reason=reason, stall=m.get("stall_iters", 0),
+                        revisits=m.get("node_revisits", 0), fanout=m.get("open_fanout", 0),
+                    ))
+                if _advisor_sys:
+                    _advice = run_advisor(state, llm, _advisor_sys, trigger_reason="graph_stall")
+                    if _advice:
+                        inject_advisor_advice(state, _advice, "graph_stall")
+                        if hooks and hooks.on_advisor:
+                            hooks.on_advisor("graph_stall", _advice)
+                _checkpoint_state(state)
+                return False
+
+            # ── L3：advisor 之后仍然停滞 → 暂停求助用户 ────────────────────
+            _extra = _graph._env_int("GRAPH_STALL_L3_EXTRA", 20)
+            if now - int(_l2_at) >= _extra:
+                state.meta["awaiting_input"] = t(
+                    "graph.stall.l3_question",
+                    gid=m.get("gid", "?"), stall=m.get("stall_iters", 0),
+                    node=m.get("active_node") or "-", title=m.get("active_title", ""),
+                    open=m.get("open_count", 0),
+                )
+                state.meta["paused"] = True
+                # 停滞暂停必须落终态：退出处的 else 只覆盖 exhausted / user_stopped，
+                # ask_user 暂停直接 break，自动续作层原本完全看不见这种结束方式。
+                _set_run_outcome(state, RUN_OUTCOME_BLOCKED, reason="graph_stall")
+                if hooks and hooks.on_error:
+                    hooks.on_error("[执行图停滞→用户求助] 自动暂停，等待用户指导")
+                _checkpoint_state(state, status="paused")
+                return True
+            return False
+
+        # ── L1：软提示，按间隔重发，避免每轮刷屏 ───────────────────────────
+        _l1_at = state.meta.get("_graph_l1_at")
+        _gap = _graph._env_int("GRAPH_STALL_L1_REPEAT", 10)
+        if _l1_at is not None and now - int(_l1_at) < _gap:
+            return False
+        state.meta["_graph_l1_at"] = now
+        _append_short_term(state, {"role": "user", "content": _graph.stall_hint(m, reason)})
+        if hooks and hooks.on_thought:
+            hooks.on_thought(f"[执行图] 停滞提示（{reason}）：stall={m.get('stall_iters')}")
+        _checkpoint_state(state)
+        return False
+    except Exception:
+        return False
 
 
 def _poll_watchers(state: "AgentState", hooks: Optional["AgentHooks"] = None) -> None:

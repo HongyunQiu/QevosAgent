@@ -637,6 +637,45 @@ _STRINGS: dict[str, dict[str, str]] = {
             "fork{from,node} / abandon{node,reason,side_effects} / block{node,reason} / complete。\n"
             "extend、fork 每次限一个节点；批量改结构用 plan_revise。exit 与 abandon 请如实申报 side_effects。"
         ),
+        "graph.stall.hint_stall": (
+            "[执行图] 已连续 {n} 轮没有任何节点闭合（当前节点 {node}）。"
+            "三条出路，挑一条走：① 拿出出口证据把它 exit 掉；"
+            "② 判定此路不通，abandon 它并如实申报 side_effects，再 fork 换一条路；"
+            "③ 它太大了，用 extend 拆成更小的节点分步闭合。"
+        ),
+        "graph.stall.hint_revisit": (
+            "[执行图] 节点 {node} 已被反复进入 {n} 次。"
+            "反复回到同一个节点通常意味着它的目标或出口定得不对——"
+            "考虑用 plan_revise 改写它的 goal/exit，或者拆小它，而不是再试一次。"
+        ),
+        "graph.stall.hint_fanout": (
+            "[执行图] 当前有 {open} 个未闭合节点，却只闭合了 {done} 个——"
+            "计划在不断变宽而没有变深。先收敛：挑一个节点做到底并闭合，"
+            "或把确定不做的节点 abandon 掉。"
+        ),
+        "graph.stall.hint_unverified": (
+            "[执行图] 最近连续 {n} 个节点都以不可实证的证据闭合（observation/none）。"
+            "这不禁止，但请自查：这些节点是否真的产出了可核验的东西？"
+            "能落盘的产物请写进 exit.expect，让闭合可以被实证。"
+        ),
+        "graph.stall.l2_console": "[执行图停滞] {reason}：stall={stall} 重入={revisits} 扇出={fanout}，advisor 介入",
+        "graph.stall.l3_question": (
+            "我在按执行图 {gid} 推进时陷入了停滞：已连续 {stall} 轮没有任何节点闭合，"
+            "advisor 已介入但仍未突破。\n"
+            "当前节点：{node}「{title}」\n"
+            "未闭合节点还有 {open} 个。\n\n"
+            "请问您有什么建议？例如：指出更可行的分解方式、告知某个节点可以跳过、"
+            "或者提供绕过当前障碍的思路。"
+        ),
+        "graph.gaps.line": "[图 {node}「{title}」/{status}] {goal}（出口: {etype} — {expect}）",
+        "graph.done_open_nodes": (
+            "[执行图] 你正要结束任务，但图 {gid} 上还有 {n} 个节点没有闭合：{ids}。\n"
+            "如果它们确实已经不必做了，请先把它们 abandon 或 block 掉并写明原因，"
+            "再重新 done——未闭合的节点会原样带进本次运行的遗留缺口，"
+            "成为后续续作的输入，写不清楚会让后面的人（或下一次运行）白走一遍。\n"
+            "如果它们只是被你忘了，现在正是补上的时候。"
+        ),
+        "advisor.ctx.graph": "## 执行图（结构化进展骨架）\n{graph}",
         "graph.proj.truncated": "（图较大，投影已截断；完整图见 run 目录的 graph.json）",
         "graph.proj.completed_line": "## 执行图 {gid}「{title}」已完成，不再遵循（完整记录见 graph.json）。",
         "graph.proj.abandoned_line": "## 执行图 {gid}「{title}」已放弃，不再遵循（完整记录见 graph.json）。",
@@ -1255,6 +1294,45 @@ Before calling action='done', you MUST complete the following two steps:
             "fork{from,node} / abandon{node,reason,side_effects} / block{node,reason} / complete.\n"
             "extend and fork take one node at a time; use plan_revise for bulk changes. Report side_effects truthfully on exit and abandon."
         ),
+        "graph.stall.hint_stall": (
+            "[Execution graph] No node has closed for {n} consecutive iterations (current node {node}). "
+            "Pick one of three ways out: (1) produce the exit evidence and exit it; "
+            "(2) decide the route is dead — abandon it, report side_effects honestly, and fork another route; "
+            "(3) it is too big — use extend to split it into smaller nodes you can close one at a time."
+        ),
+        "graph.stall.hint_revisit": (
+            "[Execution graph] Node {node} has been entered {n} times. "
+            "Repeatedly returning to the same node usually means its goal or exit contract is wrong — "
+            "consider rewriting its goal/exit with plan_revise, or splitting it, rather than trying again."
+        ),
+        "graph.stall.hint_fanout": (
+            "[Execution graph] {open} nodes are open but only {done} have closed — "
+            "the plan keeps widening without deepening. Converge first: take one node all the way to a close, "
+            "or abandon the nodes you have decided not to do."
+        ),
+        "graph.stall.hint_unverified": (
+            "[Execution graph] The last {n} nodes all closed on unverifiable evidence (observation/none). "
+            "This is allowed, but check yourself: did those nodes really produce something checkable? "
+            "When there is a durable artifact, put it in exit.expect so the closure can be verified."
+        ),
+        "graph.stall.l2_console": "[Graph stall] {reason}: stall={stall} revisits={revisits} fanout={fanout} — advisor engaged",
+        "graph.stall.l3_question": (
+            "I have stalled while working through execution graph {gid}: no node has closed for {stall} "
+            "consecutive iterations, and the advisor stepped in without breaking through.\n"
+            "Current node: {node} \"{title}\"\n"
+            "{open} node(s) still open.\n\n"
+            "Do you have any guidance? For example: a better decomposition, permission to skip a node, "
+            "or a way around the current obstacle."
+        ),
+        "graph.gaps.line": "[graph {node} \"{title}\"/{status}] {goal} (exit: {etype} — {expect})",
+        "graph.done_open_nodes": (
+            "[Execution graph] You are about to finish, but graph {gid} still has {n} unclosed node(s): {ids}.\n"
+            "If they are genuinely no longer needed, abandon or block them with a reason first, then call done again — "
+            "unclosed nodes are carried out verbatim as this run's remaining gaps and become the input for any "
+            "follow-up work, so vague ones make the next run repeat your steps.\n"
+            "If you simply forgot them, now is the time to pick them up."
+        ),
+        "advisor.ctx.graph": "## Execution graph (structured progress skeleton)\n{graph}",
         "graph.proj.truncated": "(Graph is large — projection truncated; see graph.json in the run directory for the full map.)",
         "graph.proj.completed_line": "## Execution graph {gid} \"{title}\" is complete and no longer being followed (full record in graph.json).",
         "graph.proj.abandoned_line": "## Execution graph {gid} \"{title}\" was abandoned and is no longer being followed (full record in graph.json).",

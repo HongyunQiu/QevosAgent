@@ -301,6 +301,142 @@ class ContextInjectionTests(unittest.TestCase):
         self.assertEqual(act.tool, "shell")
 
 
+class ConvergenceMetricTests(unittest.TestCase):
+    """去掉迭代上限后，图本身就是替代守卫——这些指标是它的全部依据。"""
+
+    def _running_graph(self, iteration=10):
+        st = _state(iteration)
+        _two_node_graph(st)
+        return st
+
+    def test_no_graph_means_no_metrics(self):
+        self.assertEqual(G.metrics(_state()), {})
+
+    def test_stall_counts_from_last_closure_not_from_activity(self):
+        """抓的就是"每轮都在换工具、却一个节点都没关掉"——活跃度不算推进。"""
+        st = self._running_graph()
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        st.iteration = 18
+        G.apply_op(st, {"op": "exit", "node": "n1", "summary": "ok"})
+        st.iteration = 60
+        self.assertEqual(G.metrics(st)["stall_iters"], 42)
+
+    def test_abandoning_does_not_count_as_progress(self):
+        """废弃省了力气但没把目标往前推；否则反复废弃就能把停滞计数刷掉。"""
+        st = self._running_graph(iteration=10)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        st.iteration = 40
+        G.apply_op(st, {"op": "abandon", "node": "n1", "reason": "不通"})
+        # 从建图那一刻起算，废弃没有把它清零
+        self.assertEqual(G.metrics(st)["stall_iters"], 30)
+        # 而真正闭合一个节点会清零（n2 是 n1 的下游、已被级联废弃，
+        # 所以换路必须 fork 一个新节点——这正是逻辑回溯的走法）
+        G.apply_op(st, {"op": "fork", "from": G.ROOT_ID,
+                        "node": {"title": "换条路", "goal": "走 B 方案"}})
+        G.apply_op(st, {"op": "enter", "node": "n3"})
+        G.apply_op(st, {"op": "exit", "node": "n3", "summary": "真做完了"})
+        self.assertEqual(G.metrics(st)["stall_iters"], 0)
+
+    def test_revisits_catch_structural_loops(self):
+        """每次用的工具都不同，签名式循环检测完全看不见，只有图看得见。"""
+        st = self._running_graph()
+        for _ in range(4):
+            G.apply_op(st, {"op": "enter", "node": "n1"})
+            G.apply_op(st, {"op": "exit", "node": "n1", "summary": "又试了一次"})
+        m = G.metrics(st)
+        self.assertEqual(m["node_revisits"], 4)
+        self.assertEqual(m["revisit_node"], "n1")
+        self.assertEqual(G.stall_level(m)[1], "revisit")
+
+    def test_unverified_streak_counts_trailing_self_certified(self):
+        st = self._running_graph()
+        for nid in ("n1", "n2"):
+            G.apply_op(st, {"op": "enter", "node": nid})
+            G.apply_op(st, {"op": "exit", "node": nid, "summary": "我观察到了"})
+        self.assertEqual(G.metrics(st)["unverified_streak"], 2)
+
+    def test_fanout_flags_a_plan_that_only_widens(self):
+        st = _state()
+        G.create_graph(st, title="只长叶子", nodes=[
+            {"title": f"步骤{i}", "goal": "x"} for i in range(8)
+        ])
+        m = G.metrics(st)
+        self.assertGreaterEqual(m["open_fanout"], 5)
+        self.assertEqual(G.stall_level(m), (2, "fanout"))
+
+    def test_levels_escalate_with_stall(self):
+        st = self._running_graph()
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        for iteration, expected in ((15, 0), (35, 1), (60, 2)):
+            st.iteration = iteration
+            self.assertEqual(G.stall_level(G.metrics(st))[0], expected, f"iter={iteration}")
+
+    def test_user_guidance_restarts_the_stall_clock(self):
+        """L3 求助之后用户答了话，不能拿着旧的停滞计数把他立刻再问一遍。"""
+        st = self._running_graph()
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        st.iteration = 80
+        self.assertEqual(G.stall_level(G.metrics(st))[0], 2)
+        st.meta["_graph_stall_baseline"] = 80        # 续跑时 loop 打的基线
+        self.assertEqual(G.metrics(st)["stall_iters"], 0)
+        self.assertEqual(G.stall_level(G.metrics(st))[0], 0)
+
+    def test_hints_are_actionable_not_just_alarms(self):
+        st = self._running_graph()
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        st.iteration = 35
+        hint = G.stall_hint(G.metrics(st), "stall")
+        for way_out in ("exit", "abandon", "extend"):
+            self.assertIn(way_out, hint)
+
+
+class GapHandoffTests(unittest.TestCase):
+    def test_open_nodes_flow_into_run_outcome_gaps(self):
+        """未闭合节点是迄今最好的结构化 gaps，自动续作层直接消费。"""
+        from agent.core.loop import RUN_OUTCOME_EXHAUSTED, _set_run_outcome
+        st = _state()
+        _two_node_graph(st, expect=["out.txt"])
+        rec = _set_run_outcome(st, RUN_OUTCOME_EXHAUSTED, reason="iteration_budget_exhausted")
+        self.assertTrue(any("n1" in g and "第一步" in g for g in rec["gaps"]))
+        self.assertEqual([g["node"] for g in rec["graph_gaps"]], ["n1", "n2"])
+        self.assertEqual(rec["graph_gaps"][0]["exit"]["expect"], ["out.txt"])
+
+    def test_gaps_stay_a_list_of_strings(self):
+        """既有契约是 list[str]，消费方按字符串处理，不能被结构化数据打破。"""
+        from agent.core.loop import RUN_OUTCOME_PARTIAL, _set_run_outcome
+        st = _state()
+        _two_node_graph(st)
+        st.meta["completion_report"] = {"remaining_gaps": ["原有的自由文本缺口"]}
+        rec = _set_run_outcome(st, RUN_OUTCOME_PARTIAL)
+        self.assertTrue(all(isinstance(g, str) for g in rec["gaps"]))
+        self.assertIn("原有的自由文本缺口", rec["gaps"])
+
+    def test_no_graph_leaves_outcome_untouched(self):
+        from agent.core.loop import RUN_OUTCOME_COMPLETED, _set_run_outcome
+        st = _state()
+        rec = _set_run_outcome(st, RUN_OUTCOME_COMPLETED)
+        self.assertEqual(rec["gaps"], [])
+        self.assertNotIn("graph_gaps", rec)
+
+
+class AdvisorContextTests(unittest.TestCase):
+    def test_advisor_sees_the_graph(self):
+        """advisor 原本只读得到散文，看不出"在两个节点间来回"这类结构性停滞。"""
+        from agent.core.advisor import _build_advisor_context
+        st = _state()
+        _two_node_graph(st)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        ctx = _build_advisor_context(st)
+        # 断言用语言中立的内容：本仓库 zh/en 双语，LANG 由环境决定
+        self.assertIn("第一步", ctx)          # 节点标题（用户数据，不翻译）
+        self.assertIn("graph_op", ctx)        # 投影里的协议提示，两种语言都有
+        self.assertIn("n1", ctx)
+
+    def test_advisor_context_unchanged_without_a_graph(self):
+        from agent.core.advisor import _build_advisor_context
+        self.assertNotIn("graph_op", _build_advisor_context(_state()))
+
+
 class RobustnessTests(unittest.TestCase):
     def test_garbage_ops_never_raise(self):
         st = _state()
