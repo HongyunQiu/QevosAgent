@@ -1,8 +1,15 @@
-# 执行图（Execution Graph）设计
+# 执行图（Execution Graph）
 
 这份文档描述 `QevosAgent` 的**执行图**机制：它的定位、数据模型、生命周期、在主循环中的接入点、上下文投影规则、迭代预算策略、收敛检测与升级梯，以及 dashboard 的可视化。
 
+> **状态**：已实现（四批全部落地）。本文描述的是**当前代码的实际行为**，不是待办计划。
+> 与首版设计稿的偏离都已合并进正文，历史差异见 §14。
+
 > 相关文档：验收与终态见 [`acceptance-flow.md`](./acceptance-flow.md)，上下文压缩与 handoff 见 `agent/core/compression.py`，双语要求见 [`i18n-guide.md`](./i18n-guide.md)。
+>
+> 代码入口：`agent/core/graph.py`（数据模型 / 状态机 / 投影 / 收敛指标）、
+> `agent/core/loop.py`（接入点）、`agent/tools/standard.py`（`plan_*` 工具）、
+> 回归用例 `test/tests_execution_graph.py`。
 
 ---
 
@@ -68,10 +75,14 @@ closed_by: "implicit"
 | status | 含义 | 投影行为 |
 |--------|------|---------|
 | `active` | 当前正在遵循 | 完整投影（见 §5） |
-| `completed` | 所有节点达终态且模型声明完成 | 收缩为一行 |
-| `abandoned` | 模型认定此图不适用 | 收缩为一行 + 放弃理由 |
+| `completed` | 所有节点达终态**且**模型显式声明完成（`{"op":"complete"}`） | 收缩为一行 |
+| `abandoned` | 模型认定此图不适用（`plan_abandon`），或被新图取代 | 收缩为一行 + 放弃理由 |
 
 非 `active` 时投影收缩，但 `graph.json` **全量保留**——这是最终那张地图的组成部分。
+
+> **完成必须显式声明，不能"所有节点终态就自动完成"。** 这条踩过：局部前向规划下，
+> 走到已规划节点的末端是**常态而非终点**——模型通常正要 `extend` 下一段。
+> 自动关图会让紧接着的 `extend` 撞上"没有活动的图"。`_op_complete` 里有对应注释。
 
 ### c. 一个 run 可有多张图，串行
 
@@ -126,26 +137,68 @@ closed_by: "implicit"
   "iter_range": [12, 31],            // 实际消耗 [进入, 关闭]
   "seg": null,                       // 若节点边界封段，记段号；默认 null
   "isolate": false,                  // 是否在进入本节点时封段（见 §5）
-  "outcome": { "summary": "", "gaps": [] },
+  "visits": 1,                       // 被 enter 的次数（结构性循环检测用，见 §8）
+  "outcome": {
+    "summary": "",
+    "gaps": [],
+    "residue": "",                   // 仅降级通过时：具体缺了什么（见 §4）
+    "impact": ""                     // 仅降级通过时：对后继工作的影响评估
+  },
   "side_effects": [],                // 环境残留台账（见 §6）
   "abandon_reason": "",
-  "closed_by": "evidence_verified"   // evidence_verified | self_certified | implicit
+  "closed_by": "evidence_verified"   // evidence_verified | self_certified
+                                     // | unverified_override | implicit（仅根节点）
 }
 ```
 
 `exit.evidence_type` 直接复用验收门那套四分类（见 `_parse_acceptance_evidence`），不另起炉灶。
 
+### 节点编号契约（**必须写清，否则模型只能猜**）
+
+- **`n0` 由系统保留**，是自动生成的根节点（承载建图前的工作，见 §2a）
+- 模型给的节点按 `nodes` 数组顺序编号 **n1、n2、n3…**
+- 节点可以自带 `id`，合法且不冲突时沿用——写 `edges` 时**强烈建议显式给 id**
+
+> 这条曾经真实咬人：首版没写编号规则，模型以为自己的 7 个节点是 n0..n6，
+> 结果整套边**错位一格**，最后一个节点没有入边、被挂到了根下。
+> 契约与行为不符是这套东西最容易出的一类 bug——加字段前先问它是否会被读。
+
 ### 边
 
 ```jsonc
-{ "from": "n2", "to": "n3", "kind": "then", "cond": "" }
+{ "from": "n2", "to": "n3", "kind": "then" }
 ```
 
-| kind | 含义 | dashboard 线型 |
-|------|------|---------------|
-| `then` | 顺序推进 | 实线 |
-| `alt` | 同一分叉点的平行备选 | 虚线 |
-| `fallback` | 前驱失败时的退路 | 点线 |
+| kind | 含义 | 级联行为 | dashboard 线型 |
+|------|------|---------|---------------|
+| `then` | 依赖它的下游工作 | 前驱废弃时**随之废弃** | 实线 |
+| `alt` | 同一分叉点的平行备选 | 前驱废弃时**存活** | 虚线 |
+| `fallback` | 前驱失败时的退路 | 前驱废弃时**存活** | 点线 |
+
+**级联必须区分边的种类。** 退路在结构上是"被它兜底的那个节点"的子节点；若废弃时
+不加区分地级联下去，会在最需要退路的那一刻亲手掐死它。`_descendants(only_then=True)`
+就是为这件事存在的。
+
+**运行时不做条件求值。** 没有 `cond` 字段——留一个永不被读取的字段等于对模型撒谎，
+它会以为标了条件系统就会照着走。`alt` / `fallback` 是**记录下来的意图**：模型撞墙时
+（exit 被拒、节点被废弃）运行时把这些退路原样念给它听（`_route_hint`），
+但走不走由它决定。真正的条件求值器需要条件语言或 LLM 求值，那是工作流引擎，
+是 §11 明确排除的方向。
+
+### 无入边节点的兜底
+
+模型给了 `edges` 却漏掉某个节点的入边时（漏写最后一条边是最常见的失误），
+按 `nodes` 的**给出顺序**接到前一个节点之后，**同时补上对应的边**，并在工具返回里
+如实告知。
+
+不挂到根上，是因为 `nodes` 的顺序就是模型自己的排序，据此补链远比"扔到根下"接近本意；
+补链时必须同时补边，否则 `parent` 与 `edges` 各说各话，渲染层会画出一条数据里
+根本不存在的线。
+
+### 一条不变量
+
+**`parent` 与 `edges` 永远一致**：每个非根节点的 `parent` 都能在 `edges` 里找到对应边。
+`test_parent_and_edges_never_diverge` 守这条。
 
 ---
 
@@ -170,12 +223,20 @@ closed_by: "implicit"
 给 `Action` 加可选字段 `graph_op`：
 
 ```jsonc
-{ "op": "enter",   "node": "n3" }
-{ "op": "exit",    "node": "n3", "summary": "…", "side_effects": ["…"], "gaps": [] }
-{ "op": "extend",  "after": "n3", "node": { /* 单个节点 */ }, "kind": "then" }
-{ "op": "abandon", "node": "n3", "reason": "…" }
-{ "op": "fork",    "from": "n2",  "node": { /* 单个节点 */ } }
+{ "op": "enter",    "node": "n3" }
+{ "op": "exit",     "node": "n3", "summary": "…", "side_effects": ["…"], "gaps": [] }
+{ "op": "exit",     "node": "n3", "force": true,          // 降级通过，见下
+                    "residue": "具体缺了什么", "impact": "是否影响后续、为什么" }
+{ "op": "extend",   "after": "n3", "node": { /* 单个节点 */ }, "kind": "then" }
+{ "op": "fork",     "from": "n2",  "node": { /* 单个节点 */ } }
+{ "op": "abandon",  "node": "n3", "reason": "…", "side_effects": ["…"] }
+{ "op": "block",    "node": "n3", "reason": "被什么外部因素卡住" }
+{ "op": "complete", "reason": "…" }                        // 显式声明图走完
 ```
+
+`plan_revise` 额外支持 `{"op":"update","node":"n3","goal":…,"exit":…,"budget":…,"title":…}`
+（只能改未达终态的节点）。`update` 刻意不进 inline——改写已有节点的契约是结构性动作，
+该付那一次迭代。
 
 **`extend` / `fork` 每次只允许追加一个节点。** 多节点必须走 `plan_create` / `plan_revise` 付费。理由很实在：inline 字段跟着工具调用一起输出，塞一整棵树会撑爆单次输出上限，正好撞上仓库里那个反复出现的"args 过长 → 截断 → JSON 解析失败"死循环（`_json_fail_streak` 那一整套补救就是为它写的）。
 
@@ -188,11 +249,12 @@ closed_by: "implicit"
 `exit` 操作触发一次**纯 Python、零 LLM 调用**的校验：
 
 ```
-evidence_type == "artifact"
-    → 复用 _extract_claimed_artifact_paths 解析 expect
-    → 逐个检查文件是否真实存在
+evidence_type == "artifact" 且 expect 非空
+    → 逐个检查 expect 里的路径是否真实存在（原样 / run_dir 相对 / cwd 相对）
     ├── 全部存在 → status=done, closed_by="evidence_verified"
-    └── 有缺失   → exit 被拒，节点保持 active，注入缺失清单反馈
+    ├── 有缺失 + 无 force → exit 被拒，节点保持 active，
+    │                       反馈里给出缺失清单 + 降级通过的用法 + 图上记录的退路
+    └── 有缺失 + force    → 降级通过（见下）
 
 evidence_type ∈ {tool_result, observation, none}
     → 接受，status=done, closed_by="self_certified"
@@ -200,6 +262,36 @@ evidence_type ∈ {tool_result, observation, none}
 ```
 
 **为什么不强制 artifact**：很多真实工作确实没有落盘产物，硬性要求会逼模型写垃圾文件来交差。这个反模式在别处见得太多。代价是自证闭合无法实证，处理方式见 §8——只记录、只作为软信号，不阻断。
+
+### 降级通过（节点出口的第三态）
+
+run 级验收门有 pass / weak_pass / needs_more_work **三态**，节点出口原本只有两态：
+要么拿出产物，要么放弃。一个节点确实做完了、只是产物落不到 `expect` 指定的位置时，
+模型只能反复重试或违心地 `abandon`——都不诚实。
+
+因此加第三态：`exit` 带 `force: true` 降级闭合，`closed_by = "unverified_override"`。
+
+**但遗留叙述是硬门**，`residue` 与 `impact` 必须同时给出且不能敷衍，否则打回：
+
+| 字段 | 要求 |
+|------|------|
+| `residue` | 究竟缺了什么，写到别人能照着核对的程度。不接受"还有点小问题" |
+| `impact` | 会不会影响后续节点？为什么？**即使结论是"不影响"也要给依据** |
+
+反敷衍靠两条：最小长度 + 拦"只有结论没有依据"的一类（`_is_perfunctory`）。
+长度阈值按**中文密度**定——中文一个字顶英文好几个字符，阈值定高了会把
+"会影响 n2 的对比分析"这种完全站得住的评估误杀。
+
+**为什么这么严**：降级产生的遗留会在后继工作里被放大，甚至成为关键阻塞，
+而到那时当初的上下文早已被压缩。这两句话就是留给那时的唯一线索。因此还配了三件事：
+
+1. **闭合后立刻逼它决策**——把"这个遗留影响下游吗？如果影响，立即用 `plan_revise`
+   调整方案，不要带着它往前走"摆到它面前
+2. **遗留常驻投影且不折叠**（见 §5）——压缩打不掉
+3. **降级节点虽然状态是 `done`，仍并入 `run_outcome.gaps`**（见 §9）——
+   否则续作时这笔账就被抹掉了
+
+降级也计入 `unverified_streak`，收敛检测看得见它。
 
 ---
 
@@ -226,8 +318,11 @@ runtime_patches → scratchpad → 【执行图】 → thought_rigor
 规则：
 
 - 节点是**逻辑边界，不是上下文边界**。默认 `isolate: false`，进入新节点只是尾部换一段简报。
-- 仅当模型显式声明 `isolate: true`（"下一节点不需要看到本节点的过程细节"）才封段，节点记下 `seg` 号。
-- **反向收益**：当上下文压力本来就要触发压缩时（`_maybe_compress_for_context`），把封段点**对齐到最近的节点边界**。今天压缩是撞到阈值就地开炸，可能切在一次工具调用的半途；对齐之后 handoff 天然是完整语义单元。这是加图之后压缩质量的净提升。
+- 仅当模型显式声明 `isolate: true`（"下一节点不需要看到本节点的过程细节"）才在进入时封段，节点记下 `seg` 号。
+- **反向收益**：`exit` 成功后若上下文已逼近阈值（`GRAPH_BOUNDARY_COMPRESS_RATIO`，默认 0.75），就地封段。这是把压缩**提前**到刚闭合的节点边界，而不是等它撞线时就地开炸（可能切在一次工具调用半途）——handoff 因此天然是完整语义单元。这是加图之后压缩质量的净提升。
+  > 注意是**提前**不是**推迟**。推迟到下一个节点边界会有撑爆上下文的风险；提前永远安全。
+
+实现见 `loop._graph_boundary_compress`。
 
 ### 自适应折叠
 
@@ -235,19 +330,42 @@ runtime_patches → scratchpad → 【执行图】 → thought_rigor
 
 | 内容 | 渲染粒度 |
 |------|---------|
-| 当前节点 | 完整：goal / exit 契约 / 预算余量 / 已用迭代 |
+| 当前节点 | 完整：goal / exit 契约 / 自估与已用迭代 |
 | 祖先链 | 每节点一行摘要 |
 | 当前分叉点的兄弟分支（含已废弃） | 每个一行 + 废弃理由 |
+| **环境残留**（废弃分支留下的改动） | 逐条列出，**不折叠** |
+| **降级闭合的遗留** | 逐条列出 residue + impact，**不折叠** |
 | 前方 `planned` 节点 | 每个一行 |
 | 远处的废弃子树 | 折叠成一行："n7 分支（3 节点）已废弃：<理由>" |
+| 推进协议提示 | 一行，列出可用的 `graph_op` |
 
-软上限约 600 token（`GRAPH_PROJECTION_BUDGET` 可覆盖）。超限时优先折叠距离当前节点最远的废弃子树。
+软上限 `GRAPH_PROJECTION_CHARS`（默认 1800 字符 ≈ 600 token）。超限时整体截断并注明，
+完整图始终在 `graph.json` 里。
 
-**废弃理由那一行永远保留**——这正是防重走老路的关键，也是图相对签名式循环检测的核心优势。
+**三样东西永不折叠**，因为它们各自对应一类会被重复踩的坑：
+
+- **废弃理由**——防重走老路，这是图相对签名式循环检测的核心优势
+- **环境残留**——不做状态回溯的诚实代价（§6）
+- **降级遗留**——会在后继工作里被放大的那类账（§4）
+
+推进协议写在**投影里**而不是 system prompt 里：它只在有图时才相关，
+放 system prompt 会让"建图"这一刻撞碎整段前缀缓存。
 
 ### system prompt 侧
 
-只加一小段"何时值得建图"的说明（工具清单本来就在 system prompt 里，加 `plan_*` 三个工具是常规工具注册）。这部分一次 run 内不变，吃满 KV 缓存，不构成成本。
+**一字未改。** "何时值得建图"与完整的 `graph_op` 协议都写在 `plan_create` 的工具描述里
+——工具清单本来就在 system prompt 中，加三个工具是常规注册，一次 run 内不变，
+吃满 KV 缓存。详细文档放在缓存里、每轮的简短提醒放在尾部，是这套设计的成本分配原则。
+
+### 读路径不得产生副作用
+
+`get_root` 是 get-or-create，**只有写路径可以调用**。所有只读查询走 `peek_root`
+（无图时返回 `None`）。
+
+原因：绝大多数 run 从不建图。若"问一句有没有图"就在 `meta` 里种下一个空壳，
+每个 run 的 `meta.json` 都会多出这块噪声，而且"这个 run 用过图吗"就没法再靠
+键是否存在来回答。`test_read_paths_never_implant_an_empty_graph` 把十个读函数
+逐个过一遍守这条。
 
 ---
 
@@ -265,18 +383,18 @@ runtime_patches → scratchpad → 【执行图】 → thought_rigor
 
 因此每个节点记 `side_effects`——不是全量审计，是**模型自己申报**的"我改动了世界的哪些地方"，在 `exit` / `abandon` 时随 `graph_op` 一起提交。
 
-废弃分支并重入分叉点时，注入的简报必须带上残留：
+残留**常驻在投影里**，而不是重入分叉点时注入一次：
 
 ```
-[重入 n2] 分支 n3（A 路）已废弃：<abandon_reason>
-
-该分支对环境的遗留改动：
-  - 写入 config.yaml（不完整）
-  - 远端 172.24.217.39 创建 /opt/foo/
-  - pip 安装了 xxx
-
-选择新分支前，先确认这些残留是否需要清理、或可以复用。
+环境残留（废弃分支已对环境造成的改动，**不会自动回滚**；
+选新路前先确认是否需要清理或可复用）：
+  - [n3] 写入 config.yaml（不完整）
+  - [n3] 远端 172.24.217.39 创建 /opt/foo/
+  - [n3] pip 安装了 xxx
 ```
+
+> 首版设计稿写的是"重入时注入一次简报"。改成常驻是因为**一次性注入会被压缩吃掉**，
+> 而"扛过压缩"恰恰是图存在的理由。常驻严格更强，代价是每轮几十 token。
 
 这是"不做状态回溯"的诚实代价，也是它能成立的前提。
 
@@ -294,20 +412,39 @@ runtime_patches → scratchpad → 【执行图】 → thought_rigor
 
 ### 发放规则
 
+分两级：
+
+**① 节点发放**（`_grant_budget`）
+
 - 节点**首次 `enter`** 时发放，额度 = 该节点自报的 `budget`
-- 每个 node id **只发一次**（`granted` 标记），`plan_revise` 改动不重新发放
+- 每个 node id **只发一次**（`granted` 标记），`plan_revise` 改 budget 不重新发放
 - 画了但从未进入的节点**一分钱不发**
-- 走现成通道：`_add_iterations` / `max_iterations` 扩展逻辑已经为 `/+N` 建好
 
 **为什么按进入发放而不是按规划发放**：按规划发放会让模型能靠画图凭空铸造预算——多画几个节点 = 多拿迭代，而画节点几乎零成本。这不是"模型想作弊"，而是快没预算时画图恰好是它眼前最像"推进"的动作。按进入发放关闭这个漏洞，同时额度来自模型自己的估算，`估 8 / 实用 40` 这个比值本身就是极好的可观察性信号。
+
+**② 耗尽补发**（`topup_budget`）
+
+自估总会用完，光靠节点发放不等于"无上限"。所以预算耗尽时若图上**还有未闭合节点**，
+补发一笔（`GRAPH_TOPUP`，默认 10）继续跑，而不是开收尾窗口。补发不设总次数上限。
+
+这才是"图激活期不设迭代上限"的落地方式：**供给跟着图上的活走**，
+真正的停止条件交给 §8 的收敛检测。图上没活了（完成 / 放弃 / 全部终态），
+补发立即停止，收尾窗口恢复正常——运行不会永远漂着。
+
+**发放通道**：`state.meta["_add_iterations"]` → `max_iterations`。这条通道原本嵌在
+`if _ih is not None`（有中断处理器）里，只有交互式运行才生效；已提到外层无条件消费，
+否则无人值守的运行永远拿不到发放。这对 `/+N` 也是顺带的修复。
 
 ### 记录
 
 | 位置 | 内容 |
 |------|------|
-| `graph.budget_granted` | 本 run 累计授予数 |
+| `graph.budget_granted` | 本 run 累计授予数（节点发放 + 耗尽补发） |
 | 节点 `budget` vs `iter_range` | 单点自估/实用比 |
-| dashboard 顶部条 | `原始 30 + 图授予 87 = 117` |
+| dashboard 顶部条 | `图授予迭代 87` |
+
+自估被显著超出（实用 ≥ 2× 自估）时注入一次软提示，每节点一次。不扣预算、不强制，
+但这个比值是很硬的校准信号，也是该考虑拆小或换路的时机。
 
 ### 与其他模式的关系
 
@@ -319,9 +456,14 @@ runtime_patches → scratchpad → 【执行图】 → thought_rigor
 |------|---------|-----------|--------|
 | 普通 | `max_iterations` | 保留 | 预算耗尽（钝） |
 | nostop | ∞ | **跳过** | 人在回路 |
-| **图激活** | **∞** | **保留** | **收敛检测 → 升级梯 → pause** |
+| **图上有未闭合节点** | **∞（持续补发）** | **保留** | **收敛检测 → 升级梯 → pause** |
 
-连带项：图激活期间，剩余迭代警告（`_iter_warn_injected`）与收尾窗口（`_WRAPUP_BUDGET`）行为上与 nostop 一致（不触发）。
+连带项：**图上还有活时**，剩余迭代警告（`_iter_warn_injected`）不触发——供给会自动补，
+"剩余 N 次"是误导，只会诱使模型仓促收尾或去求用户加预算；收尾窗口则是**推迟**
+（被补发替代）而非永久抑制。
+
+> 注意条件是"图上有未闭合节点"，不是"图存在"。图走完之后预算规则立刻恢复正常，
+> 这是刻意的：图是继续跑的理由，理由没了就该收尾。
 
 ---
 
@@ -342,19 +484,31 @@ runtime_patches → scratchpad → 【执行图】 → thought_rigor
 | `stall_iters` | 距上次任一节点 `→done` 的迭代数 | productive-looking 非收敛 |
 | `node_revisits` | 同一节点被 `enter` 的次数 | 结构性循环（每次工具都不同，签名检测完全看不见） |
 | `open_fanout` | `planned+active` 节点数 / `done` 节点数 | 只分叉不闭合，一棵只长叶子的树 |
-| `unverified_streak` | 连续 `closed_by == "self_certified"` 的闭合数 | 靠自证关节点伪造进展 |
+| `unverified_streak` | 尾部连续「不可实证闭合」数（`self_certified` 或 `unverified_override`） | 靠自证 / 降级关节点伪造进展 |
 
-### 升级梯：接进已有梯子，不新建机制
+**废弃不算推进。** `stall_iters` 只由节点 `→done` 清零；`abandon` 省下了力气但没有把
+目标往前推，若它也清零，反复废弃就成了刷掉停滞计数的办法。
 
-现有梯子已经很完整（`_loop_advisor_pending` → `_collapse_attractor_context` → advisor → `ask_user` pause）。**只加第二个触发源，梯子本身不动**，通过 `_graph_stall_pending` 走同一段代码，仅 `trigger_reason` 不同。
+### 升级梯：沿用已有梯子，只换触发源
+
+现有梯子已经很完整（软提示 → advisor → `ask_user` pause）。图停滞是**第二个触发源**，
+走 `_graph_convergence_check`，`trigger_reason = "graph_stall"`。
+签名式循环那条路径不受影响，两条可以并存。
 
 | 层 | 触发阈值（环境变量可覆盖） | 动作 |
 |----|--------------------------|------|
-| L1 软提示 | `stall_iters ≥ 20` 或 `node_revisits ≥ 3` | 注入"本节点已 25 轮无出口证据，你自估 8 轮，考虑换路或拆分" |
-| L2 advisor | `stall_iters ≥ 40` 或 `node_revisits ≥ 5` 或 `open_fanout ≥ 5` | advisor 介入，**并带图上下文** |
-| L3 求助用户 | L2 之后再 stall 20 轮 | `ask_user` 暂停 |
+| L1 软提示 | `stall_iters ≥ 20`（`GRAPH_STALL_L1`）或 `node_revisits ≥ 3` | 注入软提示，按 `GRAPH_STALL_L1_REPEAT`（默认 10 轮）间隔重发，不刷屏 |
+| L2 advisor | `stall_iters ≥ 40`（`GRAPH_STALL_L2`）或 `node_revisits ≥ 5` 或 `open_fanout ≥ 5` | advisor 介入，**并带图上下文**。记账在调用前，失败也不重复触发 |
+| L3 求助用户 | L2 之后再停滞 `GRAPH_STALL_L3_EXTRA`（默认 20）轮 | `ask_user` 暂停 + 落终态 |
 
 `unverified_streak ≥ 5` 作为 L1 的附加软触发，**只提示不阻断**。
+
+**L1 的措辞必须给出路，不能只报警**，三条都要列出来：拿证据 `exit` / 判定不通就
+`abandon` + `fork` / 太大就 `extend` 拆小。只说"你卡住了"对模型没有任何帮助。
+
+**续跑时重置停滞时钟**（`_graph_stall_baseline`）。否则 L3 求助之后用户刚答完话，
+`stall_iters` 仍是那个大数，会被立刻再问一遍——用户的指导等于白给。
+重置的只是"卡了多久"这个判断，**图本身不重置**（它是跨续跑的载体）。
 
 ### advisor 第一次能看到结构
 
@@ -374,18 +528,23 @@ runtime_patches → scratchpad → 【执行图】 → thought_rigor
 
 今天 `run_outcome.gaps` 来自 `remaining_gaps` 的自由文本，`_WRAPUP_PROMPT` 里那一大段"不要写成'还需进一步完善'这类无法执行的笼统说法"，本质上是在用 prompt 硬求模型产出结构。
 
-有图之后，run 结束时 `active` 图上所有 `planned` / `blocked` 节点**天然就是 gaps**——带标题、带目标、带出口契约、带父节点、带兄弟分支的废弃理由。零额外成本产出，比任何自由文本都强。
+有图之后，run 结束时 `active` 图上所有 `planned` / `active` / `blocked` 节点**天然就是 gaps**——带标题、带目标、带出口契约、带父节点。零额外成本产出，比任何自由文本都强。
 
-**规则**：`_set_run_outcome` 写入终态时，自动把未完成节点合并进 `gaps`：
+**降级通过的节点也算。** 它们状态是 `done`，但**承诺没有完全兑现**——不并进来
+就等于在续作时把这笔账抹掉了，而这类遗留恰恰最容易在后继工作里被放大。
+
+**规则**：`_set_run_outcome` 写入终态时自动合并，**两种表示各写一份**：
+
+- `gaps`：`list[str]`，保持既有契约不变（消费方按字符串处理），把结构化信息压进一行
+- `graph_gaps`：结构化原文，供想按节点消费的下游（重建图、逐节点续作）使用
 
 ```jsonc
-{
-  "node": "n6",
-  "title": "端口有序扇出",
-  "goal": "…",
-  "exit": { "evidence_type": "artifact", "expect": ["…"] },
-  "parent": "n5"
-}
+// graph_gaps 里的一条
+{ "node": "n6", "title": "端口有序扇出", "goal": "…", "status": "planned",
+  "exit": { "evidence_type": "artifact", "expect": ["…"] }, "parent": "n5" }
+// 降级通过的一条
+{ "node": "n2", "title": "生成报告", "status": "done_unverified",
+  "residue": "第 3 节图表未渲染", "impact": "会影响 n3 的对比分析", … }
 ```
 
 ### 补一个缺失的终态
@@ -396,13 +555,20 @@ runtime_patches → scratchpad → 【执行图】 → thought_rigor
 
 ### done 时图未走完
 
-若 `done` 时 `active` 图仍有 `planned` 节点：**注入一次软提示**（"图中 n5/n6 未完成，确认要结束吗"），**不硬阻断**——模型可能合理地认定剩余节点已无必要。但这些节点仍然照常进入 `gaps`。
+若 `done` 时 `active` 图仍有未闭合节点：**注入一次提示后 `continue`**，让模型有机会
+先把它们 `abandon` / `block` 并写明原因，再重新 `done`。
+
+严格说这是"软拦一轮"而非纯提示——它消耗一次迭代。只拦一次（`_graph_done_hint` 标志），
+之后不再干预：模型可能合理地认定剩余节点已无必要。无论拦没拦，这些节点都照常进 `gaps`。
 
 ### 续作时的连续性
 
 - **`_graph` 绝不能进 `_RESUME_RESET_KEYS`。** 那份名单清的是"上一轮的验收结论"（残留会让门失效），图恰恰相反，是必须跨段延续的载体。这个坑不写下来一定会踩。
-- 续作时从 `graph.json` 重建图，已 `done` 节点保持 `done`，`cursor` 落在第一个未完成节点。
+- 进程内续跑（pause → 用户回答 → 继续）图完整保留，只重置停滞时钟（§8）。
 - `graph` 是纯数据，不持有 live 引用，因此**不需要**加进 `_NON_SERIALIZABLE_KEYS`。
+- **跨 run 续作**（dashboard 的"继续任务"另起进程）目前**不自动重建图**——
+  新 run 从零开始，上一张图通过 `run_outcome.graph_gaps` 传递。
+  从 `graph.json` 重建图是后续工作，不在已实现范围内。
 
 ---
 
@@ -414,9 +580,13 @@ runtime_patches → scratchpad → 【执行图】 → thought_rigor
 
 | 端点 | 内容 |
 |------|------|
-| `GET /api/run/:runId/graph` | `graph.json` 原文 |
+| `GET /api/run/:runId/graph` | `graph.json` 原文；无图的 run 返回 `graph: null`（带路径穿越防护） |
 
-WS 广播：`graph.json` 变化时推 `{ type: 'graph', runId }`，前端拉取（与现有 run 文件的推-拉模式同构，见 `broadcast()` 系列）。
+实时推送走现成通道：轮询检测到 `graph.json` 变化 → 写入 `state.graph` → 随 `broadcast()`
+的整包 state 推给前端。`loadRun` 也带上 `graph`，历史 run 可回看。
+
+刻意读 `graph.json` 而不是从 `meta.json` 里捞 `_graph`（数据其实两处都有）：
+**图必须有一个可寻址的真相源**，否则前端会开始依赖一堆本不该成为契约的运行时内部键。
 
 ### 渲染
 
@@ -434,15 +604,38 @@ WS 广播：`graph.json` 变化时推 `{ type: 'graph', runId }`，前端拉取�
   | `blocked` | 橙色 |
 
 - **边线型**：`then` 实线 / `alt` 虚线 / `fallback` 点线
-- **hover**：`goal` + `exit` 契约 + `iter_range` + `abandon_reason` + `side_effects`
+- **层级以显式入边为准**，`parent` 次之；且只为没有任何显式入边的节点用 `parent` 补线——
+  历史文件若存在 `parent` 与 `edges` 分歧，不会画出幽灵边
+- **侧栏**：goal / 出口证据与闭合方式 / 结论与 gaps / 废弃原因 / **环境残留** /
+  **⚠ 降级通过的遗留**（橙色块，含 residue 与 impact）
 - **点击节点 → 时间线过滤到该节点的 `iter_range`**
 
 最后这条是整个可视化的价值支点：图给结构，现有时间线给细节，二者用迭代区间对齐。否则图只是个好看的进度条。
 
+> **一处如实标注的近似**：节点 `iter_range` 用的是 agent 的 `state.iteration`，
+> 而时间线的 `ev.iter` 是看板自己重建的计数（会丢弃畸形行），两把尺子可能差几格。
+> 这个交互的用途是**导航不是取证**，因此接受近似并在过滤条上写明；
+> 过滤结果为空时自动退回全量，不给出"这一段什么都没发生"的假象。
+
+### 串行多图
+
+一个 run 可有多张图（§2c）。工具栏出现下拉选择器，标签带**状态**：
+`g2 · 已放弃 · 第二阶段…`，活动图额外标「← 当前活动」——用户可能停在一张
+已废弃的旧图上研究，必须让状态一眼可见。
+
+手动选过图之后保持钉住，但**图的数量增加时恢复自动跟随**（模型新建了一张图，
+属重大事件）。否则"随手点开旧图看一眼"会把视图永久钉死，活动图在后面一路推进
+却再也看不见。
+
+### Graph 标签只在有图时出现
+
+建图是模型自主启用的能力，绝大多数 run 没有图——此时整个标签隐藏，
+若正停在 Graph 页则回落 Events。
+
 ### 顶部状态条
 
 ```
-图 g1 (active) · 节点 4/9 已闭合 · 图授予迭代 87（原始 30 → 总计 117）· stall 12 轮
+g1 · 打通差分对布线 | 进行中 · 节点 1/4 已闭合 · 未闭合 2 · 图授予迭代 46
 ```
 
 ---
@@ -463,36 +656,90 @@ WS 广播：`graph.json` 变化时推 `{ type: 'graph', runId }`，前端拉取�
 
 ---
 
-## 十二、实施批次
+## 十二、实施记录
 
-| 批 | 内容 | 主要触点 |
-|----|------|---------|
-| 1 | 数据模型、`graph.json` 持久化、`plan_create` / `plan_revise` / `plan_abandon` 工具、inline `graph_op`、折叠投影 | 新增 `agent/core/graph.py`；`types_def.Action` 加 `graph_op`；`llm.parse_response` / `_build_context_suffix`；`persistence.save_graph`；`tools/standard.py` |
-| 2 | `exit` 实证校验、预算发放、`side_effects` 台账与重入简报 | `graph.py`；loop 的 `graph_op` 应用点；复用 `_extract_claimed_artifact_paths` |
-| 3 | 收敛检测、升级梯接入、`run_outcome` / gaps 衔接、`blocked/graph_stall` 终态 | loop 每轮开头；复用现有升级梯代码块；`_set_run_outcome`；`advisor._build_advisor_context` |
-| 4 | dashboard 端点、SVG 视图、时间线联动、顶部状态条 | `dashboard/server.js`；`dashboard/public/index.html` |
+四批已全部落地。**实际顺序是 1 → 4 → 3 → 2**，与原计划不同：
 
-批 1–2 可独立验证（图能建、能推进、能落盘、投影正确）；批 3 依赖批 2 的 `closed_by` 统计；批 4 纯前端，可与 3 并行。
+- 批 4（可视化）提前，因为"图能建但只能读 JSON 看"没法评估设计对不对
+- 批 3（收敛检测）先于批 2（预算），是**先装刹车再拆刹车**——
+  批 2 拆掉迭代上限，若此时没有替代守卫，一个不收敛的 run 会一直烧下去
+- 批 2 的「`exit` 实证校验 + `side_effects` 台账」提前进了批 1：
+  没有出口校验的 `exit` 是个会说谎的操作，单独交付批 1 等于交了个残废
+
+| 批 | 内容 |
+|----|------|
+| 1 | 数据模型、`graph.json` 持久化、`plan_*` 工具、inline `graph_op`、折叠投影、`exit` 实证校验、`side_effects` 台账 |
+| 4 | dashboard 端点、SVG 视图、时间线联动、串行多图选择器、顶部状态条 |
+| 3 | 收敛检测、升级梯接入、advisor 带图上下文、`gaps` / `graph_gaps` 衔接、`blocked/graph_stall` 终态 |
+| 2 | 按节点发放预算 + 耗尽补发、自估超支软提示、`isolate` 与节点边界封段 |
+| 后续 | 条件分支的诚实化：删 `cond`、退路建议、降级通过、级联只沿 `then` |
 
 ### 主循环接入点
 
-共 5 处，均在 `agent/core/loop.py`：
+共 6 处，均在 `agent/core/loop.py`：
 
-1. **每轮开头**（`_poll_watchers` 附近）：收敛指标计算 + L1/L2/L3 触发
-2. **上下文构建**：`build_context_messages` 传入图投影
-3. **TOOL_CALL 分支**：`execute` 之后应用 inline `graph_op`（与 `_apply_inline_scratchpad_note` 同位置）
-4. **压缩触发点**：封段对齐到最近节点边界
-5. **DONE 分支 / 退出处**：未完成节点并入 `gaps`；stall pause 落终态
+1. **每轮开头**（`_poll_watchers` 之后）：`_graph_convergence_check` —— 收敛指标 + 自估超支提示 + L1/L2/L3
+2. **预算耗尽处**：`topup_budget` 优先于收尾窗口
+3. **上下文构建**：`build_context_messages(graph_projection=…)`（含压缩后重建那一处，见 §13）
+4. **TOOL_CALL 分支**：`execute` 之后应用 inline `graph_op` + `_graph_boundary_compress`
+5. **DONE 分支**：应用 `graph_op`（可顺带闭合末节点）+ 未闭合节点提示
+6. **`_set_run_outcome`**：未闭合节点与降级节点并入 `gaps` / `graph_gaps`
+
+### 测试
+
+`test/tests_execution_graph.py` 覆盖数据模型、状态机、出口校验、降级通过、退路建议、
+收敛指标、预算发放、投影、上下文注入与健壮性。另有三套端到端冒烟（非仓库内）：
+停滞梯子 L1→L2→L3、预算三场景（空转 / 稳步推进 / 无图）、图内核全链路。
 
 ---
 
 ## 十三、注意事项清单
 
-- **`_graph` 不进 `_RESUME_RESET_KEYS`**（§9），这是最容易踩的坑
+带 ⚠ 的是**已经踩过**的，不是假想。
+
+- **`_graph` 不进 `_RESUME_RESET_KEYS`**（§9）。那份名单清的是"上一轮的结论"，图恰恰相反
 - 图状态**只挂 `state.meta["_graph"]` 单一子树**，不散落到 meta 顶层
 - 节点边界**默认不封段**（§5），否则每次节点切换 = 全量 KV 缓存清零
 - inline `extend` / `fork` **每次仅一个节点**，防单次输出截断
 - 投影排在 `scratchpad` 之后、`thought_rigor` 之前
-- **i18n**：所有注入 `short_term` 的文本（节点简报、重入残留提示、L1 软提示、exit 拒绝反馈）与 dashboard 字符串必须走 `t()`，建议统一 `graph.` 前缀；`agent/i18n.py` 的 zh / en 两份同步添加
+- ⚠ **压缩后重建 messages 时必须补传投影**（`_maybe_compress_for_context` 里那一处）。
+  压缩刚把 `short_term` 重置掉，图正是此刻唯一幸存的结构化记忆，漏传等于在最需要它的
+  时刻把它弄丢
+- ⚠ **加字段前先问它是否会被读**。`cond` 曾经每条边都写、从没被读——留一个永不生效的
+  字段等于对模型撒谎，它会以为标了条件系统就会照着走
+- ⚠ **契约要写进工具描述**。节点编号规则没写清，模型只能猜，整套边错位一格（§3）
+- ⚠ **级联要区分边的种类**，否则废弃主方案时会连自己写下的退路一起掐死（§3）
+- ⚠ **读路径不得调 `get_root`**（§5），它是 get-or-create
+- ⚠ **反敷衍的长度阈值按中文密度定**。按英文定会把"会影响 n2 的对比分析"这种
+  完全站得住的评估误杀（§4）
+- ⚠ **`_add_iterations` 的消费不能嵌在中断处理器分支里**，否则无人值守的运行
+  永远拿不到预算发放（§7）
+- **i18n**：所有注入 `short_term` 的文本与 dashboard 字符串必须走 `t()`，统一 `graph.` 前缀；
+  `agent/i18n.py` 的 zh / en 两份同步添加
+- ⚠ **不带 kwargs 的 i18n 条目，大括号不能双写转义**。`t()` 只在传 kwargs 时才走
+  `str.format`，双写会让模型原样看到 `{{node}}`（`graph.proj.protocol` 踩过）
+- ⚠ **`standard.py` 里的 i18n 用别名 `_t` 导入**。该文件已有函数把 `t` 用作局部变量
 - 中文模板里的字面大括号必须转义（曾因此崩过 `t()` 的 format）
-- `graph.json` 写入走 `_write_text_atomic` / `_write_json_atomic`，与其他 run 文件一致
+- `graph.json` 写入走 `_write_json_atomic`，与其他 run 文件一致
+
+---
+
+## 十四、与首版设计稿的差异
+
+首版稿是**方案**，本文是**实现**。主要偏离及原因，便于回溯当初为什么这么定：
+
+| 处 | 首版稿 | 实现 | 原因 |
+|----|--------|------|------|
+| §2b | 所有节点达终态即完成 | 必须显式 `complete` | 局部前向规划下走到末端是常态，自动关图会让 `extend` 撞空 |
+| §3 | 边带 `cond` | 删除 | 从未被读取；条件求值器是工作流引擎，是排除项 |
+| §3 | 未定义编号契约 | n0 保留、模型节点 n1 起 | 不写清模型只能猜，实战中整套边错位一格 |
+| §3 | 未定义级联规则 | 只沿 `then` 级联 | 不区分会掐死 `fallback` 退路 |
+| §4 | 出口两态 | 加降级通过（第三态） | 对齐 run 级验收门；遗留叙述是硬门 |
+| §5 | 压缩"对齐"到节点边界 | 明确为**提前**到边界 | 推迟有撑爆上下文的风险 |
+| §6 | 重入时注入一次简报 | 常驻投影 | 一次性注入会被压缩吃掉 |
+| §7 | 图激活 = ∞ | 节点发放 **+ 耗尽补发** | 光靠自估发放不等于 ∞ |
+| §7 | 收尾窗口"抑制" | 有活时**推迟** | 永久抑制会让带图的 run 连缺口都交代不了 |
+| §9 | done 时纯软提示 | 软拦一轮（耗一次迭代） | 只提示模型往往直接忽略 |
+| §12 | 1→2→3→4 | 1→4→3→2 | 先看得见才好评估；先装刹车再拆刹车 |
+
+v1 边界（§11）全部守住，无偏离。

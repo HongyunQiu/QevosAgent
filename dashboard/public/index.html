@@ -707,6 +707,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .set-probe { flex-shrink:0; padding:2px 9px; background:rgba(63,185,80,0.15); color:#3fb950; font-size:10.5px; font-weight:600; border:none; border-radius:10px; cursor:pointer; }
 .set-probe:hover:not(:disabled) { background:rgba(63,185,80,0.28); }
 .set-probe:disabled { opacity:0.5; cursor:not-allowed; }
+/* 首选 API 开关：贴在探测这一行的最右端，选中即高亮 */
+.set-pref { flex-shrink:0; margin-left:auto; padding:2px 10px; background:transparent; color:var(--muted); font-size:10.5px; font-weight:600; font-family:inherit; border:1px solid var(--border); border-radius:10px; cursor:pointer; white-space:nowrap; }
+.set-pref:hover { color:var(--text); border-color:var(--muted); }
+.set-pref.on { background:rgba(63,185,80,0.16); border-color:rgba(63,185,80,0.55); color:#3fb950; cursor:default; }
 .set-model-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
 .set-modelchip { padding:3px 10px; background:rgba(88,166,255,0.12); color:#58a6ff; font-size:11px; font-family:var(--mono); font-weight:500; border:1px solid rgba(88,166,255,0.35); border-radius:11px; cursor:pointer; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .set-modelchip:hover { background:rgba(88,166,255,0.22); }
@@ -722,6 +726,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .set-tab.active { color:var(--text); border-bottom-color:var(--blue); }
 .set-dot { display:none; width:6px; height:6px; border-radius:50%; background:#3fb950; margin-left:6px; vertical-align:middle; }
 .set-tab.has-value .set-dot { display:inline-block; }
+/* 首选 API 亮绿带微光，其余已配置的 API 暗绿 —— 一眼看出哪个是首选 */
+.set-dot.preferred { background:#3fb950; box-shadow:0 0 5px rgba(63,185,80,0.85); }
+.set-dot.dim { background:#2b6b3d; box-shadow:none; }
+[data-theme="light"] .set-dot.dim { background:#94d3a2; }
 .set-seclbl { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin:18px 0 12px; padding-top:14px; border-top:1px solid var(--border); }
 .set-msg { display:none; border-radius:6px; padding:9px 12px; font-size:12px; margin-bottom:14px; line-height:1.5; }
 .set-msg.error   { display:block; background:rgba(248,81,73,0.1); border:1px solid rgba(248,81,73,0.4); color:#f85149; }
@@ -982,6 +990,99 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 .app.pane-zen .sidebar, .app.pane-zen .right-panel { display:none; }
 /* TAB 栏右侧位置紧张：去掉按钮框只留图标，配色仍走 icon-btn 的 muted→blue */
 #paneZenBtn { border:none; padding:2px 4px; font-size:13px; }
+
+/* ── Execution graph pane ────────────────────────────────────────────── */
+.graph-toolbar {
+  display:flex; align-items:center; gap:10px;
+  padding:0 16px; height:25px; border-bottom:1px solid var(--border);
+  background:var(--bg2); flex-shrink:0;
+}
+.graph-title { font-size:11.5px; font-weight:600; color:var(--text); }
+.graph-stats { font-size:11px; color:var(--muted); font-family:var(--mono); }
+.graph-select {
+  background:var(--bg3); color:var(--text); border:1px solid var(--border);
+  border-radius:4px; font-size:11px; padding:1px 4px; outline:none;
+}
+.graph-tab-dot {
+  display:inline-block; width:5px; height:5px; border-radius:50%;
+  background:var(--blue); margin-left:5px; vertical-align:middle;
+}
+.graph-body { flex:1; display:flex; overflow:hidden; }
+.graph-canvas { flex:1; overflow:auto; background:var(--bg); position:relative; }
+.graph-canvas svg { display:block; }
+.graph-side {
+  width:262px; flex-shrink:0; border-left:1px solid var(--border);
+  background:var(--bg2); overflow-y:auto; padding:12px 14px;
+  font-size:11.5px; line-height:1.7; color:var(--text);
+}
+.graph-empty {
+  display:flex; align-items:center; justify-content:center; height:100%;
+  color:var(--muted); font-size:12px; text-align:center; padding:30px; line-height:1.9;
+}
+/* 节点：状态即配色。done 绿 / active 蓝(呼吸) / planned 灰虚线 /
+   abandoned 灰虚线+删除线 / blocked 橙 —— 与投影里的 ✓▶·✗⏸ 一一对应 */
+.gn { cursor:pointer; }
+.gn rect { transition:filter .12s ease; }
+.gn:hover rect { filter:brightness(1.25); }
+.gn text { font-family:var(--sans); pointer-events:none; }
+.gn-title { font-size:11px; font-weight:600; }
+.gn-meta  { font-size:9.5px; opacity:.75; }
+.gn-done      rect { fill:color-mix(in srgb, var(--green) 16%, var(--bg2)); stroke:var(--green); }
+.gn-active    rect { fill:color-mix(in srgb, var(--blue) 20%, var(--bg2));  stroke:var(--blue); stroke-width:2; }
+.gn-planned   rect { fill:var(--bg2); stroke:var(--muted); stroke-dasharray:4 3; }
+.gn-abandoned rect { fill:var(--bg2); stroke:var(--muted); stroke-dasharray:4 3; opacity:.55; }
+.gn-blocked   rect { fill:color-mix(in srgb, var(--orange) 16%, var(--bg2)); stroke:var(--orange); }
+.gn-done      .gn-title { fill:var(--green); }
+.gn-active    .gn-title { fill:var(--blue); }
+.gn-planned   .gn-title { fill:var(--muted); }
+.gn-abandoned .gn-title { fill:var(--muted); text-decoration:line-through; opacity:.8; }
+.gn-blocked   .gn-title { fill:var(--orange); }
+.gn text.gn-meta { fill:var(--muted); }
+.gn-sel rect { stroke-width:2.5; }
+@keyframes gn-breathe { 0%,100% { opacity:1 } 50% { opacity:.55 } }
+.gn-active rect { animation:gn-breathe 2.2s ease-in-out infinite; }
+/* 边：then 实线 / alt 虚线（同一分叉点的平行备选）/ fallback 点线 */
+.ge { fill:none; stroke:var(--border); stroke-width:1.4; }
+.ge-alt      { stroke-dasharray:5 4; }
+.ge-fallback { stroke-dasharray:2 3; }
+.ge-dead     { opacity:.4; }
+.graph-side h4 {
+  margin:0 0 6px; font-size:11px; text-transform:uppercase;
+  letter-spacing:.5px; color:var(--muted); font-weight:600;
+}
+.graph-side .gs-block { margin-bottom:14px; }
+.graph-side .gs-goal { color:var(--text); opacity:.9; word-break:break-word; }
+.graph-side .gs-kv { color:var(--muted); font-family:var(--mono); font-size:10.5px; }
+.graph-side .gs-tag {
+  display:inline-block; padding:0 6px; border-radius:3px; font-size:10px;
+  font-family:var(--mono); border:1px solid var(--border); color:var(--muted);
+}
+.graph-side ul { margin:4px 0 0; padding-left:16px; }
+.graph-side li { margin-bottom:3px; word-break:break-word; }
+.gs-residue li { color:var(--orange); }
+.gs-override {
+  border-left:2px solid var(--orange); padding-left:9px;
+  background:color-mix(in srgb, var(--orange) 8%, transparent);
+  border-radius:0 4px 4px 0; padding-top:4px; padding-bottom:4px;
+}
+.gs-override h4 { color:var(--orange); }
+.gs-reason { color:var(--muted); font-style:italic; }
+.gs-jump {
+  display:inline-block; margin-top:6px; padding:2px 9px; cursor:pointer;
+  background:var(--bg3); border:1px solid var(--border); border-radius:4px;
+  color:var(--blue); font-size:11px;
+}
+.gs-jump:hover { border-color:var(--blue); }
+.graph-filter-bar {
+  display:flex; align-items:center; gap:8px; padding:5px 12px;
+  background:color-mix(in srgb, var(--blue) 12%, var(--bg2));
+  border-bottom:1px solid var(--border); font-size:11px; color:var(--text);
+}
+.graph-filter-bar button {
+  background:none; border:1px solid var(--border); border-radius:4px;
+  color:var(--muted); cursor:pointer; font-size:11px; padding:1px 8px;
+}
+.graph-filter-bar button:hover { color:var(--blue); border-color:var(--blue); }
 
 /* ── AGENTS.md pane ──────────────────────────────────────────────────── */
 .agents-toolbar {
@@ -1622,6 +1723,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
       <button class="center-tab active" id="ctab-events" onclick="setCenterTab('events')">Events</button>
       <span class="count-badge" id="evCount">0</span>
       <div class="ctab-sep"></div>
+      <button class="center-tab" id="ctab-graph" onclick="setCenterTab('graph')" style="display:none">Graph<span class="graph-tab-dot" id="graphTabDot"></span></button>
       <button class="center-tab" id="ctab-crons" onclick="setCenterTab('crons')">Crons</button>
       <button class="center-tab" id="ctab-skills" onclick="setCenterTab('skills')">Skills</button>
       <button class="center-tab" id="ctab-apps" onclick="setCenterTab('apps')">Apps</button>
@@ -1653,6 +1755,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 
     <!-- Events pane -->
     <div class="center-pane active" id="cpane-events">
+      <div class="graph-filter-bar" id="graphFilterBar" style="display:none"></div>
       <div class="events-log" id="eventsLog">
         <div class="empty-state" id="eventsEmpty" style="display:none">
           <div class="empty-icon">⚡</div>
@@ -1660,6 +1763,21 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
             <span style="opacity:.6;font-size:12px">Type a goal in the bar below to start.</span>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Execution graph pane -->
+    <div class="center-pane" id="cpane-graph">
+      <div class="graph-toolbar">
+        <span class="graph-title" id="graphTitle">执行图</span>
+        <span class="graph-stats" id="graphStats"></span>
+        <div class="bar-gap"></div>
+        <select class="graph-select" id="graphSelect" onchange="onGraphSelect(this.value)" style="display:none"></select>
+        <button class="icon-btn" onclick="fitGraph()" title="适应窗口">⤢ Fit</button>
+      </div>
+      <div class="graph-body" id="graphBody">
+        <div class="graph-canvas" id="graphCanvas"></div>
+        <div class="graph-side" id="graphSide"></div>
       </div>
     </div>
 
@@ -2010,8 +2128,9 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
       <!-- ── LLM 服务（预留未来更多 LLM 服务商 tab）── tab 在上，内容紧随其后 ── -->
       <div class="set-tabgroup-lbl">LLM 服务</div>
       <div class="set-tabs set-tabs-llm" data-group="api">
-        <button type="button" class="set-tab active" data-tab="primary" id="setTabPrimary">主 API<span class="set-dot"></span></button>
-        <button type="button" class="set-tab" data-tab="backup" id="setTabBackup">备用 API<span class="set-dot"></span></button>
+        <button type="button" class="set-tab active" data-tab="primary" id="setTabPrimary">API 1<span class="set-dot"></span></button>
+        <button type="button" class="set-tab" data-tab="backup" id="setTabBackup">API 2<span class="set-dot"></span></button>
+        <button type="button" class="set-tab" data-tab="backup2" id="setTabBackup2">API 3<span class="set-dot"></span></button>
         <button type="button" class="set-tab" data-tab="advisor1" id="setTabAdvisor1">顾问模型1<span class="set-dot"></span></button>
         <button type="button" class="set-tab" data-tab="advisor2" id="setTabAdvisor2">顾问模型2<span class="set-dot"></span></button>
       </div>
@@ -2022,6 +2141,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
           <div class="set-lblrow">
             <label for="setBase"><span id="setLblBase">API 服务地址</span><span class="set-req" id="setMarkBase">*</span> <span class="set-hint-inline" id="setHintBase">（OpenAI 兼容接口的 base URL）</span></label>
             <button type="button" class="set-probe" id="setBtnTest">探测</button>
+            <button type="button" class="set-pref" id="setBtnPref">☆ 设为首选</button>
           </div>
           <input type="text" id="setBase" placeholder="http://127.0.0.1:8080/v1">
         </div>
@@ -2388,9 +2508,16 @@ function renderAll(data, runId) {
     gAdvisorCacheRunId = rid;
   }
   syncReadSkills(data.meta);
+  // 切换到别的 run 时清掉图过滤：过滤条件属于上一个 run 的节点，带过来只会误导
+  if (rid !== gGraphFilterRunId) {
+    gGraphFilter = null; gGraphSelNode = null; gGraphUserPicked = false;
+    gGraphCount = 0; gGraphFilterRunId = rid;
+  }
+  updateGraphTab(data);
   renderTopBar(data, rid);
   renderSidebar(data, rid);
   renderMainArea(data);
+  renderGraph(data);
   renderScratchpad(data.scratchpad || '');
   renderJobs(data.events || []);
   updateCmdBarMode(data);
@@ -3125,6 +3252,12 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = [], aw
   const log   = document.getElementById('eventsLog');
   const badge = document.getElementById('evCount');
   badge.textContent = events.length;
+
+  // ── 执行图节点过滤 ────────────────────────────────────────────────────────
+  // 注意：节点的 iter_range 来自 agent 的 state.iteration，而 ev.iter 是看板
+  // 自己重建的计数（会丢弃畸形行），两把尺子可能有几格偏差。这里做的是"导航"
+  // 而非"取证"，因此接受近似，并在条上如实说明；过滤为空时退回全量。
+  events = applyGraphNodeFilter(events);
 
   // Detect pending tool call and manage stream buffer
   const pendingCall = getActivePendingToolCall(events);
@@ -4047,6 +4180,7 @@ function setCenterTab(name) {
   });
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
   if (name === 'agentsmd')       loadProfileTab('agents');
+  if (name === 'graph')          renderGraph(gAdvisorView || gState);
   if (name === 'skills')         loadSkills();
   if (name === 'apps')           loadApps();
   if (name === 'crons')          loadCrons();
@@ -4177,6 +4311,308 @@ window.addEventListener('message', e => {
     if (b) b.classList.toggle('term-agent', m.who === 'agent');
   }
 });
+
+// ── Execution graph (runs/<id>/graph.json) ─────────────────────────────────
+// 手写分层 SVG——受纯本地约束不引外部图库，且计划图很浅（深度个位数），
+// Sugiyama 简化版足够，不需要力导向。
+let gGraphData   = null;   // 当前 run 的 graph.json 全文
+let gGraphIdx    = 0;      // 串行多图时看第几张
+let gGraphSelNode = null;  // 侧栏正在展示的节点 id
+let gGraphFilter = null;   // {node,title,from,to} —— 时间线按节点迭代区间过滤
+let gGraphFilterRunId = null;  // 过滤条件属于哪个 run，换 run 时据此清掉
+let gGraphCount   = 0;     // 上次见到的图数量，用于识别"模型又建了一张新图"
+
+const GN_W = 168, GN_H = 46, GN_HGAP = 26, GN_VGAP = 54, GN_PAD = 26;
+
+function graphsOf(data) {
+  const g = data && data.graphs;
+  return Array.isArray(g) ? g.filter(x => x && x.nodes) : [];
+}
+
+/** Graph 标签只在这个 run 真的建过图时才出现——建图是能力，不是每个 run 都有。 */
+function updateGraphTab(data) {
+  const graphs = graphsOf(data && data.graph);
+  const tab = document.getElementById('ctab-graph');
+  if (!tab) return;
+  const has = graphs.length > 0;
+  tab.style.display = has ? '' : 'none';
+  const active = graphs.find(g => g.status === 'active');
+  document.getElementById('graphTabDot').style.display = active ? '' : 'none';
+  if (!has && gCenterTab === 'graph') setCenterTab('events');
+}
+
+function renderGraph(data) {
+  const next = (data && data.graph) || null;
+  const changed = JSON.stringify(next) !== JSON.stringify(gGraphData);
+  gGraphData = next;
+  const graphs = graphsOf(next);
+  const canvas = document.getElementById('graphCanvas');
+  const side   = document.getElementById('graphSide');
+  if (!canvas) return;
+
+  if (!graphs.length) {
+    canvas.innerHTML = '<div class="graph-empty">本次运行没有建立执行图。<br>'
+      + '<span style="opacity:.65">建图是模型自主启用的能力——简单任务不需要图，'
+      + '模型认为值得时才会调用 plan_create。</span></div>';
+    side.innerHTML = '';
+    document.getElementById('graphStats').textContent = '';
+    return;
+  }
+
+  // 模型新建了一张图是重大事件，用户之前的手动选择只针对旧的那批，
+  // 此时恢复自动跟随——否则"随手点开旧图看一眼"会把视图永久钉死在
+  // 一张已完成的图上，而活动图在后面一路推进却看不见。
+  if (graphs.length > gGraphCount) gGraphUserPicked = false;
+  gGraphCount = graphs.length;
+
+  // 默认停在活动图；模型换图后自动跟过去（用户手动选过的除外）
+  if (changed && !gGraphUserPicked) {
+    const ai = graphs.findIndex(g => g.status === 'active');
+    gGraphIdx = ai >= 0 ? ai : graphs.length - 1;
+  }
+  if (gGraphIdx >= graphs.length) gGraphIdx = graphs.length - 1;
+  const g = graphs[gGraphIdx];
+
+  const sel = document.getElementById('graphSelect');
+  sel.style.display = graphs.length > 1 ? '' : 'none';
+  if (graphs.length > 1) {
+    // 串行多图时，光有 gid+标题看不出自己正在看哪一张、活的是哪一张——
+    // 用户可能停在一张已放弃的旧图上研究，必须让状态一眼可见。
+    sel.innerHTML = graphs.map((x, i) =>
+      `<option value="${i}"${i === gGraphIdx ? ' selected' : ''}>`
+      + `${esc(x.gid)} · ${esc(statusLabel(x.status))} · ${esc(trunc(x.title || '', 22))}`
+      + `${x.status === 'active' ? '  ← 当前活动' : ''}</option>`).join('');
+  }
+
+  const nodes = Object.values(g.nodes || {});
+  const done  = nodes.filter(n => n.status === 'done' && n.id !== 'n0').length;
+  const total = nodes.length - 1;
+  const open  = nodes.filter(n => ['planned', 'active', 'blocked'].includes(n.status)).length;
+  const granted = (next && next.budget_granted) || 0;
+  document.getElementById('graphTitle').textContent = `${g.gid} · ${g.title || ''}`;
+  document.getElementById('graphStats').textContent =
+    `${statusLabel(g.status)} · 节点 ${done}/${total} 已闭合 · 未闭合 ${open}`
+    + (granted ? ` · 图授予迭代 ${granted}` : '');
+
+  canvas.innerHTML = layoutGraphSvg(g);
+  if (!gGraphSelNode || !g.nodes[gGraphSelNode]) {
+    const act = nodes.find(n => n.status === 'active');
+    gGraphSelNode = act ? act.id : (g.cursor || 'n0');
+  }
+  renderGraphSide(g);
+}
+
+let gGraphUserPicked = false;
+function onGraphSelect(i) {
+  gGraphUserPicked = true;
+  gGraphIdx = parseInt(i, 10) || 0;
+  gGraphSelNode = null;
+  renderGraph(gGraphData ? { graph: gGraphData } : null);
+}
+
+function statusLabel(s) {
+  return { active: '进行中', completed: '已完成', abandoned: '已放弃' }[s] || s || '';
+}
+
+/** 分层布局：深度按 parent 链计算，同层横排居中。 */
+function layoutGraphSvg(g) {
+  const nodes = g.nodes || {};
+  const ids   = Object.keys(nodes);
+  if (!ids.length) return '';
+
+  // 有效父节点：显式入边优先，其次才是 node.parent。
+  // 两者本应一致（后端保证），但历史文件可能存在 parent 说 n0、edges 却另有说法
+  // 的分歧；此时以 edges 为准，并且不再从 parent 补画那条线，
+  // 否则画面上会出现一条数据里根本不存在的边。
+  const edgeParent = {};
+  (g.edges || []).forEach(e => {
+    if (e && nodes[e.from] && nodes[e.to] && edgeParent[e.to] == null) edgeParent[e.to] = e.from;
+  });
+  const parentOf = id => edgeParent[id] != null ? edgeParent[id] : (nodes[id] && nodes[id].parent);
+
+  // 深度（带环保护：父链最多走 ids.length 步）
+  const depth = {};
+  const depthOf = (id, guard = 0) => {
+    if (depth[id] != null) return depth[id];
+    const p = parentOf(id);
+    const d = (!p || !nodes[p] || guard > ids.length) ? 0 : depthOf(p, guard + 1) + 1;
+    return (depth[id] = d);
+  };
+  ids.forEach(id => depthOf(id));
+
+  const layers = {};
+  ids.forEach(id => (layers[depth[id]] = layers[depth[id]] || []).push(id));
+  const numOf = id => { const m = /^n(\d+)$/.exec(id); return m ? +m[1] : 1e9; };
+  Object.values(layers).forEach(l => l.sort((a, b) => numOf(a) - numOf(b)));
+
+  const maxPerLayer = Math.max(...Object.values(layers).map(l => l.length));
+  const width  = GN_PAD * 2 + maxPerLayer * GN_W + (maxPerLayer - 1) * GN_HGAP;
+  const depths = Object.keys(layers).map(Number).sort((a, b) => a - b);
+  const height = GN_PAD * 2 + depths.length * GN_H + (depths.length - 1) * GN_VGAP;
+
+  const pos = {};
+  depths.forEach((d, di) => {
+    const row = layers[d];
+    const rowW = row.length * GN_W + (row.length - 1) * GN_HGAP;
+    const x0 = (width - rowW) / 2;
+    row.forEach((id, i) => {
+      pos[id] = { x: x0 + i * (GN_W + GN_HGAP), y: GN_PAD + di * (GN_H + GN_VGAP) };
+    });
+  });
+
+  // 边：优先用显式 edges 的 kind，缺失时按 parent 补一条 then
+  const drawn = new Set();
+  const edgeParts = [];
+  const pushEdge = (from, to, kind) => {
+    const key = from + '>' + to;
+    if (drawn.has(key) || !pos[from] || !pos[to]) return;
+    drawn.add(key);
+    const a = pos[from], b = pos[to];
+    const x1 = a.x + GN_W / 2, y1 = a.y + GN_H;
+    const x2 = b.x + GN_W / 2, y2 = b.y;
+    const my = (y1 + y2) / 2;
+    const dead = ['abandoned', 'blocked'].includes((nodes[to] || {}).status);
+    edgeParts.push(`<path class="ge ge-${esc(kind || 'then')}${dead ? ' ge-dead' : ''}" `
+      + `d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}"/>`);
+  };
+  (g.edges || []).forEach(e => e && pushEdge(e.from, e.to, e.kind));
+  // 只为没有任何显式入边的节点用 parent 补线，避免与 edges 分歧时画出幽灵边
+  ids.forEach(id => { if (edgeParent[id] == null && nodes[id].parent) pushEdge(nodes[id].parent, id, 'then'); });
+
+  const nodeParts = ids.map(id => {
+    const n = nodes[id], p = pos[id];
+    const mark = { done: '✓', active: '▶', planned: '·', abandoned: '✗', blocked: '⏸' }[n.status] || '·';
+    const rng = n.iter_range || [];
+    const meta = rng[0] != null ? `${id} · ${rng[0]}–${rng[1] != null ? rng[1] : '…'}` : id;
+    const selCls = id === gGraphSelNode ? ' gn-sel' : '';
+    const tip = `${id} ${n.title || ''}\n${n.goal || ''}`
+      + (n.abandon_reason ? `\n废弃：${n.abandon_reason}` : '');
+    return `<g class="gn gn-${esc(n.status)}${selCls}" transform="translate(${p.x},${p.y})" `
+      + `onclick="selectGraphNode('${esc(id)}')"><title>${esc(tip)}</title>`
+      + `<rect width="${GN_W}" height="${GN_H}" rx="7"/>`
+      + `<text class="gn-title" x="10" y="19">${esc(mark)} ${esc(trunc(n.title || id, 18))}</text>`
+      + `<text class="gn-meta" x="10" y="34">${esc(meta)}</text></g>`;
+  });
+
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" `
+    + `xmlns="http://www.w3.org/2000/svg">${edgeParts.join('')}${nodeParts.join('')}</svg>`;
+}
+
+function trunc(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+
+function selectGraphNode(id) {
+  gGraphSelNode = id;
+  const graphs = graphsOf(gGraphData);
+  const g = graphs[gGraphIdx];
+  if (!g) return;
+  document.getElementById('graphCanvas').innerHTML = layoutGraphSvg(g);
+  renderGraphSide(g);
+}
+
+function renderGraphSide(g) {
+  const side = document.getElementById('graphSide');
+  const n = (g.nodes || {})[gGraphSelNode];
+  if (!n) { side.innerHTML = ''; return; }
+
+  const rng = n.iter_range || [];
+  const ex  = n.exit || {};
+  const parts = [];
+  parts.push(`<div class="gs-block"><h4>${esc(n.id)} · ${esc(statusCn(n.status))}</h4>`
+    + `<div style="font-weight:600;margin-bottom:4px">${esc(n.title || '')}</div>`
+    + `<div class="gs-goal">${esc(n.goal || '(无目标描述)')}</div></div>`);
+
+  const kv = [];
+  if (rng[0] != null) kv.push(`迭代 ${rng[0]}–${rng[1] != null ? rng[1] : '进行中'}`);
+  if (n.budget) kv.push(`自估 ${n.budget}`);
+  if (rng[0] != null && rng[1] != null) kv.push(`实用 ${rng[1] - rng[0]}`);
+  if (n.visits > 1) kv.push(`进入 ${n.visits} 次`);
+  if (kv.length) parts.push(`<div class="gs-block gs-kv">${esc(kv.join(' · '))}</div>`);
+
+  parts.push(`<div class="gs-block"><h4>出口证据</h4><span class="gs-tag">${esc(ex.evidence_type || '-')}</span>`
+    + (n.closed_by ? ` <span class="gs-tag">${esc(closedByCn(n.closed_by))}</span>` : '')
+    + ((ex.expect || []).length ? `<ul>${ex.expect.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : '')
+    + `</div>`);
+
+  if (n.outcome && (n.outcome.summary || (n.outcome.gaps || []).length)) {
+    parts.push(`<div class="gs-block"><h4>结论</h4>`
+      + (n.outcome.summary ? `<div class="gs-goal">${esc(n.outcome.summary)}</div>` : '')
+      + ((n.outcome.gaps || []).length ? `<ul>${n.outcome.gaps.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '')
+      + `</div>`);
+  }
+  // 降级闭合：节点显示为"已完成"，但承诺没完全兑现。这块必须显眼——
+  // 这类遗留会在后继工作里被放大，甚至成为关键阻塞。
+  if (n.closed_by === 'unverified_override' && n.outcome && n.outcome.residue) {
+    parts.push(`<div class="gs-block gs-override"><h4>⚠ 降级通过的遗留</h4>`
+      + `<div class="gs-goal">${esc(n.outcome.residue)}</div>`
+      + (n.outcome.impact ? `<div class="gs-kv" style="margin-top:6px">影响评估：${esc(n.outcome.impact)}</div>` : '')
+      + `</div>`);
+  }
+  if (n.abandon_reason) {
+    parts.push(`<div class="gs-block"><h4>废弃原因</h4><div class="gs-reason">${esc(n.abandon_reason)}</div></div>`);
+  }
+  // 环境残留：废弃分支不回滚环境，这一节是"逻辑回溯"能成立的前提
+  if ((n.side_effects || []).length) {
+    parts.push(`<div class="gs-block"><h4>环境残留（不会自动回滚）</h4>`
+      + `<ul class="gs-residue">${n.side_effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`);
+  }
+  if (rng[0] != null) {
+    parts.push(`<div class="gs-block"><span class="gs-jump" onclick="jumpToNodeEvents('${esc(n.id)}')">`
+      + `→ 在 Events 里只看这一段</span></div>`);
+  }
+  side.innerHTML = parts.join('');
+}
+
+function statusCn(s) {
+  return { done: '已闭合', active: '进行中', planned: '待办', abandoned: '已废弃', blocked: '受阻' }[s] || s;
+}
+function closedByCn(s) {
+  return { evidence_verified: '产物已核验', self_certified: '自证', implicit: '隐式',
+           unverified_override: '降级通过' }[s] || s;
+}
+
+/** 点节点 → 跳到 Events 并按该节点的迭代区间过滤。 */
+function jumpToNodeEvents(id) {
+  const g = graphsOf(gGraphData)[gGraphIdx];
+  const n = g && g.nodes[id];
+  if (!n || !n.iter_range || n.iter_range[0] == null) return;
+  gGraphFilter = {
+    node: id,
+    title: n.title || '',
+    from: n.iter_range[0],
+    to: n.iter_range[1] != null ? n.iter_range[1] : Infinity,
+  };
+  setCenterTab('events');
+  if (gAdvisorView) renderAll(gAdvisorView, gViewRunId);
+}
+
+function clearGraphFilter() {
+  gGraphFilter = null;
+  if (gAdvisorView) renderAll(gAdvisorView, gViewRunId);
+}
+
+/** 按当前选中的图节点过滤事件；同时维护顶部提示条。返回要渲染的事件数组。 */
+function applyGraphNodeFilter(events) {
+  const bar = document.getElementById('graphFilterBar');
+  if (!bar) return events;
+  if (!gGraphFilter) { bar.style.display = 'none'; return events; }
+
+  const f = gGraphFilter;
+  const kept = events.filter(ev => ev.iter >= f.from && ev.iter <= f.to);
+  const toLabel = f.to === Infinity ? '…' : f.to;
+  bar.style.display = '';
+  bar.innerHTML =
+    `<span>只看节点 <b>${esc(f.node)}</b> ${esc(f.title)} · 迭代 ${esc(String(f.from))}–${esc(String(toLabel))}</span>`
+    + (kept.length
+        ? `<span style="opacity:.55">（迭代号是看板重建值，与图上区间可能差几格）</span>`
+        : `<span style="opacity:.55">（该区间内没有可显示的事件，已退回全量）</span>`)
+    + `<div class="bar-gap"></div><button onclick="clearGraphFilter()">清除过滤</button>`;
+  return kept.length ? kept : events;
+}
+
+function fitGraph() {
+  const c = document.getElementById('graphCanvas');
+  if (c) c.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+}
 
 // ── Apps (user-space executable programs) ──────────────────────────────────
 let gApps        = [];      // [{id,name,icon,description,runtime,enabled,size}]
@@ -6397,13 +6833,18 @@ fetch('/api/version').then(r => r.json()).then(d => {
   const inKey  = document.getElementById('setKey');
   const inModel= document.getElementById('setModel');
   // Two independent tab groups, each with its own content area shown below it:
-  //   • "api"  (LLM 服务)   主/备用 — share one set of inputs, switching swaps values.
+  //   • "api"  (LLM 服务)   API 1/2/3 + 顾问 1/2 — share one set of inputs, switching swaps values.
   //   • "general" (通用设置) 其他配置/局域网/运行参数 — each its own pane.
   // Both groups' content is visible at once; only the tabs within a group are exclusive.
   const tabState = { primary: { base:'', key:'', model:'' }, backup: { base:'', key:'', model:'' },
+                     backup2: { base:'', key:'', model:'' },
                      advisor1: { base:'', key:'', model:'' }, advisor2: { base:'', key:'', model:'' } };
+  // 三个可互为 fallback 的 API 槽位；顾问模型不在其列（只被 consult_advisor 调用）。
+  const API_TABS = ['primary', 'backup', 'backup2'];
+  const isAdvisorTab = n => n === 'advisor1' || n === 'advisor2';
   const GPANES = { other:'setPaneOther', lan:'setPaneLan', runtime:'setPaneRuntime' };
-  let apiTab     = 'primary';   // 主 | 备用 — what snap()/loadTab() act on
+  let apiTab     = 'primary';   // API 1|2|3 / 顾问 1|2 — what snap()/loadTab() act on
+  let preferred  = 'primary';   // 首选 API：启动时先探它，失败按槽序回退到其余两个
   let generalTab = 'other';     // 其他配置 | 局域网 | 运行参数
 
   // DASHBOARD_HOST/PORT are read once at dashboard startup, so a change only
@@ -6413,24 +6854,38 @@ fetch('/api/version').then(r => r.json()).then(d => {
   const snap = () => { tabState[apiTab].base = inBase.value; tabState[apiTab].key = inKey.value; tabState[apiTab].model = inModel.value; };
   const loadTab = n => { inBase.value = tabState[n].base; inKey.value = tabState[n].key; inModel.value = tabState[n].model; };
   function marks() {
-    // 主 API 的 base/model 为必填；备用与顾问模型均可选（留空 = 不启用）。
-    const required = apiTab === 'primary';
-    document.getElementById('setMarkBase').style.display  = required ? 'inline' : 'none';
-    document.getElementById('setMarkModel').style.display = required ? 'inline' : 'none';
-    const isAdv = apiTab === 'advisor1' || apiTab === 'advisor2';
+    // 只有「首选 API」的 base/model 为必填；另外两个 API 与顾问模型均可选（留空 = 不启用）。
+    const isAdv = isAdvisorTab(apiTab);
+    const isPreferred = apiTab === preferred;
+    document.getElementById('setMarkBase').style.display  = isPreferred ? 'inline' : 'none';
+    document.getElementById('setMarkModel').style.display = isPreferred ? 'inline' : 'none';
     document.getElementById('setHintBase').textContent =
-      apiTab === 'backup' ? '（主 API 失败时自动切换，留空不启用）'
-      : isAdv             ? '（仅供 consult_advisor 工具按需调用，不参与主备 fallback）'
-      :                     '（OpenAI 兼容接口的 base URL）';
+      isAdv        ? '（仅供 consult_advisor 工具按需调用，不参与 API fallback）'
+      : isPreferred ? '（首选 API：启动时优先使用，OpenAI 兼容接口的 base URL）'
+      :               '（首选 API 不可用时按 API 1→2→3 顺序自动切换到这里，留空不启用）';
     document.getElementById('setHintModel').textContent =
-      apiTab === 'backup' ? '（备用 endpoint 需单独指定 model id）'
-      : isAdv             ? '（该顾问 endpoint 的 model id）'
-      :                     '（与服务端返回的 model id 一致）';
+      isAdv ? '（该顾问 endpoint 的 model id）'
+            : '（与该 endpoint 返回的 model id 一致，不同 endpoint 通常不同）';
+    // 首选开关：只对三个 API 槽位有意义，顾问 tab 下隐藏
+    const pref = document.getElementById('setBtnPref');
+    pref.style.display = isAdv ? 'none' : '';
+    pref.classList.toggle('on', isPreferred);
+    pref.textContent = isPreferred ? '★ 首选模型' : '☆ 设为首选';
+    pref.title = isPreferred
+      ? '当前是首选 API：Agent 启动时先探测它，失败才回退到另外两个'
+      : '把当前 API 设为首选，另外两个作为 fallback';
   }
   function dots() {
     const has = s => !!(s.base.trim() || s.key.trim() || s.model.trim());
-    document.getElementById('setTabBackup').classList.toggle('has-value', has(tabState.backup));
-    document.getElementById('setTabPrimary').classList.toggle('has-value', !!(tabState.primary.base.trim() || tabState.primary.model.trim()));
+    // API 槽位：填了 base 或 model 才算已配置（key 有 'local' 默认值，单独填不算）。
+    // 亮绿 = 首选，暗绿 = fallback。
+    for (const n of API_TABS) {
+      const el = document.getElementById({ primary:'setTabPrimary', backup:'setTabBackup', backup2:'setTabBackup2' }[n]);
+      el.classList.toggle('has-value', !!(tabState[n].base.trim() || tabState[n].model.trim()));
+      const d = el.querySelector('.set-dot');
+      d.classList.toggle('preferred', n === preferred);
+      d.classList.toggle('dim', n !== preferred);
+    }
     document.getElementById('setTabAdvisor1').classList.toggle('has-value', has(tabState.advisor1));
     document.getElementById('setTabAdvisor2').classList.toggle('has-value', has(tabState.advisor2));
   }
@@ -6447,6 +6902,14 @@ fetch('/api/version').then(r => r.json()).then(d => {
     const el = document.getElementById(GPANES[n]); if (el) el.style.display = '';
     document.querySelectorAll('.set-tabs[data-group="general"] .set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === n));
   }
+  // ── 首选 API：三选一，永远恰好一个。点已是首选的按钮无动作（不允许“无首选”）──
+  function setPreferred(n) {
+    if (isAdvisorTab(n) || n === preferred) return;
+    preferred = n;
+    marks(); dots();
+    showMsg('success', '已把「' + TAB_LABELS[n] + '」设为首选 —— 保存后生效：启动时先探它，失败再按顺序回退到其余 API');
+  }
+  document.getElementById('setBtnPref').addEventListener('click', () => setPreferred(apiTab));
   document.querySelectorAll('.set-tabs[data-group="api"] .set-tab').forEach(e => e.addEventListener('click', () => switchApiTab(e.dataset.tab)));
   document.querySelectorAll('.set-tabs[data-group="general"] .set-tab').forEach(e => e.addEventListener('click', () => switchGeneralTab(e.dataset.tab)));
   [inBase, inKey, inModel].forEach(e => e.addEventListener('input', () => { snap(); dots(); }));
@@ -6459,7 +6922,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
 
   const showMsg = (t, x) => { msg.className = 'set-msg ' + t; msg.textContent = x; };
 
-  const TAB_LABELS = { primary:'主 API', backup:'备用 API', advisor1:'顾问模型1', advisor2:'顾问模型2' };
+  const TAB_LABELS = { primary:'API 1', backup:'API 2', backup2:'API 3', advisor1:'顾问模型1', advisor2:'顾问模型2' };
 
   // Server-side probe of {baseUrl}/models. Returns string[] of model ids,
   // or null when the endpoint is unreachable / returned no usable list.
@@ -6498,9 +6961,12 @@ fetch('/api/version').then(r => r.json()).then(d => {
       const env = await res.json();
       tabState.primary = { base: env.OPENAI_BASE_URL || '', key: env.OPENAI_API_KEY || '', model: env.OPENAI_MODEL || '' };
       tabState.backup  = { base: env.BACKUP_OPENAI_BASE_URL || '', key: env.BACKUP_OPENAI_API_KEY || '', model: env.BACKUP_OPENAI_MODEL || '' };
+      tabState.backup2 = { base: env.BACKUP2_OPENAI_BASE_URL || '', key: env.BACKUP2_OPENAI_API_KEY || '', model: env.BACKUP2_OPENAI_MODEL || '' };
       tabState.advisor1 = { base: env.ADVISOR1_OPENAI_BASE_URL || '', key: env.ADVISOR1_OPENAI_API_KEY || '', model: env.ADVISOR1_OPENAI_MODEL || '' };
       tabState.advisor2 = { base: env.ADVISOR2_OPENAI_BASE_URL || '', key: env.ADVISOR2_OPENAI_API_KEY || '', model: env.ADVISOR2_OPENAI_MODEL || '' };
-      apiTab = 'primary'; loadTab('primary'); switchApiTab('primary');
+      // 未设 / 值非法 → 回落到 API 1，与后端 run_goal.preferred_api_slot() 同一套默认
+      preferred = API_TABS.includes(env.PREFERRED_API) ? env.PREFERRED_API : 'primary';
+      apiTab = preferred; loadTab(preferred); switchApiTab(preferred);
       switchGeneralTab('other');
       document.getElementById('setIters').value = env.MAX_ITERS || '100';
       document.getElementById('setName').value  = env.INSTANCE_NAME || '';
@@ -6540,7 +7006,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
   // ── Probe current tab's endpoint ──────────────────────────────────
   document.getElementById('setBtnTest').addEventListener('click', async () => {
     const baseUrl = inBase.value.trim(), apiKey = inKey.value.trim();
-    if (!baseUrl) { showMsg('error', '请先填写' + (apiTab === 'backup' ? '备用 API ' : '') + '服务地址'); return; }
+    if (!baseUrl) { showMsg('error', '请先填写「' + TAB_LABELS[apiTab] + '」的服务地址'); return; }
     const btn = document.getElementById('setBtnTest');
     btn.disabled = true; btn.textContent = '验证中…'; msg.className = 'set-msg';
     try {
@@ -6577,7 +7043,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
     {
       const saveBtn = document.getElementById('setSave');
       const orig = saveBtn.textContent;
-      for (const n of ['primary', 'backup', 'advisor1', 'advisor2']) {
+      for (const n of ['primary', 'backup', 'backup2', 'advisor1', 'advisor2']) {
         const s = tabState[n];
         if (!s.base.trim() || s.model.trim()) continue;
         saveBtn.disabled = true; saveBtn.textContent = '探测模型中…';
@@ -6597,18 +7063,23 @@ fetch('/api/version').then(r => r.json()).then(d => {
       }
     }
 
-    const pB = tabState.primary.base.trim(), pM = tabState.primary.model.trim();
-    if (!pB || !pM) {
-      if (apiTab !== 'primary') switchApiTab('primary');
-      showMsg('error', !pB ? '主 API 服务地址不能为空' : '主 API 模型名称不能为空');
-      return;
-    }
-    const bB = tabState.backup.base.trim(), bK = tabState.backup.key.trim(), bM = tabState.backup.model.trim();
-    const bAny = bB || bK || bM, bAll = bB && bM;  // key may be empty (local service)
-    if (bAny && !bAll) {
-      if (apiTab !== 'backup') switchApiTab('backup');
-      showMsg('error', '备用 API 需要同时填写 base URL 和模型名称（API 密钥可空）');
-      return;
+    // 三个 API 槽位：首选必须配齐 base + model（Agent 起不来的兜底线）；
+    // 另外两个可留空不启用，但一旦动过就必须 base + model 成对（key 本地服务可空）。
+    const api = {};
+    for (const n of API_TABS) {
+      const s = tabState[n], aB = s.base.trim(), aK = s.key.trim(), aM = s.model.trim();
+      const any = aB || aK || aM;
+      if (n === preferred && !(aB && aM)) {
+        if (apiTab !== n) switchApiTab(n);
+        showMsg('error', '首选 API「' + TAB_LABELS[n] + '」的' + (!aB ? '服务地址' : '模型名称') + '不能为空');
+        return;
+      }
+      if (any && !(aB && aM)) {
+        if (apiTab !== n) switchApiTab(n);
+        showMsg('error', '「' + TAB_LABELS[n] + '」需要同时填写 base URL 和模型名称（API 密钥可空）');
+        return;
+      }
+      api[n] = { base: aB, key: any ? (aK || 'local') : '', model: aM };
     }
     // 顾问模型 1 / 2：可选；若填写则 base URL 与模型名称必须成对。
     const adv = {};
@@ -6623,12 +7094,17 @@ fetch('/api/version').then(r => r.json()).then(d => {
     }
     const proxy = document.getElementById('setProxy').value.trim();
     const data = {
-      OPENAI_BASE_URL: pB,
-      OPENAI_API_KEY:  tabState.primary.key.trim() || 'local',
-      OPENAI_MODEL:    pM,
-      BACKUP_OPENAI_BASE_URL: bB,
-      BACKUP_OPENAI_API_KEY:  bAny ? (bK || 'local') : '',
-      BACKUP_OPENAI_MODEL:    bM,
+      OPENAI_BASE_URL: api.primary.base,
+      OPENAI_API_KEY:  api.primary.key,
+      OPENAI_MODEL:    api.primary.model,
+      BACKUP_OPENAI_BASE_URL: api.backup.base,
+      BACKUP_OPENAI_API_KEY:  api.backup.key,
+      BACKUP_OPENAI_MODEL:    api.backup.model,
+      BACKUP2_OPENAI_BASE_URL: api.backup2.base,
+      BACKUP2_OPENAI_API_KEY:  api.backup2.key,
+      BACKUP2_OPENAI_MODEL:    api.backup2.model,
+      // 空 = 从 .env 删键 = 默认首选 API 1，与后端默认一致
+      PREFERRED_API: preferred === 'primary' ? '' : preferred,
       ADVISOR1_OPENAI_BASE_URL: adv.advisor1.base,
       ADVISOR1_OPENAI_API_KEY:  adv.advisor1.key,
       ADVISOR1_OPENAI_MODEL:    adv.advisor1.model,

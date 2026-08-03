@@ -563,6 +563,160 @@ _STRINGS: dict[str, dict[str, str]] = {
             "请询问用户是否需要增加迭代次数（用户可输入 /+N 增加，例如 /+50）。"
         ),
         "warn.iter_limit_console": "⚠️  [迭代警告] 剩余 {remaining} 次迭代，即将达到上限",
+
+        # ── graph.py — 执行图 ────────────────────────────────────────────────
+        "graph.root.title": "前序工作",
+        "graph.feedback_prefix": "[执行图]",
+
+        "graph.tool.no_nodes":      "nodes 不能为空：建图至少要给出一个节点。",
+        "graph.tool.created":       "执行图已建立：{gid}「{title}」，共 {n} 个节点（另有根节点 n0 承载建图前的工作）。",
+        "graph.tool.replaced":      "被新图取代",
+        "graph.tool.replace_active": "（原活动图 {gid} 已自动标记为 abandoned：同时只能有一张活动图）",
+        "graph.tool.abandoned":     "执行图 {gid} 已放弃：{reason}。后续回到自由模式，不再注入图。",
+        "graph.tool.revised":       "执行图已修订：{ok} 项成功，{failed} 项失败。",
+        "graph.tool.orphans": (
+            "⚠ 以下节点在 edges 里没有入边，已按 nodes 的给出顺序补链：{ids}。"
+            "如果不是你想要的结构，请用 plan_revise 修正。"
+            "提醒：n0 是系统自动生成的根节点，你给的第一个节点是 n1。"
+        ),
+        "graph.tool.dropped_edges": (
+            "⚠ 以下边引用了不存在的节点 id，已忽略：{edges}。"
+            "节点按 nodes 的给出顺序编号 n1、n2…（n0 保留给根节点）。"
+        ),
+
+        "graph.op.no_graph":       "当前没有活动的执行图。若要用图的方式推进，请先调用 plan_create。",
+        "graph.op.unknown":        "未知的 graph_op 操作: {op}。可用：enter / exit / extend / fork / abandon / block。",
+        "graph.op.node_missing":   "节点 {id} 不存在。",
+        "graph.op.enter_abandoned": "节点 {id} 已废弃，不能重新进入；若要重走该路线，请用 fork 从分叉点新建节点。",
+        "graph.op.busy":           "节点 {id} 仍在进行中，请先对它 exit 或 abandon，再进入新节点。",
+        "graph.op.entered":        "已进入节点 {id}「{title}」。",
+        "graph.op.not_active":     "节点 {id} 当前状态为 {status}，不是进行中，无法 exit。",
+        "graph.op.exit_missing_artifact": (
+            "出口证据校验未通过——以下声明的产物不存在：{missing}。"
+            "节点保持进行中，请先真正生成这些文件，再 exit。"
+        ),
+        "graph.op.exited":         "节点 {id} 已闭合（{closed_by}）。",
+        "graph.op.route_hint":     "图上你为它准备过退路：{routes}——要走的话用 enter 进入。",
+        "graph.op.force_available": (
+            "若你确认工作实际已完成、只是产物无法按 expect 落盘，可以降级闭合："
+            "在 exit 里加 force=true，并同时给出 residue（具体缺了什么，要能被别人核对）"
+            "与 impact（这个遗留会不会影响后续节点，为什么）。"
+        ),
+        "graph.op.force_needs_detail": (
+            "降级闭合被拒：force=true 时 residue 与 impact 都是必填，且必须具体。\n"
+            "  residue: 究竟缺了什么（当前缺失产物：{missing}）——写到别人能照着核对的程度，"
+            "不要写\"还有一点小问题\"\n"
+            "  impact:  这个遗留会不会影响后续节点？为什么？"
+            "即使结论是\"不影响\"，也要说明依据（例如\"n5 只用第 1 节数据，不碰缺失的第 3 节\"）\n"
+            "降级闭合产生的遗留会在后继工作里被放大，甚至成为关键阻塞，"
+            "而那时当初的上下文早已被压缩。这两句话就是留给那时的唯一线索。"
+        ),
+        "graph.op.force_followup": (
+            "⚠ 节点 {id} 以**降级方式**闭合，遗留已记入执行图并会常驻上下文：\n"
+            "  遗留：{residue}\n"
+            "  你的影响评估：{impact}\n"
+            "下游未闭合节点：{downstream}\n"
+            "现在请落实这个评估：如果该遗留会影响下游，**立即用 plan_revise 调整方案**"
+            "（补一个补救节点、改写受影响节点的 goal/exit、或换一条路），不要带着它往前走；"
+            "如果确认不影响，继续即可，无需额外动作。"
+        ),
+        "graph.op.graph_completed": "执行图 {gid} 已标记为完成，不再注入图。",
+        "graph.op.complete_pending": "还有未达终态的节点：{ids}。请先把它们 exit / abandon / block，再声明图完成。",
+        "graph.op.single_node_only": "extend / fork 每次只能追加一个节点；要成批修改结构请用 plan_revise。",
+        "graph.op.bad_node":       "节点数据不合法：{why}",
+        "graph.op.bad_node_empty": "title 与 goal 不能同时为空",
+        "graph.op.added":          "已新增节点 {id}「{title}」，挂在 {parent} 之后（{kind}）。",
+        "graph.op.root_immutable": "根节点 n0 承载建图前的历史，不能废弃或标记受阻。",
+        "graph.op.cascade_reason": "上游 {id} 已废弃",
+        "graph.op.cascade":        "（同时废弃了下游尚未开始的节点：{ids}）",
+        "graph.op.abandoned":      "节点 {id} 已废弃：{reason}",
+        "graph.op.blocked":        "节点 {id} 已标记为受阻：{reason}",
+        "graph.op.update_terminal": "节点 {id} 已是终态（{status}），不能再修改。",
+        "graph.op.update_noop":    "节点 {id} 没有任何可更新的字段。",
+        "graph.op.updated":        "节点 {id} 已更新：{fields}",
+        "graph.op.internal_error": "执行图操作内部错误（已忽略，不影响主流程）：{err}",
+
+        "graph.closed_by.evidence_verified": "产物已核验",
+        "graph.closed_by.self_certified":    "自证",
+        "graph.closed_by.unverified_override": "降级通过（产物未核验）",
+        "graph.proj.overrides": (
+            "降级闭合的遗留（这些节点标记为已完成，但**承诺未完全兑现**；"
+            "遗留会在后继工作里被放大，动到相关部分前先回看这里）：\n{items}"
+        ),
+        "graph.gaps.override_line": "[图 {node}「{title}」/降级通过] 遗留: {residue}；影响评估: {impact}",
+
+        "graph.proj.header":  "## 执行图 {gid}「{title}」· 节点 {done}/{total} 已闭合",
+        "graph.proj.current": "**当前节点 {id}「{title}」** — 第 {entered} 轮进入，已用 {used} 轮（自估 {budget}）",
+        "graph.proj.goal":    "目标：{goal}",
+        "graph.proj.exit":    "出口证据：{etype} — {expect}",
+        "graph.proj.no_active":       "当前无进行中的节点。可进入：{frontier}",
+        "graph.proj.no_active_empty": "当前无进行中的节点，也没有待办节点——可以 exit 收束，或用 extend 规划下一步。",
+        "graph.proj.path":      "路径：{chain}",
+        "graph.proj.siblings":  "同层备选：\n{items}",
+        "graph.proj.next":      "前方待办：\n{items}",
+        "graph.proj.abandoned": "已废弃分支：\n{items}",
+        "graph.proj.folded":    "{id} 分支（{n} 个节点）已废弃：{reason}",
+        "graph.proj.residue": (
+            "环境残留（废弃分支已对环境造成的改动，**不会自动回滚**；选新路前先确认是否需要清理或可复用）：\n{items}"
+        ),
+        # 注意：本条不带 kwargs，t() 不会走 str.format，因此大括号**不能**写成双写转义，
+        # 否则模型会原样看到 {{node}}。同理，将来给它加参数时必须同时把这里改成双写。
+        "graph.proj.protocol": (
+            "提示：可在工具调用的同一个 JSON 里附带 graph_op 推进本图（零额外迭代）：\n"
+            "enter{node} / exit{node,summary,side_effects,gaps} / extend{after,node} / "
+            "fork{from,node} / abandon{node,reason,side_effects} / block{node,reason} / complete。\n"
+            "extend、fork 每次限一个节点；批量改结构用 plan_revise。exit 与 abandon 请如实申报 side_effects。\n"
+            "产物核验不过但工作确已完成时，可 exit 加 force=true 降级闭合，"
+            "此时必须同时给出 residue（缺什么）与 impact（是否影响后续、为什么）。"
+        ),
+        "graph.stall.hint_stall": (
+            "[执行图] 已连续 {n} 轮没有任何节点闭合（当前节点 {node}）。"
+            "三条出路，挑一条走：① 拿出出口证据把它 exit 掉；"
+            "② 判定此路不通，abandon 它并如实申报 side_effects，再 fork 换一条路；"
+            "③ 它太大了，用 extend 拆成更小的节点分步闭合。"
+        ),
+        "graph.stall.hint_revisit": (
+            "[执行图] 节点 {node} 已被反复进入 {n} 次。"
+            "反复回到同一个节点通常意味着它的目标或出口定得不对——"
+            "考虑用 plan_revise 改写它的 goal/exit，或者拆小它，而不是再试一次。"
+        ),
+        "graph.stall.hint_fanout": (
+            "[执行图] 当前有 {open} 个未闭合节点，却只闭合了 {done} 个——"
+            "计划在不断变宽而没有变深。先收敛：挑一个节点做到底并闭合，"
+            "或把确定不做的节点 abandon 掉。"
+        ),
+        "graph.stall.hint_unverified": (
+            "[执行图] 最近连续 {n} 个节点都以不可实证的证据闭合（observation/none）。"
+            "这不禁止，但请自查：这些节点是否真的产出了可核验的东西？"
+            "能落盘的产物请写进 exit.expect，让闭合可以被实证。"
+        ),
+        "graph.stall.l2_console": "[执行图停滞] {reason}：stall={stall} 重入={revisits} 扇出={fanout}，advisor 介入",
+        "graph.stall.l3_question": (
+            "我在按执行图 {gid} 推进时陷入了停滞：已连续 {stall} 轮没有任何节点闭合，"
+            "advisor 已介入但仍未突破。\n"
+            "当前节点：{node}「{title}」\n"
+            "未闭合节点还有 {open} 个。\n\n"
+            "请问您有什么建议？例如：指出更可行的分解方式、告知某个节点可以跳过、"
+            "或者提供绕过当前障碍的思路。"
+        ),
+        "graph.op.granted": "（已按你的自估发放 {n} 次迭代预算）",
+        "graph.overrun": (
+            "[执行图] 节点 {node}「{title}」已用 {used} 轮，你自估 {budget} 轮。"
+            "这不扣预算、也不强制你做什么，只是提醒：估算差这么多，通常说明这个节点"
+            "比预想的复杂——考虑用 extend 把它拆小分步闭合，或者重新判断这条路是否走得通。"
+        ),
+        "graph.gaps.line": "[图 {node}「{title}」/{status}] {goal}（出口: {etype} — {expect}）",
+        "graph.done_open_nodes": (
+            "[执行图] 你正要结束任务，但图 {gid} 上还有 {n} 个节点没有闭合：{ids}。\n"
+            "如果它们确实已经不必做了，请先把它们 abandon 或 block 掉并写明原因，"
+            "再重新 done——未闭合的节点会原样带进本次运行的遗留缺口，"
+            "成为后续续作的输入，写不清楚会让后面的人（或下一次运行）白走一遍。\n"
+            "如果它们只是被你忘了，现在正是补上的时候。"
+        ),
+        "advisor.ctx.graph": "## 执行图（结构化进展骨架）\n{graph}",
+        "graph.proj.truncated": "（图较大，投影已截断；完整图见 run 目录的 graph.json）",
+        "graph.proj.completed_line": "## 执行图 {gid}「{title}」已完成，不再遵循（完整记录见 graph.json）。",
+        "graph.proj.abandoned_line": "## 执行图 {gid}「{title}」已放弃，不再遵循（完整记录见 graph.json）。",
     },
 
     "en": {
@@ -1103,6 +1257,161 @@ Before calling action='done', you MUST complete the following two steps:
             "Please ask the user whether to add more iterations (the user can type /+N, e.g. /+50)."
         ),
         "warn.iter_limit_console": "⚠️  [Iteration warning] {remaining} iterations remaining — limit approaching",
+
+        # ── graph.py — execution graph ───────────────────────────────────────
+        "graph.root.title": "Prior work",
+        "graph.feedback_prefix": "[Execution graph]",
+
+        "graph.tool.no_nodes":      "`nodes` cannot be empty — a graph needs at least one node.",
+        "graph.tool.created":       "Execution graph created: {gid} \"{title}\" with {n} nodes (plus root n0 carrying the work done before the graph existed).",
+        "graph.tool.replaced":      "superseded by a new graph",
+        "graph.tool.replace_active": "(Previous active graph {gid} was automatically marked abandoned — only one graph can be active at a time.)",
+        "graph.tool.abandoned":     "Execution graph {gid} abandoned: {reason}. Returning to free-form mode; the graph will no longer be injected.",
+        "graph.tool.revised":       "Execution graph revised: {ok} operation(s) succeeded, {failed} failed.",
+        "graph.tool.orphans": (
+            "⚠ These nodes had no incoming edge and were chained in the order they appear in `nodes`: {ids}. "
+            "Use plan_revise if that is not the structure you intended. "
+            "Reminder: n0 is the auto-generated root node — your first node is n1."
+        ),
+        "graph.tool.dropped_edges": (
+            "⚠ These edges referenced node ids that do not exist and were ignored: {edges}. "
+            "Nodes are numbered n1, n2, … in the order given in `nodes` (n0 is reserved for the root)."
+        ),
+
+        "graph.op.no_graph":       "There is no active execution graph. Call plan_create first if you want to work through a graph.",
+        "graph.op.unknown":        "Unknown graph_op: {op}. Valid ops: enter / exit / extend / fork / abandon / block.",
+        "graph.op.node_missing":   "Node {id} does not exist.",
+        "graph.op.enter_abandoned": "Node {id} was abandoned and cannot be re-entered; use fork from the branch point to retry that route.",
+        "graph.op.busy":           "Node {id} is still in progress — exit or abandon it before entering another node.",
+        "graph.op.entered":        "Entered node {id} \"{title}\".",
+        "graph.op.not_active":     "Node {id} is currently {status}, not in progress, so it cannot be exited.",
+        "graph.op.exit_missing_artifact": (
+            "Exit evidence check failed — the following claimed artifacts do not exist: {missing}. "
+            "The node stays in progress; actually produce these files before exiting."
+        ),
+        "graph.op.exited":         "Node {id} closed ({closed_by}).",
+        "graph.op.route_hint":     "You planned fallbacks for it on the graph: {routes} — enter one to take it.",
+        "graph.op.force_available": (
+            "If the work really is done and only the artifact could not be written where expect says, "
+            "you may close it as a downgrade: add force=true to exit, together with residue (exactly what is "
+            "missing, in checkable terms) and impact (whether this affects later nodes, and why)."
+        ),
+        "graph.op.force_needs_detail": (
+            "Downgrade close rejected: with force=true, both residue and impact are required and must be specific.\n"
+            "  residue: what exactly is missing (currently absent: {missing}) — detailed enough for someone "
+            "else to check against; not \"a few small issues left\"\n"
+            "  impact:  will this affect later nodes? why? Even if the answer is \"no\", give the reasoning "
+            "(e.g. \"n5 only uses section 1 and never touches the missing section 3\")\n"
+            "Residue from a downgrade close gets amplified by later work and can become the blocking issue — "
+            "by then the original context is long compressed. These two sentences are the only trace left."
+        ),
+        "graph.op.force_followup": (
+            "⚠ Node {id} was closed as a **downgrade**. The residue is recorded on the graph and stays in context:\n"
+            "  Residue: {residue}\n"
+            "  Your impact assessment: {impact}\n"
+            "Open downstream nodes: {downstream}\n"
+            "Now act on that assessment: if the residue does affect downstream work, **use plan_revise right now** "
+            "(add a remediation node, rewrite the affected node's goal/exit, or take another route) — do not carry it "
+            "forward silently. If you confirmed it does not, simply continue."
+        ),
+        "graph.op.graph_completed": "Execution graph {gid} marked complete; it will no longer be injected.",
+        "graph.op.complete_pending": "Some nodes are not terminal yet: {ids}. Exit / abandon / block them before declaring the graph complete.",
+        "graph.op.single_node_only": "extend / fork may append only one node at a time; use plan_revise for bulk structural changes.",
+        "graph.op.bad_node":       "Invalid node data: {why}",
+        "graph.op.bad_node_empty": "title and goal cannot both be empty",
+        "graph.op.added":          "Added node {id} \"{title}\" after {parent} ({kind}).",
+        "graph.op.root_immutable": "Root node n0 carries the history from before the graph existed and cannot be abandoned or blocked.",
+        "graph.op.cascade_reason": "upstream {id} was abandoned",
+        "graph.op.cascade":        "(Also abandoned downstream nodes that had not started: {ids})",
+        "graph.op.abandoned":      "Node {id} abandoned: {reason}",
+        "graph.op.blocked":        "Node {id} marked as blocked: {reason}",
+        "graph.op.update_terminal": "Node {id} is already terminal ({status}) and can no longer be modified.",
+        "graph.op.update_noop":    "Node {id} has no updatable fields in this request.",
+        "graph.op.updated":        "Node {id} updated: {fields}",
+        "graph.op.internal_error": "Internal execution-graph error (ignored, run unaffected): {err}",
+
+        "graph.closed_by.evidence_verified": "artifacts verified",
+        "graph.closed_by.self_certified":    "self-certified",
+        "graph.closed_by.unverified_override": "downgraded (artifacts unverified)",
+        "graph.proj.overrides": (
+            "Residue from downgraded closes (these nodes are marked done but their promise was **not fully kept**; "
+            "such residue gets amplified by later work — re-read this before touching the related parts):\n{items}"
+        ),
+        "graph.gaps.override_line": "[graph {node} \"{title}\"/downgraded] residue: {residue}; impact: {impact}",
+
+        "graph.proj.header":  "## Execution graph {gid} \"{title}\" · {done}/{total} nodes closed",
+        "graph.proj.current": "**Current node {id} \"{title}\"** — entered at iteration {entered}, {used} iterations spent (self-estimated {budget})",
+        "graph.proj.goal":    "Goal: {goal}",
+        "graph.proj.exit":    "Exit evidence: {etype} — {expect}",
+        "graph.proj.no_active":       "No node is currently in progress. Available to enter: {frontier}",
+        "graph.proj.no_active_empty": "No node is in progress and none are pending — either wrap up, or use extend to plan the next step.",
+        "graph.proj.path":      "Path: {chain}",
+        "graph.proj.siblings":  "Alternatives at this branch point:\n{items}",
+        "graph.proj.next":      "Pending ahead:\n{items}",
+        "graph.proj.abandoned": "Abandoned branches:\n{items}",
+        "graph.proj.folded":    "branch {id} ({n} nodes) abandoned: {reason}",
+        "graph.proj.residue": (
+            "Environment residue (changes already made by abandoned branches — these are **not rolled back**; "
+            "check whether they need cleanup or can be reused before choosing a new route):\n{items}"
+        ),
+        # NOTE: this entry takes no kwargs, so t() never calls str.format — braces must
+        # NOT be doubled here or the model sees a literal {{node}}.
+        "graph.proj.protocol": (
+            "Note: you may advance this graph by attaching a `graph_op` field to the same JSON as a normal tool call (no extra iteration):\n"
+            "enter{node} / exit{node,summary,side_effects,gaps} / extend{after,node} / "
+            "fork{from,node} / abandon{node,reason,side_effects} / block{node,reason} / complete.\n"
+            "extend and fork take one node at a time; use plan_revise for bulk changes. Report side_effects truthfully on exit and abandon.\n"
+            "If artifact verification fails but the work really is done, exit with force=true to downgrade-close — "
+            "you must then also give residue (what is missing) and impact (whether it affects later nodes, and why)."
+        ),
+        "graph.stall.hint_stall": (
+            "[Execution graph] No node has closed for {n} consecutive iterations (current node {node}). "
+            "Pick one of three ways out: (1) produce the exit evidence and exit it; "
+            "(2) decide the route is dead — abandon it, report side_effects honestly, and fork another route; "
+            "(3) it is too big — use extend to split it into smaller nodes you can close one at a time."
+        ),
+        "graph.stall.hint_revisit": (
+            "[Execution graph] Node {node} has been entered {n} times. "
+            "Repeatedly returning to the same node usually means its goal or exit contract is wrong — "
+            "consider rewriting its goal/exit with plan_revise, or splitting it, rather than trying again."
+        ),
+        "graph.stall.hint_fanout": (
+            "[Execution graph] {open} nodes are open but only {done} have closed — "
+            "the plan keeps widening without deepening. Converge first: take one node all the way to a close, "
+            "or abandon the nodes you have decided not to do."
+        ),
+        "graph.stall.hint_unverified": (
+            "[Execution graph] The last {n} nodes all closed on unverifiable evidence (observation/none). "
+            "This is allowed, but check yourself: did those nodes really produce something checkable? "
+            "When there is a durable artifact, put it in exit.expect so the closure can be verified."
+        ),
+        "graph.stall.l2_console": "[Graph stall] {reason}: stall={stall} revisits={revisits} fanout={fanout} — advisor engaged",
+        "graph.stall.l3_question": (
+            "I have stalled while working through execution graph {gid}: no node has closed for {stall} "
+            "consecutive iterations, and the advisor stepped in without breaking through.\n"
+            "Current node: {node} \"{title}\"\n"
+            "{open} node(s) still open.\n\n"
+            "Do you have any guidance? For example: a better decomposition, permission to skip a node, "
+            "or a way around the current obstacle."
+        ),
+        "graph.op.granted": "({n} iterations of budget granted from your own estimate.)",
+        "graph.overrun": (
+            "[Execution graph] Node {node} \"{title}\" has used {used} iterations; you estimated {budget}. "
+            "Nothing is deducted and nothing is forced — but a gap that large usually means the node is more "
+            "complex than expected. Consider splitting it with extend, or re-checking whether this route works at all."
+        ),
+        "graph.gaps.line": "[graph {node} \"{title}\"/{status}] {goal} (exit: {etype} — {expect})",
+        "graph.done_open_nodes": (
+            "[Execution graph] You are about to finish, but graph {gid} still has {n} unclosed node(s): {ids}.\n"
+            "If they are genuinely no longer needed, abandon or block them with a reason first, then call done again — "
+            "unclosed nodes are carried out verbatim as this run's remaining gaps and become the input for any "
+            "follow-up work, so vague ones make the next run repeat your steps.\n"
+            "If you simply forgot them, now is the time to pick them up."
+        ),
+        "advisor.ctx.graph": "## Execution graph (structured progress skeleton)\n{graph}",
+        "graph.proj.truncated": "(Graph is large — projection truncated; see graph.json in the run directory for the full map.)",
+        "graph.proj.completed_line": "## Execution graph {gid} \"{title}\" is complete and no longer being followed (full record in graph.json).",
+        "graph.proj.abandoned_line": "## Execution graph {gid} \"{title}\" was abandoned and is no longer being followed (full record in graph.json).",
     },
 }
 

@@ -525,6 +525,10 @@ let state = {
   // The full per-entry payload is available via GET /api/run/:runId/advisor/:idx
   advisorLast:    null,
   advisorHistory: [],
+  // Execution graph (run_dir/graph.json) — the single source of truth shared by
+  // the agent's context projection and this dashboard's rendering.
+  // null when the model never created a graph (most runs).
+  graph:          null,
   instanceName: process.env.INSTANCE_NAME || '',  // display-only label shown as "name:port"
 };
 
@@ -990,6 +994,7 @@ function poll() {
     _advisorLinesProcessed = 0;
     state.advisorLast     = null;
     state.advisorHistory  = [];
+    state.graph           = null;
     dirty = true;
     // Once a new run directory appears, launching phase is over
     if (isLaunching) {
@@ -1023,6 +1028,12 @@ function poll() {
     if (changed(path.join(dir, 'meta.json'))) {
       const m = readJSON(path.join(dir, 'meta.json'));
       if (m) { state.meta = m; dirty = true; }
+    }
+    // graph.json is absent for the vast majority of runs (building a graph is a
+    // capability the model opts into), so a missing file is normal, not an error.
+    if (changed(path.join(dir, 'graph.json'))) {
+      state.graph = readJSON(path.join(dir, 'graph.json'));
+      dirty = true;
     }
     if (updateShortTerm(dir)) dirty = true;
     // After short_term so the fallback anchor (_linesProcessed) is current.
@@ -1903,7 +1914,8 @@ function loadRun(runId) {
       });
     } catch {}
   }
-  return { runId, status, scratchpad, meta, events, advisorLast, advisorHistory };
+  const graph = readJSON(path.join(dir, 'graph.json'));
+  return { runId, status, scratchpad, meta, events, advisorLast, advisorHistory, graph };
 }
 
 // ── HTTP server ────────────────────────────────────────────────────────────
@@ -2263,9 +2275,14 @@ const server = http.createServer(async (req, res) => {
       INSTANCE_NAME:   process.env.INSTANCE_NAME   || '',
       HTTPS_PROXY:     process.env.HTTPS_PROXY     || '',
       HTTP_PROXY:      process.env.HTTP_PROXY      || '',
+      // 三个可互为 fallback 的 API 槽位（OPENAI_ / BACKUP_ / BACKUP2_）+ 首选槽位
       BACKUP_OPENAI_BASE_URL: process.env.BACKUP_OPENAI_BASE_URL || '',
       BACKUP_OPENAI_API_KEY:  process.env.BACKUP_OPENAI_API_KEY  || '',
       BACKUP_OPENAI_MODEL:    process.env.BACKUP_OPENAI_MODEL    || '',
+      BACKUP2_OPENAI_BASE_URL: process.env.BACKUP2_OPENAI_BASE_URL || '',
+      BACKUP2_OPENAI_API_KEY:  process.env.BACKUP2_OPENAI_API_KEY  || '',
+      BACKUP2_OPENAI_MODEL:    process.env.BACKUP2_OPENAI_MODEL    || '',
+      PREFERRED_API:          process.env.PREFERRED_API          || 'primary',
       // 顾问模型 1 / 2 —— 仅供 consult_advisor 工具按需调用，不参与主备 fallback
       ADVISOR1_OPENAI_BASE_URL: process.env.ADVISOR1_OPENAI_BASE_URL || '',
       ADVISOR1_OPENAI_API_KEY:  process.env.ADVISOR1_OPENAI_API_KEY  || '',
@@ -2283,7 +2300,9 @@ const server = http.createServer(async (req, res) => {
       LLM_MAX_TOKENS:  process.env.LLM_MAX_TOKENS  || '',
       LLM_TEMPERATURE: process.env.LLM_TEMPERATURE || '',
       LLM_CONTEXT_WINDOW: process.env.LLM_CONTEXT_WINDOW || '',
-      configured: !!process.env.OPENAI_BASE_URL,
+      // 任一槽位配了 base 就算配置过（首选可以是 API 2/3，此时 API 1 允许留空）
+      configured: !!(process.env.OPENAI_BASE_URL || process.env.BACKUP_OPENAI_BASE_URL
+                     || process.env.BACKUP2_OPENAI_BASE_URL),
     });
     return;
   }
@@ -2417,6 +2436,24 @@ const server = http.createServer(async (req, res) => {
       const info = runActiveSkills(rid);
       if (!info) { json(404, { error: 'run not found' }); return; }
       json(200, { ok: true, runId: rid, ...info });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/run/:runId/graph  — that run's execution graph ──────────────
+  // Reads graph.json directly rather than digging _graph out of meta.json: the
+  // graph must have one addressable source, or the frontend starts depending on
+  // internal meta keys that were never meant to be a contract.
+  // 200 with graph:null when the run never built one (the common case).
+  const runGraphMatch = req.url.match(/^\/api\/run\/([^/?]+)\/graph$/);
+  if (req.method === 'GET' && runGraphMatch) {
+    try {
+      const rid = decodeURIComponent(runGraphMatch[1]);
+      const dir = path.resolve(path.join(RUNS_DIR, rid));
+      const rel = path.relative(RUNS_DIR, dir);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) { json(403, { error: 'forbidden' }); return; }
+      if (!fs.existsSync(dir)) { json(404, { error: 'run not found' }); return; }
+      json(200, { ok: true, runId: rid, graph: readJSON(path.join(dir, 'graph.json')) });
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }

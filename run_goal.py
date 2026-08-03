@@ -96,11 +96,45 @@ def load_dotenv_if_present(path: str = ".env"):
         os.environ[key] = value
 
 
+# ── 三个可互为 fallback 的 LLM API 槽位 ───────────────────────────────────
+# 槽 1 复用无前缀的 OPENAI_*，它同时也是本次 run 的「生效配置」——探测选中哪个槽，
+# 就把那个槽的值写回 OPENAI_*，其余代码（Agent / 工具 / 子进程）照旧只读 OPENAI_*。
+# PREFERRED_API 决定先探哪个槽，剩下两个按槽序兜底；未设 = primary。
+API_SLOTS = ("primary", "backup", "backup2")
+_SLOT_PREFIX = {"primary": "", "backup": "BACKUP_", "backup2": "BACKUP2_"}
+_SLOT_LABEL = {"primary": "API 1", "backup": "API 2", "backup2": "API 3"}
+
+
+def preferred_api_slot() -> str:
+    slot = (os.environ.get("PREFERRED_API") or "").strip().lower()
+    return slot if slot in API_SLOTS else "primary"
+
+
+def _slot_config(slot: str) -> dict:
+    prefix = _SLOT_PREFIX[slot]
+    return {
+        "slot": slot,
+        "base": (os.environ.get(prefix + "OPENAI_BASE_URL") or "").strip(),
+        "key": os.environ.get(prefix + "OPENAI_API_KEY"),
+        "model": (os.environ.get(prefix + "OPENAI_MODEL") or "").strip(),
+    }
+
+
+def api_slot_candidates() -> list:
+    """首选槽在前，其余按槽序兜底；只保留填了 base 的槽。"""
+    preferred = preferred_api_slot()
+    order = [preferred] + [s for s in API_SLOTS if s != preferred]
+    return [c for c in (_slot_config(s) for s in order) if c["base"]]
+
+
 def ensure_env_defaults():
     load_dotenv_if_present()
 
-    if not os.environ.get("OPENAI_BASE_URL"):
-        raise ValueError("缺少 OPENAI_BASE_URL，请在 .env 中设置。")
+    if not api_slot_candidates():
+        raise ValueError(
+            "缺少 LLM 服务地址：三个 API 槽位（OPENAI_ / BACKUP_OPENAI_ / BACKUP2_OPENAI_）"
+            "都没有配置 BASE_URL，请在 .env 或看板「设置 → LLM 服务」中设置。"
+        )
 
     os.environ.setdefault("OPENAI_API_KEY", "local")
 
@@ -181,45 +215,50 @@ def probe_openai_configuration(list_models=None):
     is missing but the server exposes exactly one model, auto-switch to it to
     reduce manual config churn.
     """
-    primary_base = (os.environ.get("OPENAI_BASE_URL") or "").strip()
-    primary_key = os.environ.get("OPENAI_API_KEY")
-    primary_model = (os.environ.get("OPENAI_MODEL") or "").strip()
+    preferred = preferred_api_slot()
+    candidates = api_slot_candidates()
 
-    if not primary_base:
+    if not candidates:
         raise ValueError("LLM 服务探测失败: 缺少 OPENAI_BASE_URL。")
 
-    backup_base = (os.environ.get("BACKUP_OPENAI_BASE_URL") or "").strip()
-    backup_key = os.environ.get("BACKUP_OPENAI_API_KEY")
-    backup_model = (os.environ.get("BACKUP_OPENAI_MODEL") or "").strip()
-    has_backup = bool(backup_base)
-
-    # 1. 探主
-    role = "primary"
-    try:
-        model_ids = _probe_one_endpoint(primary_base, primary_key, primary_model, list_models)
-        active_base, active_model = primary_base, primary_model
-    except RuntimeError as primary_err:
-        if not has_backup:
-            raise RuntimeError(
-                f"LLM 服务探测失败: {primary_err}。"
-                "请检查 OPENAI_BASE_URL / 网络 / 服务状态。"
-            ) from primary_err
-        # 2. 主失败 → 探备
-        print(f"[run_goal] probe: 主 API 探测失败 ({primary_err}); 切换到备用 API…")
+    # 按「首选 → 其余槽序」依次探测，第一个连得上的胜出。
+    # 只有连不上才继续往下试；连上了但模型对不上是配置错误，直接报错不静默跳过。
+    errors = []
+    active = None
+    for idx, cand in enumerate(candidates):
+        # list_models 是测试/调用方注入的探测桩，只对第一个候选生效
+        probe_fn = list_models if idx == 0 else None
         try:
-            model_ids = _probe_one_endpoint(backup_base, backup_key, backup_model, None)
-        except RuntimeError as backup_err:
+            model_ids = _probe_one_endpoint(cand["base"], cand["key"], cand["model"], probe_fn)
+        except RuntimeError as err:
+            errors.append((cand["slot"], err))
+            if idx + 1 < len(candidates):
+                print(
+                    f"[run_goal] probe: {_SLOT_LABEL[cand['slot']]} 探测失败 ({err}); "
+                    f"切换到 {_SLOT_LABEL[candidates[idx + 1]['slot']]}…"
+                )
+            continue
+        active = cand
+        break
+
+    if active is None:
+        if len(errors) == 1:
+            slot, err = errors[0]
             raise RuntimeError(
-                "LLM 服务探测失败: 主 API 与备用 API 均不可用。\n"
-                f"  主: {primary_err}\n  备: {backup_err}"
-            ) from primary_err
-        # 备用可用 → 把 env 切到备用，本 run 后续都用备用配置
-        os.environ["OPENAI_BASE_URL"] = backup_base
-        if backup_key is not None:
-            os.environ["OPENAI_API_KEY"] = backup_key
-        if backup_model:
-            os.environ["OPENAI_MODEL"] = backup_model
-        role, active_base, active_model = "backup", backup_base, backup_model
+                f"LLM 服务探测失败: {err}。请检查 {_SLOT_LABEL[slot]} 的 base URL / 网络 / 服务状态。"
+            ) from err
+        detail = "\n".join(f"  {_SLOT_LABEL[slot]}: {err}" for slot, err in errors)
+        raise RuntimeError(
+            "LLM 服务探测失败: 已配置的 API 全部不可用。\n" + detail
+        ) from errors[0][1]
+
+    # 胜出的槽写回 OPENAI_*，本 run 后续（含子进程）都用它
+    active_base, active_model = active["base"], active["model"]
+    os.environ["OPENAI_BASE_URL"] = active_base
+    if active["key"] is not None:
+        os.environ["OPENAI_API_KEY"] = active["key"]
+    if active_model:
+        os.environ["OPENAI_MODEL"] = active_model
 
     if active_model in model_ids:
         return {
@@ -228,7 +267,8 @@ def probe_openai_configuration(list_models=None):
             "resolved_model": active_model,
             "available_models": model_ids,
             "auto_selected": False,
-            "active_endpoint": role,
+            "active_endpoint": active["slot"],
+            "preferred_endpoint": preferred,
         }
 
     if len(model_ids) == 1:
@@ -240,7 +280,8 @@ def probe_openai_configuration(list_models=None):
             "resolved_model": resolved,
             "available_models": model_ids,
             "auto_selected": True,
-            "active_endpoint": role,
+            "active_endpoint": active["slot"],
+            "preferred_endpoint": preferred,
         }
 
     shown = ", ".join(model_ids[:5]) if model_ids else "(空列表)"
@@ -254,7 +295,14 @@ def format_probe_summary(probe: dict) -> str:
     base_url = probe["base_url"]
     configured = probe["configured_model"]
     resolved = probe["resolved_model"]
-    role_tag = " [使用备用 API]" if probe.get("active_endpoint") == "backup" else ""
+    active = probe.get("active_endpoint") or "primary"
+    preferred = probe.get("preferred_endpoint") or "primary"
+    if active != preferred:
+        role_tag = f" [首选 {_SLOT_LABEL.get(preferred, preferred)} 不可用，已回退到 {_SLOT_LABEL.get(active, active)}]"
+    elif active != "primary":
+        role_tag = f" [使用{_SLOT_LABEL.get(active, active)}]"
+    else:
+        role_tag = ""
     if probe.get("auto_selected"):
         return (
             f"[run_goal] probe: endpoint ok{role_tag}; "

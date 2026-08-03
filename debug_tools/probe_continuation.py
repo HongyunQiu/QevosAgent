@@ -79,9 +79,11 @@ def main():
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     targets = []
     if which in ("main", "all") and ENV.get("OPENAI_BASE_URL"):
-        targets.append(("主", ENV["OPENAI_BASE_URL"], ENV.get("OPENAI_API_KEY", "local"), ENV.get("OPENAI_MODEL", "qwen")))
+        targets.append(("API 1", ENV["OPENAI_BASE_URL"], ENV.get("OPENAI_API_KEY", "local"), ENV.get("OPENAI_MODEL", "qwen")))
     if which in ("backup", "all") and ENV.get("BACKUP_OPENAI_BASE_URL"):
-        targets.append(("备", ENV["BACKUP_OPENAI_BASE_URL"], ENV.get("BACKUP_OPENAI_API_KEY", "local"), ENV.get("BACKUP_OPENAI_MODEL", "qwen36")))
+        targets.append(("API 2", ENV["BACKUP_OPENAI_BASE_URL"], ENV.get("BACKUP_OPENAI_API_KEY", "local"), ENV.get("BACKUP_OPENAI_MODEL", "qwen36")))
+    if which in ("backup2", "all") and ENV.get("BACKUP2_OPENAI_BASE_URL"):
+        targets.append(("API 3", ENV["BACKUP2_OPENAI_BASE_URL"], ENV.get("BACKUP2_OPENAI_API_KEY", "local"), ENV.get("BACKUP2_OPENAI_MODEL", "qwen36")))
     if not targets:
         print("未找到匹配端点"); sys.exit(1)
     for t in targets:

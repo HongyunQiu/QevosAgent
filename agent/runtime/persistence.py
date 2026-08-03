@@ -138,6 +138,7 @@ class RunPersistence:
         self.final_answer_path = self.run_dir / "final_answer.md"
         self.execution_summary_path = self.run_dir / "execution_summary.md"
         self.issues_path = self.run_dir / "issues.json"
+        self.graph_path = self.run_dir / "graph.json"
         self.reflection_path = self.run_dir / "reflection.md"
 
     def _status_payload(
@@ -263,6 +264,13 @@ class RunPersistence:
         保留在 short_term.jsonl，handoff 是其上层、可读的交接视图。
         """
         _write_text_atomic(self.run_dir / f"handoff_{int(seg_index)}.md", text or "")
+
+    def save_graph(self, payload: dict) -> None:
+        """落盘执行图（graph.json）——agent 投影与 dashboard 渲染的单一真相源。
+
+        每次图发生变更时写一份全量快照。图是纯数据（无 live 引用），可直接序列化。
+        """
+        _write_json_atomic(self.graph_path, payload or {})
 
     def save_system_prompt(self, text: str) -> None:
         _write_text_atomic(self.system_prompt_path, text or "")

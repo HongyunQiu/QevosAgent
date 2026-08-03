@@ -17,6 +17,7 @@ from agent.tools.standard import (
     tool_scratchpad_set,
     tool_validate_tool_recipe,
 )
+import run_goal
 from run_goal import format_probe_summary, probe_openai_configuration
 
 
@@ -241,6 +242,95 @@ class ProbeConfigTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    # ── 三槽位 + 首选 ────────────────────────────────────────────────
+    ALL_SLOT_KEYS = (
+        "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
+        "BACKUP_OPENAI_BASE_URL", "BACKUP_OPENAI_API_KEY", "BACKUP_OPENAI_MODEL",
+        "BACKUP2_OPENAI_BASE_URL", "BACKUP2_OPENAI_API_KEY", "BACKUP2_OPENAI_MODEL",
+        "PREFERRED_API",
+    )
+
+    def _set_three_slots(self, preferred):
+        """把三个槽位都配满，返回恢复现场的 cleanup 函数。"""
+        old = {k: os.environ.get(k) for k in self.ALL_SLOT_KEYS}
+
+        def restore():
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.addCleanup(restore)
+        for prefix, tag in (("", "one"), ("BACKUP_", "two"), ("BACKUP2_", "three")):
+            os.environ[prefix + "OPENAI_BASE_URL"] = f"http://host-{tag}.example/v1"
+            os.environ[prefix + "OPENAI_API_KEY"] = "local"
+            os.environ[prefix + "OPENAI_MODEL"] = f"model-{tag}"
+        if preferred is None:
+            os.environ.pop("PREFERRED_API", None)
+        else:
+            os.environ["PREFERRED_API"] = preferred
+
+    def _stub_probe(self, unreachable=()):
+        """替掉真实网络探测；记录探测顺序，unreachable 里的 base 一律连不上。"""
+        tried = []
+
+        def fake_probe(base_url, api_key, model, list_models=None):
+            tried.append(base_url)
+            if base_url in unreachable:
+                raise RuntimeError(f"无法连接 {base_url}")
+            return [model]
+
+        real = run_goal._probe_one_endpoint
+        run_goal._probe_one_endpoint = fake_probe
+        self.addCleanup(lambda: setattr(run_goal, "_probe_one_endpoint", real))
+        return tried
+
+    def test_preferred_slot_is_probed_first_and_wins(self):
+        self._set_three_slots("backup2")
+        tried = self._stub_probe()
+
+        result = probe_openai_configuration()
+
+        self.assertEqual(tried, ["http://host-three.example/v1"])
+        self.assertEqual(result["active_endpoint"], "backup2")
+        self.assertEqual(result["preferred_endpoint"], "backup2")
+        # 胜出的槽写回 OPENAI_*，其余代码只认这一组
+        self.assertEqual(os.environ["OPENAI_BASE_URL"], "http://host-three.example/v1")
+        self.assertEqual(os.environ["OPENAI_MODEL"], "model-three")
+
+    def test_falls_back_to_remaining_slots_in_slot_order(self):
+        self._set_three_slots("backup")
+        tried = self._stub_probe(unreachable={
+            "http://host-two.example/v1",     # 首选（槽 2）挂
+            "http://host-one.example/v1",     # 兜底第一顺位（槽 1）也挂
+        })
+
+        result = probe_openai_configuration()
+
+        self.assertEqual(tried, [
+            "http://host-two.example/v1",
+            "http://host-one.example/v1",
+            "http://host-three.example/v1",
+        ])
+        self.assertEqual(result["active_endpoint"], "backup2")
+        self.assertEqual(result["preferred_endpoint"], "backup")
+        self.assertIn("已回退到 API 3", format_probe_summary(result))
+
+    def test_raises_listing_every_slot_when_all_unreachable(self):
+        self._set_three_slots(None)
+        self._stub_probe(unreachable={
+            "http://host-one.example/v1",
+            "http://host-two.example/v1",
+            "http://host-three.example/v1",
+        })
+
+        with self.assertRaises(RuntimeError) as ctx:
+            probe_openai_configuration()
+
+        for label in ("API 1", "API 2", "API 3"):
+            self.assertIn(label, str(ctx.exception))
 
     def test_format_probe_summary_for_matched_model(self):
         summary = format_probe_summary(

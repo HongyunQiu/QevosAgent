@@ -28,6 +28,9 @@ class Action:
     final_answer: Optional[str] = None  # type=DONE 时的最终输出
     error_type: Optional[str] = None    # type=ERROR 时的分类标签（供运行时补丁使用）
     scratchpad_note: Optional[str] = None  # inline 模式：LLM 同步输出的草稿笔记
+    # 执行图：LLM 在同一响应中顺带推进图（enter/exit/extend/fork/abandon/block），
+    # 与 scratchpad_note 同属"记账不收税"的 inline 字段，不消耗额外迭代。
+    graph_op: Optional[dict] = None
 
 
 # ── 工具执行结果 ──────────────────────────────────────────────────────────────

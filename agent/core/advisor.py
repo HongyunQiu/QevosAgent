@@ -148,6 +148,18 @@ def _build_advisor_context(state: AgentState) -> str:
     else:
         parts.append(t("advisor.ctx.sp_empty"))
 
+    # ── 执行图（有图时才有）────────────────────────────────────────────────
+    # 上面几节全是散文。advisor 光读文字很难看出"结构性"停滞——比如在两个节点
+    # 之间来回三次。图是唯一能让它一眼看出这件事的输入，所以排在进展日志之前。
+    try:
+        from . import graph as _graph
+
+        graph_text = _graph.render(state)
+        if graph_text.strip():
+            parts.append(t("advisor.ctx.graph", graph=graph_text.strip()[:2500]))
+    except Exception:
+        pass
+
     # ── 工作进展日志（批 2 启用；批 1 阶段：仅在已有内容时输出）──────────────
     progress = state.meta.get("_progress_log")
     if isinstance(progress, str) and progress.strip():

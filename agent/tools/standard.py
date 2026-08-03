@@ -17,6 +17,10 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from ..core.types_def import AgentState, ToolSpec, ToolResult
+# 别名导入：本文件已有函数把 `t` 用作局部变量（如 tool_shell_bg 的超时秒数），
+# 裸 `t` 会在那些函数里被遮蔽成 int，后来者在其中加一句 i18n 就会炸成
+# "'int' object is not callable"。其他模块无此冲突，仍用裸 t。
+from ..i18n import t as _t
 
 
 # ── 工具函数实现 ──────────────────────────────────────────────────────────────
@@ -3355,6 +3359,69 @@ def tool_terminal_run(state: AgentState, id: str, command: str, timeout: int = 6
         _term_api("POST", f"/api/term/{id}/owner", {"who": "user"})
 
 
+# ── 执行图工具 ────────────────────────────────────────────────────────────────
+# 建图/改图是**审慎决策**，各花 1 次迭代，在时间线上留下明确可观察的落点。
+# 推进（enter/exit/extend/fork/abandon/block）走响应里的 inline graph_op，零迭代。
+# 设计详见 doc/execution-graph.md
+
+def _coerce_json_arg(value):
+    """LLM 有时把 list/dict 参数写成 JSON 字符串，这里统一还原。"""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+    return value
+
+
+def tool_plan_create(
+    state: AgentState,
+    title: str,
+    nodes,
+    edges=None,
+    reason: str = "",
+    from_skill: str = "",
+) -> ToolResult:
+    from ..core import graph as _graph
+
+    g, msg = _graph.create_graph(
+        state,
+        title=title,
+        nodes=_coerce_json_arg(nodes),
+        edges=_coerce_json_arg(edges),
+        reason=reason,
+        from_skill=from_skill or None,
+    )
+    if g is None:
+        return ToolResult(success=False, output=None, error=msg)
+    return ToolResult(success=True, output=msg + "\n\n" + _graph.render(state))
+
+
+def tool_plan_revise(state: AgentState, ops, reason: str = "") -> ToolResult:
+    from ..core import graph as _graph
+
+    if _graph.active_graph(state) is None:
+        return ToolResult(success=False, output=None, error=_t("graph.op.no_graph"))
+
+    ok, failed, details = _graph.apply_revision(state, _coerce_json_arg(ops))
+    body = _t("graph.tool.revised", ok=ok, failed=failed)
+    if details:
+        body += "\n" + "\n".join(details)
+    body += "\n\n" + _graph.render(state)
+    # 全部失败才算工具失败；部分成功仍返回成功，让模型看到 details 自行补救
+    return ToolResult(success=ok > 0 or failed == 0, output=body,
+                      error=None if (ok > 0 or failed == 0) else body)
+
+
+def tool_plan_abandon(state: AgentState, reason: str) -> ToolResult:
+    from ..core import graph as _graph
+
+    ok, msg = _graph.abandon_graph(state, reason)
+    if not ok:
+        return ToolResult(success=False, output=None, error=msg)
+    return ToolResult(success=True, output=msg)
+
+
 def get_standard_tools() -> dict[str, ToolSpec]:
     """返回标准工具集（直接传给 agent.run()）。"""
     specs = [
@@ -4198,6 +4265,80 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "inject": "（screenshot 用，默认 true）把图像直接注入对话上下文供你直接查看",
             },
             fn=tool_panel_control,
+        ),
+        ToolSpec(
+            name="plan_create",
+            description=(
+                "【执行图】把当前工作显式化为一张有向图（节点=方法/步骤，边=推进关系），此后沿节点推进。"
+                "**不是每个任务都需要建图**——简单任务直接做即可。"
+                "值得建图的信号：路线不止一条需要比较、步骤多且彼此有依赖、"
+                "容易在长跑中迷失方向、或预计会经历上下文压缩（图能扛过压缩，散文记忆不能）。"
+                "可以在任务的任何时刻建图，未必在开头；建图前已完成的工作会自动收进根节点 n0。"
+                "建图后每轮上下文尾部会显示当前节点与全图概览，并可用 graph_op 零成本推进：\n"
+                "  {\"op\":\"enter\",\"node\":\"n1\"}\n"
+                "  {\"op\":\"exit\",\"node\":\"n1\",\"summary\":\"做了什么\",\"side_effects\":[\"对环境的改动\"],\"gaps\":[]}\n"
+                "    出口若声明了产物路径，系统会实打实检查文件是否存在，不存在就不放行。"
+                "确实做完了但产物落不到 expect 指定的位置时，可加 force=true 降级闭合，"
+                "此时必须同时给出 residue（具体缺什么）与 impact（是否影响后续节点、为什么）——"
+                "降级遗留会在后继工作里被放大，这两句话是留给那时的唯一线索。\n"
+                "  {\"op\":\"extend\",\"after\":\"n1\",\"node\":{...}}  向前追加一个节点（局部规划，不必一次画完）\n"
+                "  {\"op\":\"fork\",\"from\":\"n1\",\"node\":{...}}     回到分叉点走另一条路\n"
+                "  {\"op\":\"abandon\",\"node\":\"n2\",\"reason\":\"为什么走不通\",\"side_effects\":[\"留下了什么\"]}\n"
+                "  {\"op\":\"block\",\"node\":\"n2\",\"reason\":\"被什么外部因素卡住\"}\n"
+                "注意：废弃分支不会回滚环境，它造成的改动会记在残留台账里提示你。"
+            ),
+            args_schema={
+                "title": "这张图要解决什么（一句话）",
+                "nodes": (
+                    "节点列表（JSON 数组）。每个节点："
+                    "{\"id\":\"n1\",\"title\":\"短标题(≤20字)\",\"goal\":\"要达成什么\","
+                    "\"exit\":{\"evidence_type\":\"artifact|tool_result|observation|none\","
+                    "\"expect\":[\"产物路径\"]},\"budget\":预计迭代数}。"
+                    "**编号规则：n0 被系统占用（自动生成的根节点，代表你建图之前已经做过的工作），"
+                    "你给的节点从 n1 开始，按数组顺序依次是 n1、n2、n3…**。"
+                    "要写 edges 时，强烈建议显式给出 id，免得编号对不上。"
+                    "只需规划看得清的前几步，后续用 graph_op 的 extend 逐步追加"
+                ),
+                "edges": (
+                    "（可选）边列表 [{\"from\":\"n1\",\"to\":\"n2\",\"kind\":\"then|alt|fallback\"}]。"
+                    "**不要把 n0 当成你的第一个节点**——n0 是根节点，"
+                    "只有当某个节点确实可以直接从「建图前的工作」接上时才从 n0 出发。"
+                    "两个节点串行写 {\"from\":\"n1\",\"to\":\"n2\"}；"
+                    "n2、n3 并行地跟在 n1 之后就写两条 n1→n2、n1→n3。"
+                    "不给 edges 则按 nodes 顺序自动串成一条链（最省事，纯线性计划推荐这么用）"
+                ),
+                "reason": "（可选）为什么此时值得用图的方式推进",
+                "from_skill": "（可选）本图源自哪个 SKILL",
+            },
+            fn=tool_plan_create,
+        ),
+        ToolSpec(
+            name="plan_revise",
+            description=(
+                "【执行图】成批修改当前执行图的结构。"
+                "单个节点的增删与状态推进请用响应里的 graph_op（零迭代），"
+                "只有需要一次改多处、或要修改已有节点的目标/出口契约/预算时才用本工具。"
+            ),
+            args_schema={
+                "ops": (
+                    "操作列表（JSON 数组）。除 graph_op 的全部操作外，额外支持 update："
+                    "{\"op\":\"update\",\"node\":\"n2\",\"goal\":...,\"exit\":{...},\"budget\":...,\"title\":...}"
+                    "（只能改未达终态的节点）"
+                ),
+                "reason": "（可选）修订原因",
+            },
+            fn=tool_plan_revise,
+        ),
+        ToolSpec(
+            name="plan_abandon",
+            description=(
+                "【执行图】放弃当前执行图，回到自由模式（不再注入图）。"
+                "当你发现这张图的分解方式本身就错了、继续按它走反而碍事时使用。"
+                "图的完整记录会保留在 graph.json 里，不会丢失。"
+                "若只是想换一套分解方式，直接调 plan_create 即可，旧图会自动归档。"
+            ),
+            args_schema={"reason": "放弃这张图的原因"},
+            fn=tool_plan_abandon,
         ),
     ]
     tools = {s.name: s for s in specs}
