@@ -707,6 +707,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .set-probe { flex-shrink:0; padding:2px 9px; background:rgba(63,185,80,0.15); color:#3fb950; font-size:10.5px; font-weight:600; border:none; border-radius:10px; cursor:pointer; }
 .set-probe:hover:not(:disabled) { background:rgba(63,185,80,0.28); }
 .set-probe:disabled { opacity:0.5; cursor:not-allowed; }
+/* 首选 API 开关：贴在探测这一行的最右端，选中即高亮 */
+.set-pref { flex-shrink:0; margin-left:auto; padding:2px 10px; background:transparent; color:var(--muted); font-size:10.5px; font-weight:600; font-family:inherit; border:1px solid var(--border); border-radius:10px; cursor:pointer; white-space:nowrap; }
+.set-pref:hover { color:var(--text); border-color:var(--muted); }
+.set-pref.on { background:rgba(63,185,80,0.16); border-color:rgba(63,185,80,0.55); color:#3fb950; cursor:default; }
 .set-model-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
 .set-modelchip { padding:3px 10px; background:rgba(88,166,255,0.12); color:#58a6ff; font-size:11px; font-family:var(--mono); font-weight:500; border:1px solid rgba(88,166,255,0.35); border-radius:11px; cursor:pointer; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .set-modelchip:hover { background:rgba(88,166,255,0.22); }
@@ -722,6 +726,10 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .set-tab.active { color:var(--text); border-bottom-color:var(--blue); }
 .set-dot { display:none; width:6px; height:6px; border-radius:50%; background:#3fb950; margin-left:6px; vertical-align:middle; }
 .set-tab.has-value .set-dot { display:inline-block; }
+/* 首选 API 亮绿带微光，其余已配置的 API 暗绿 —— 一眼看出哪个是首选 */
+.set-dot.preferred { background:#3fb950; box-shadow:0 0 5px rgba(63,185,80,0.85); }
+.set-dot.dim { background:#2b6b3d; box-shadow:none; }
+[data-theme="light"] .set-dot.dim { background:#94d3a2; }
 .set-seclbl { font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin:18px 0 12px; padding-top:14px; border-top:1px solid var(--border); }
 .set-msg { display:none; border-radius:6px; padding:9px 12px; font-size:12px; margin-bottom:14px; line-height:1.5; }
 .set-msg.error   { display:block; background:rgba(248,81,73,0.1); border:1px solid rgba(248,81,73,0.4); color:#f85149; }
@@ -2114,8 +2122,9 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
       <!-- ── LLM 服务（预留未来更多 LLM 服务商 tab）── tab 在上，内容紧随其后 ── -->
       <div class="set-tabgroup-lbl">LLM 服务</div>
       <div class="set-tabs set-tabs-llm" data-group="api">
-        <button type="button" class="set-tab active" data-tab="primary" id="setTabPrimary">主 API<span class="set-dot"></span></button>
-        <button type="button" class="set-tab" data-tab="backup" id="setTabBackup">备用 API<span class="set-dot"></span></button>
+        <button type="button" class="set-tab active" data-tab="primary" id="setTabPrimary">API 1<span class="set-dot"></span></button>
+        <button type="button" class="set-tab" data-tab="backup" id="setTabBackup">API 2<span class="set-dot"></span></button>
+        <button type="button" class="set-tab" data-tab="backup2" id="setTabBackup2">API 3<span class="set-dot"></span></button>
         <button type="button" class="set-tab" data-tab="advisor1" id="setTabAdvisor1">顾问模型1<span class="set-dot"></span></button>
         <button type="button" class="set-tab" data-tab="advisor2" id="setTabAdvisor2">顾问模型2<span class="set-dot"></span></button>
       </div>
@@ -2126,6 +2135,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
           <div class="set-lblrow">
             <label for="setBase"><span id="setLblBase">API 服务地址</span><span class="set-req" id="setMarkBase">*</span> <span class="set-hint-inline" id="setHintBase">（OpenAI 兼容接口的 base URL）</span></label>
             <button type="button" class="set-probe" id="setBtnTest">探测</button>
+            <button type="button" class="set-pref" id="setBtnPref">☆ 设为首选</button>
           </div>
           <input type="text" id="setBase" placeholder="http://127.0.0.1:8080/v1">
         </div>
@@ -2493,7 +2503,10 @@ function renderAll(data, runId) {
   }
   syncReadSkills(data.meta);
   // 切换到别的 run 时清掉图过滤：过滤条件属于上一个 run 的节点，带过来只会误导
-  if (rid !== gGraphFilterRunId) { gGraphFilter = null; gGraphSelNode = null; gGraphUserPicked = false; gGraphFilterRunId = rid; }
+  if (rid !== gGraphFilterRunId) {
+    gGraphFilter = null; gGraphSelNode = null; gGraphUserPicked = false;
+    gGraphCount = 0; gGraphFilterRunId = rid;
+  }
   updateGraphTab(data);
   renderTopBar(data, rid);
   renderSidebar(data, rid);
@@ -4301,6 +4314,7 @@ let gGraphIdx    = 0;      // 串行多图时看第几张
 let gGraphSelNode = null;  // 侧栏正在展示的节点 id
 let gGraphFilter = null;   // {node,title,from,to} —— 时间线按节点迭代区间过滤
 let gGraphFilterRunId = null;  // 过滤条件属于哪个 run，换 run 时据此清掉
+let gGraphCount   = 0;     // 上次见到的图数量，用于识别"模型又建了一张新图"
 
 const GN_W = 168, GN_H = 46, GN_HGAP = 26, GN_VGAP = 54, GN_PAD = 26;
 
@@ -4339,6 +4353,12 @@ function renderGraph(data) {
     return;
   }
 
+  // 模型新建了一张图是重大事件，用户之前的手动选择只针对旧的那批，
+  // 此时恢复自动跟随——否则"随手点开旧图看一眼"会把视图永久钉死在
+  // 一张已完成的图上，而活动图在后面一路推进却看不见。
+  if (graphs.length > gGraphCount) gGraphUserPicked = false;
+  gGraphCount = graphs.length;
+
   // 默认停在活动图；模型换图后自动跟过去（用户手动选过的除外）
   if (changed && !gGraphUserPicked) {
     const ai = graphs.findIndex(g => g.status === 'active');
@@ -4350,8 +4370,12 @@ function renderGraph(data) {
   const sel = document.getElementById('graphSelect');
   sel.style.display = graphs.length > 1 ? '' : 'none';
   if (graphs.length > 1) {
+    // 串行多图时，光有 gid+标题看不出自己正在看哪一张、活的是哪一张——
+    // 用户可能停在一张已放弃的旧图上研究，必须让状态一眼可见。
     sel.innerHTML = graphs.map((x, i) =>
-      `<option value="${i}"${i === gGraphIdx ? ' selected' : ''}>${esc(x.gid)} · ${esc(x.title || '')}</option>`).join('');
+      `<option value="${i}"${i === gGraphIdx ? ' selected' : ''}>`
+      + `${esc(x.gid)} · ${esc(statusLabel(x.status))} · ${esc(trunc(x.title || '', 22))}`
+      + `${x.status === 'active' ? '  ← 当前活动' : ''}</option>`).join('');
   }
 
   const nodes = Object.values(g.nodes || {});
@@ -6794,13 +6818,18 @@ fetch('/api/version').then(r => r.json()).then(d => {
   const inKey  = document.getElementById('setKey');
   const inModel= document.getElementById('setModel');
   // Two independent tab groups, each with its own content area shown below it:
-  //   • "api"  (LLM 服务)   主/备用 — share one set of inputs, switching swaps values.
+  //   • "api"  (LLM 服务)   API 1/2/3 + 顾问 1/2 — share one set of inputs, switching swaps values.
   //   • "general" (通用设置) 其他配置/局域网/运行参数 — each its own pane.
   // Both groups' content is visible at once; only the tabs within a group are exclusive.
   const tabState = { primary: { base:'', key:'', model:'' }, backup: { base:'', key:'', model:'' },
+                     backup2: { base:'', key:'', model:'' },
                      advisor1: { base:'', key:'', model:'' }, advisor2: { base:'', key:'', model:'' } };
+  // 三个可互为 fallback 的 API 槽位；顾问模型不在其列（只被 consult_advisor 调用）。
+  const API_TABS = ['primary', 'backup', 'backup2'];
+  const isAdvisorTab = n => n === 'advisor1' || n === 'advisor2';
   const GPANES = { other:'setPaneOther', lan:'setPaneLan', runtime:'setPaneRuntime' };
-  let apiTab     = 'primary';   // 主 | 备用 — what snap()/loadTab() act on
+  let apiTab     = 'primary';   // API 1|2|3 / 顾问 1|2 — what snap()/loadTab() act on
+  let preferred  = 'primary';   // 首选 API：启动时先探它，失败按槽序回退到其余两个
   let generalTab = 'other';     // 其他配置 | 局域网 | 运行参数
 
   // DASHBOARD_HOST/PORT are read once at dashboard startup, so a change only
@@ -6810,24 +6839,38 @@ fetch('/api/version').then(r => r.json()).then(d => {
   const snap = () => { tabState[apiTab].base = inBase.value; tabState[apiTab].key = inKey.value; tabState[apiTab].model = inModel.value; };
   const loadTab = n => { inBase.value = tabState[n].base; inKey.value = tabState[n].key; inModel.value = tabState[n].model; };
   function marks() {
-    // 主 API 的 base/model 为必填；备用与顾问模型均可选（留空 = 不启用）。
-    const required = apiTab === 'primary';
-    document.getElementById('setMarkBase').style.display  = required ? 'inline' : 'none';
-    document.getElementById('setMarkModel').style.display = required ? 'inline' : 'none';
-    const isAdv = apiTab === 'advisor1' || apiTab === 'advisor2';
+    // 只有「首选 API」的 base/model 为必填；另外两个 API 与顾问模型均可选（留空 = 不启用）。
+    const isAdv = isAdvisorTab(apiTab);
+    const isPreferred = apiTab === preferred;
+    document.getElementById('setMarkBase').style.display  = isPreferred ? 'inline' : 'none';
+    document.getElementById('setMarkModel').style.display = isPreferred ? 'inline' : 'none';
     document.getElementById('setHintBase').textContent =
-      apiTab === 'backup' ? '（主 API 失败时自动切换，留空不启用）'
-      : isAdv             ? '（仅供 consult_advisor 工具按需调用，不参与主备 fallback）'
-      :                     '（OpenAI 兼容接口的 base URL）';
+      isAdv        ? '（仅供 consult_advisor 工具按需调用，不参与 API fallback）'
+      : isPreferred ? '（首选 API：启动时优先使用，OpenAI 兼容接口的 base URL）'
+      :               '（首选 API 不可用时按 API 1→2→3 顺序自动切换到这里，留空不启用）';
     document.getElementById('setHintModel').textContent =
-      apiTab === 'backup' ? '（备用 endpoint 需单独指定 model id）'
-      : isAdv             ? '（该顾问 endpoint 的 model id）'
-      :                     '（与服务端返回的 model id 一致）';
+      isAdv ? '（该顾问 endpoint 的 model id）'
+            : '（与该 endpoint 返回的 model id 一致，不同 endpoint 通常不同）';
+    // 首选开关：只对三个 API 槽位有意义，顾问 tab 下隐藏
+    const pref = document.getElementById('setBtnPref');
+    pref.style.display = isAdv ? 'none' : '';
+    pref.classList.toggle('on', isPreferred);
+    pref.textContent = isPreferred ? '★ 首选模型' : '☆ 设为首选';
+    pref.title = isPreferred
+      ? '当前是首选 API：Agent 启动时先探测它，失败才回退到另外两个'
+      : '把当前 API 设为首选，另外两个作为 fallback';
   }
   function dots() {
     const has = s => !!(s.base.trim() || s.key.trim() || s.model.trim());
-    document.getElementById('setTabBackup').classList.toggle('has-value', has(tabState.backup));
-    document.getElementById('setTabPrimary').classList.toggle('has-value', !!(tabState.primary.base.trim() || tabState.primary.model.trim()));
+    // API 槽位：填了 base 或 model 才算已配置（key 有 'local' 默认值，单独填不算）。
+    // 亮绿 = 首选，暗绿 = fallback。
+    for (const n of API_TABS) {
+      const el = document.getElementById({ primary:'setTabPrimary', backup:'setTabBackup', backup2:'setTabBackup2' }[n]);
+      el.classList.toggle('has-value', !!(tabState[n].base.trim() || tabState[n].model.trim()));
+      const d = el.querySelector('.set-dot');
+      d.classList.toggle('preferred', n === preferred);
+      d.classList.toggle('dim', n !== preferred);
+    }
     document.getElementById('setTabAdvisor1').classList.toggle('has-value', has(tabState.advisor1));
     document.getElementById('setTabAdvisor2').classList.toggle('has-value', has(tabState.advisor2));
   }
@@ -6844,6 +6887,14 @@ fetch('/api/version').then(r => r.json()).then(d => {
     const el = document.getElementById(GPANES[n]); if (el) el.style.display = '';
     document.querySelectorAll('.set-tabs[data-group="general"] .set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === n));
   }
+  // ── 首选 API：三选一，永远恰好一个。点已是首选的按钮无动作（不允许“无首选”）──
+  function setPreferred(n) {
+    if (isAdvisorTab(n) || n === preferred) return;
+    preferred = n;
+    marks(); dots();
+    showMsg('success', '已把「' + TAB_LABELS[n] + '」设为首选 —— 保存后生效：启动时先探它，失败再按顺序回退到其余 API');
+  }
+  document.getElementById('setBtnPref').addEventListener('click', () => setPreferred(apiTab));
   document.querySelectorAll('.set-tabs[data-group="api"] .set-tab').forEach(e => e.addEventListener('click', () => switchApiTab(e.dataset.tab)));
   document.querySelectorAll('.set-tabs[data-group="general"] .set-tab').forEach(e => e.addEventListener('click', () => switchGeneralTab(e.dataset.tab)));
   [inBase, inKey, inModel].forEach(e => e.addEventListener('input', () => { snap(); dots(); }));
@@ -6856,7 +6907,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
 
   const showMsg = (t, x) => { msg.className = 'set-msg ' + t; msg.textContent = x; };
 
-  const TAB_LABELS = { primary:'主 API', backup:'备用 API', advisor1:'顾问模型1', advisor2:'顾问模型2' };
+  const TAB_LABELS = { primary:'API 1', backup:'API 2', backup2:'API 3', advisor1:'顾问模型1', advisor2:'顾问模型2' };
 
   // Server-side probe of {baseUrl}/models. Returns string[] of model ids,
   // or null when the endpoint is unreachable / returned no usable list.
@@ -6895,9 +6946,12 @@ fetch('/api/version').then(r => r.json()).then(d => {
       const env = await res.json();
       tabState.primary = { base: env.OPENAI_BASE_URL || '', key: env.OPENAI_API_KEY || '', model: env.OPENAI_MODEL || '' };
       tabState.backup  = { base: env.BACKUP_OPENAI_BASE_URL || '', key: env.BACKUP_OPENAI_API_KEY || '', model: env.BACKUP_OPENAI_MODEL || '' };
+      tabState.backup2 = { base: env.BACKUP2_OPENAI_BASE_URL || '', key: env.BACKUP2_OPENAI_API_KEY || '', model: env.BACKUP2_OPENAI_MODEL || '' };
       tabState.advisor1 = { base: env.ADVISOR1_OPENAI_BASE_URL || '', key: env.ADVISOR1_OPENAI_API_KEY || '', model: env.ADVISOR1_OPENAI_MODEL || '' };
       tabState.advisor2 = { base: env.ADVISOR2_OPENAI_BASE_URL || '', key: env.ADVISOR2_OPENAI_API_KEY || '', model: env.ADVISOR2_OPENAI_MODEL || '' };
-      apiTab = 'primary'; loadTab('primary'); switchApiTab('primary');
+      // 未设 / 值非法 → 回落到 API 1，与后端 run_goal.preferred_api_slot() 同一套默认
+      preferred = API_TABS.includes(env.PREFERRED_API) ? env.PREFERRED_API : 'primary';
+      apiTab = preferred; loadTab(preferred); switchApiTab(preferred);
       switchGeneralTab('other');
       document.getElementById('setIters').value = env.MAX_ITERS || '100';
       document.getElementById('setName').value  = env.INSTANCE_NAME || '';
@@ -6937,7 +6991,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
   // ── Probe current tab's endpoint ──────────────────────────────────
   document.getElementById('setBtnTest').addEventListener('click', async () => {
     const baseUrl = inBase.value.trim(), apiKey = inKey.value.trim();
-    if (!baseUrl) { showMsg('error', '请先填写' + (apiTab === 'backup' ? '备用 API ' : '') + '服务地址'); return; }
+    if (!baseUrl) { showMsg('error', '请先填写「' + TAB_LABELS[apiTab] + '」的服务地址'); return; }
     const btn = document.getElementById('setBtnTest');
     btn.disabled = true; btn.textContent = '验证中…'; msg.className = 'set-msg';
     try {
@@ -6974,7 +7028,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
     {
       const saveBtn = document.getElementById('setSave');
       const orig = saveBtn.textContent;
-      for (const n of ['primary', 'backup', 'advisor1', 'advisor2']) {
+      for (const n of ['primary', 'backup', 'backup2', 'advisor1', 'advisor2']) {
         const s = tabState[n];
         if (!s.base.trim() || s.model.trim()) continue;
         saveBtn.disabled = true; saveBtn.textContent = '探测模型中…';
@@ -6994,18 +7048,23 @@ fetch('/api/version').then(r => r.json()).then(d => {
       }
     }
 
-    const pB = tabState.primary.base.trim(), pM = tabState.primary.model.trim();
-    if (!pB || !pM) {
-      if (apiTab !== 'primary') switchApiTab('primary');
-      showMsg('error', !pB ? '主 API 服务地址不能为空' : '主 API 模型名称不能为空');
-      return;
-    }
-    const bB = tabState.backup.base.trim(), bK = tabState.backup.key.trim(), bM = tabState.backup.model.trim();
-    const bAny = bB || bK || bM, bAll = bB && bM;  // key may be empty (local service)
-    if (bAny && !bAll) {
-      if (apiTab !== 'backup') switchApiTab('backup');
-      showMsg('error', '备用 API 需要同时填写 base URL 和模型名称（API 密钥可空）');
-      return;
+    // 三个 API 槽位：首选必须配齐 base + model（Agent 起不来的兜底线）；
+    // 另外两个可留空不启用，但一旦动过就必须 base + model 成对（key 本地服务可空）。
+    const api = {};
+    for (const n of API_TABS) {
+      const s = tabState[n], aB = s.base.trim(), aK = s.key.trim(), aM = s.model.trim();
+      const any = aB || aK || aM;
+      if (n === preferred && !(aB && aM)) {
+        if (apiTab !== n) switchApiTab(n);
+        showMsg('error', '首选 API「' + TAB_LABELS[n] + '」的' + (!aB ? '服务地址' : '模型名称') + '不能为空');
+        return;
+      }
+      if (any && !(aB && aM)) {
+        if (apiTab !== n) switchApiTab(n);
+        showMsg('error', '「' + TAB_LABELS[n] + '」需要同时填写 base URL 和模型名称（API 密钥可空）');
+        return;
+      }
+      api[n] = { base: aB, key: any ? (aK || 'local') : '', model: aM };
     }
     // 顾问模型 1 / 2：可选；若填写则 base URL 与模型名称必须成对。
     const adv = {};
@@ -7020,12 +7079,17 @@ fetch('/api/version').then(r => r.json()).then(d => {
     }
     const proxy = document.getElementById('setProxy').value.trim();
     const data = {
-      OPENAI_BASE_URL: pB,
-      OPENAI_API_KEY:  tabState.primary.key.trim() || 'local',
-      OPENAI_MODEL:    pM,
-      BACKUP_OPENAI_BASE_URL: bB,
-      BACKUP_OPENAI_API_KEY:  bAny ? (bK || 'local') : '',
-      BACKUP_OPENAI_MODEL:    bM,
+      OPENAI_BASE_URL: api.primary.base,
+      OPENAI_API_KEY:  api.primary.key,
+      OPENAI_MODEL:    api.primary.model,
+      BACKUP_OPENAI_BASE_URL: api.backup.base,
+      BACKUP_OPENAI_API_KEY:  api.backup.key,
+      BACKUP_OPENAI_MODEL:    api.backup.model,
+      BACKUP2_OPENAI_BASE_URL: api.backup2.base,
+      BACKUP2_OPENAI_API_KEY:  api.backup2.key,
+      BACKUP2_OPENAI_MODEL:    api.backup2.model,
+      // 空 = 从 .env 删键 = 默认首选 API 1，与后端默认一致
+      PREFERRED_API: preferred === 'primary' ? '' : preferred,
       ADVISOR1_OPENAI_BASE_URL: adv.advisor1.base,
       ADVISOR1_OPENAI_API_KEY:  adv.advisor1.key,
       ADVISOR1_OPENAI_MODEL:    adv.advisor1.model,

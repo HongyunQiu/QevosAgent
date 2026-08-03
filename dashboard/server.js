@@ -2275,9 +2275,14 @@ const server = http.createServer(async (req, res) => {
       INSTANCE_NAME:   process.env.INSTANCE_NAME   || '',
       HTTPS_PROXY:     process.env.HTTPS_PROXY     || '',
       HTTP_PROXY:      process.env.HTTP_PROXY      || '',
+      // 三个可互为 fallback 的 API 槽位（OPENAI_ / BACKUP_ / BACKUP2_）+ 首选槽位
       BACKUP_OPENAI_BASE_URL: process.env.BACKUP_OPENAI_BASE_URL || '',
       BACKUP_OPENAI_API_KEY:  process.env.BACKUP_OPENAI_API_KEY  || '',
       BACKUP_OPENAI_MODEL:    process.env.BACKUP_OPENAI_MODEL    || '',
+      BACKUP2_OPENAI_BASE_URL: process.env.BACKUP2_OPENAI_BASE_URL || '',
+      BACKUP2_OPENAI_API_KEY:  process.env.BACKUP2_OPENAI_API_KEY  || '',
+      BACKUP2_OPENAI_MODEL:    process.env.BACKUP2_OPENAI_MODEL    || '',
+      PREFERRED_API:          process.env.PREFERRED_API          || 'primary',
       // 顾问模型 1 / 2 —— 仅供 consult_advisor 工具按需调用，不参与主备 fallback
       ADVISOR1_OPENAI_BASE_URL: process.env.ADVISOR1_OPENAI_BASE_URL || '',
       ADVISOR1_OPENAI_API_KEY:  process.env.ADVISOR1_OPENAI_API_KEY  || '',
@@ -2295,7 +2300,9 @@ const server = http.createServer(async (req, res) => {
       LLM_MAX_TOKENS:  process.env.LLM_MAX_TOKENS  || '',
       LLM_TEMPERATURE: process.env.LLM_TEMPERATURE || '',
       LLM_CONTEXT_WINDOW: process.env.LLM_CONTEXT_WINDOW || '',
-      configured: !!process.env.OPENAI_BASE_URL,
+      // 任一槽位配了 base 就算配置过（首选可以是 API 2/3，此时 API 1 允许留空）
+      configured: !!(process.env.OPENAI_BASE_URL || process.env.BACKUP_OPENAI_BASE_URL
+                     || process.env.BACKUP2_OPENAI_BASE_URL),
     });
     return;
   }
