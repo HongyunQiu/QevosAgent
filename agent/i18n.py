@@ -733,6 +733,23 @@ _STRINGS: dict[str, dict[str, str]] = {
             "如果它们只是被你忘了，现在正是补上的时候。"
         ),
         "advisor.ctx.graph": "## 执行图（结构化进展骨架）\n{graph}",
+        "graph.proj.time": "时间：本图已用 {used} / 配额 {budget}（剩 {left}）{node}",
+        "graph.proj.time_node": " · 当前节点 {used}",
+        "graph.proj.rate": "速率：最近 {rounds} 轮 均 {per_iter}/轮（模型 {llm} · 工具 {tool} · 重试 {retry}）",
+        "graph.proj.pace": "上一张图实测：{n} 个节点共 {total}，均 {per_node}/节点——再开图时按这个估，别按乐观值。",
+        "graph.proj.expired_line": "## 执行图 {gid}「{title}」时间配额已用尽（expired），当前在自由模式。",
+        "graph.time.verdict_tight": "**按当前速率跑不完**",
+        "graph.time.verdict_ok": "按当前速率大致够用",
+        "graph.time.triage": (
+            "[执行图] 时间配额已用 {pct}%（{used} / {budget}，剩 {left}）。\n"
+            "还有 {n} 个节点没闭合：{ids}\n"
+            "已闭合节点实测均 {per_node}/个，照此剩下的还需约 {need}——{verdict}。\n"
+            "现在就做取舍，不要等配额耗尽被动截断：\n"
+            "  · 哪些节点可以直接 abandon 或 block（写明原因）？\n"
+            "  · 有没有更快的路可以 fork？\n"
+            "  · 手上这个节点能不能用 extend 拆小，先闭合确定能做完的那部分？\n"
+            "配额用尽时图会标记 expired 并自动回到自由模式，未闭合节点原样带成遗留缺口。"
+        ),
         "graph.proj.truncated": "（图较大，投影已截断；完整图见 run 目录的 graph.json）",
         "graph.proj.completed_line": "## 执行图 {gid}「{title}」已完成，不再遵循（完整记录见 graph.json）。",
         "graph.proj.abandoned_line": "## 执行图 {gid}「{title}」已放弃，不再遵循（完整记录见 graph.json）。",
@@ -1447,6 +1464,24 @@ Before calling action='done', you MUST complete the following two steps:
             "If you simply forgot them, now is the time to pick them up."
         ),
         "advisor.ctx.graph": "## Execution graph (structured progress skeleton)\n{graph}",
+        "graph.proj.time": "Time: this graph has used {used} of {budget} ({left} left){node}",
+        "graph.proj.time_node": " · current node {used}",
+        "graph.proj.rate": "Pace: last {rounds} rounds averaged {per_iter}/round (model {llm} · tools {tool} · retries {retry})",
+        "graph.proj.pace": "Previous graph measured: {n} nodes in {total}, {per_node}/node — estimate the next allowance from this, not from optimism.",
+        "graph.proj.expired_line": "## Execution graph {gid} \"{title}\" ran out of its time allowance (expired); you are in free-form mode.",
+        "graph.time.verdict_tight": "**at this pace it will not finish**",
+        "graph.time.verdict_ok": "at this pace it should roughly fit",
+        "graph.time.triage": (
+            "[Execution graph] {pct}% of the time allowance is spent ({used} of {budget}, {left} left).\n"
+            "{n} node(s) still open: {ids}\n"
+            "Closed nodes measured {per_node} each, so the rest needs about {need} — {verdict}.\n"
+            "Make the call now rather than being cut off when the allowance runs out:\n"
+            "  · Which nodes can be abandoned or blocked outright (state the reason)?\n"
+            "  · Is there a faster route to fork to?\n"
+            "  · Can the current node be split with extend, closing the part you can definitely finish?\n"
+            "When the allowance runs out the graph is marked expired and you return to free-form mode; "
+            "unclosed nodes are carried out verbatim as remaining gaps."
+        ),
         "graph.proj.truncated": "(Graph is large — projection truncated; see graph.json in the run directory for the full map.)",
         "graph.proj.completed_line": "## Execution graph {gid} \"{title}\" is complete and no longer being followed (full record in graph.json).",
         "graph.proj.abandoned_line": "## Execution graph {gid} \"{title}\" was abandoned and is no longer being followed (full record in graph.json).",

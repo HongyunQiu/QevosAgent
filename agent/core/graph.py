@@ -324,6 +324,33 @@ def graph_time_used(state: AgentState, g: dict) -> float:
     return max(0.0, float(ended) - float(started))
 
 
+def graph_pace(state: AgentState, g: Optional[dict] = None) -> dict:
+    """一张图的实测速率：闭合了几个节点、每个平均多久。
+
+    这是"模型自己申请配额"能成立的关键——第一张图它是纯猜，从第二张起就该按
+    这个数来估。没有它，申请值永远停留在乐观值上。
+    """
+    try:
+        if g is None:
+            root = peek_root(state)
+            if not root or not root.get("graphs"):
+                return {}
+            g = root["graphs"][-1]
+        spans = [s for s in (node_seconds(n) for n in _nodes(g).values()
+                             if n.get("id") != ROOT_ID) if s is not None and s > 0]
+        if not spans:
+            return {}
+        total = sum(spans)
+        return {
+            "gid": g.get("gid", ""),
+            "nodes": len(spans),
+            "total": round(total, 1),
+            "per_node": round(total / len(spans), 1),
+        }
+    except Exception:
+        return {}
+
+
 def _close_graph_time(state: AgentState, g: dict) -> None:
     if not isinstance(g.get("time_end"), (int, float)):
         g["time_end"] = round(_timing.active_seconds(state), 2)
@@ -1072,8 +1099,21 @@ def _render(state: AgentState) -> str:
     if g is None:
         # 非 active 图收缩为一行（doc §2b），保留"曾经用过图"这个事实
         last = root["graphs"][-1]
-        key = "graph.proj.completed_line" if last.get("status") == "completed" else "graph.proj.abandoned_line"
-        return t(key, gid=last.get("gid", "?"), title=last.get("title", ""))
+        key = {
+            "completed": "graph.proj.completed_line",
+            "expired": "graph.proj.expired_line",
+        }.get(last.get("status"), "graph.proj.abandoned_line")
+        line = t(key, gid=last.get("gid", "?"), title=last.get("title", ""))
+        # 此刻正是"要不要再开一张图"的决策点——把上一张的实测速率摆在这里，
+        # 它申请新配额时才有依据可循，而不是继续按乐观值估。
+        pace = graph_pace(state, last)
+        if pace.get("nodes"):
+            line += " " + t(
+                "graph.proj.pace",
+                gid=pace["gid"], n=pace["nodes"],
+                total=_timing.fmt(pace["total"]), per_node=_timing.fmt(pace["per_node"]),
+            )
+        return line
 
     nodes = _nodes(g)
     total = max(0, len(nodes) - 1)               # 不计根节点
@@ -1119,6 +1159,37 @@ def _render(state: AgentState) -> str:
             )
         else:
             sections.append(t("graph.proj.no_active_empty"))
+
+    # ── 时间：配额进度 + 速率分解 ──────────────────────────────────────────
+    # 光给"剩 49 分钟"没用——那对模型只是个数字，它没法判断够不够。
+    # 必须同时给速率，它才谈得上推算。
+    _budget = g.get("time_budget")
+    if isinstance(_budget, (int, float)) and _budget > 0:
+        _used = graph_time_used(state, g)
+        _node_used = ""
+        if current is not None:
+            _tr = current.get("time_range")
+            if isinstance(_tr, list) and _tr[0] is not None:
+                _node_used = t("graph.proj.time_node",
+                               used=_timing.fmt(_timing.active_seconds(state) - float(_tr[0])))
+        sections.append(t(
+            "graph.proj.time",
+            used=_timing.fmt(_used),
+            budget=_timing.fmt(_budget),
+            left=_timing.fmt(max(0.0, float(_budget) - _used)),
+            node=_node_used,
+        ))
+
+    _rr = _timing.recent_rate(state)
+    if _rr:
+        sections.append(t(
+            "graph.proj.rate",
+            rounds=_rr["rounds"],
+            per_iter=_timing.fmt(_rr["per_iter"]),
+            llm=_timing.fmt(_rr["llm"]),
+            tool=_timing.fmt(_rr["tool"]),
+            retry=_timing.fmt(_rr["retry"]),
+        ))
 
     # ── 路径（祖先链）──────────────────────────────────────────────────────
     anchor_id = (current or {}).get("id") or str(g.get("cursor") or ROOT_ID)

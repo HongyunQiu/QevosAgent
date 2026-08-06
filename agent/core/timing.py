@@ -203,7 +203,7 @@ def snapshot(state) -> dict:
 
 
 def rate(state, iterations: int) -> dict:
-    """平均每轮耗时与分解。批 C 的投影"速率"那一行用它。"""
+    """全程平均每轮耗时与 LLM 占比。"""
     book = peek(state)
     if not book or iterations <= 0:
         return {}
@@ -212,6 +212,55 @@ def rate(state, iterations: int) -> dict:
         "llm_share": round(
             float(book.get("llm") or 0.0) / max(1e-9, float(book.get("total") or 0.0)), 3
         ),
+    }
+
+
+# ── 滚动采样 ──────────────────────────────────────────────────────────────────
+# 只有"最近"的速率才看得出环境在退化：全程平均会把早期的顺畅稀释掉，
+# llm 占比从 40% 涨到 85% 这种信号在总账上根本浮不出来。
+
+_SAMPLE_CAP = 24
+
+
+def sample(state, iteration: int) -> None:
+    """每轮记一个采样点。字段全是 float，可随 meta 一起序列化。"""
+    book = ledger(state)
+    samples = book.get("_samples")
+    if not isinstance(samples, list):
+        samples = []
+        book["_samples"] = samples
+    samples.append([
+        int(iteration),
+        round(float(book.get("total") or 0.0), 2),
+        round(float(book.get("llm") or 0.0), 2),
+        round(float(book.get("tool") or 0.0), 2),
+        round(float(book.get("retry") or 0.0), 2),
+    ])
+    if len(samples) > _SAMPLE_CAP:
+        del samples[: len(samples) - _SAMPLE_CAP]
+
+
+def recent_rate(state, window: int = 10) -> dict:
+    """最近 window 轮的每轮耗时与分解。样本不足时返回 {}。"""
+    book = peek(state)
+    samples = (book or {}).get("_samples")
+    if not isinstance(samples, list) or len(samples) < 2:
+        return {}
+    tail = samples[-(window + 1):]
+    first, last = tail[0], tail[-1]
+    rounds = int(last[0]) - int(first[0])
+    if rounds <= 0:
+        return {}
+    span = float(last[1]) - float(first[1])
+    if span <= 0:
+        return {}
+    return {
+        "rounds": rounds,
+        "per_iter": round(span / rounds, 1),
+        "llm": round((float(last[2]) - float(first[2])) / rounds, 1),
+        "tool": round((float(last[3]) - float(first[3])) / rounds, 1),
+        "retry": round((float(last[4]) - float(first[4])) / rounds, 1),
+        "llm_share": round((float(last[2]) - float(first[2])) / span, 3),
     }
 
 

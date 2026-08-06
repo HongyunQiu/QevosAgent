@@ -439,5 +439,147 @@ class StallTimeThresholdTests(TimingTestCase):
         self.assertEqual(G.stall_level(m)[0], 2)
 
 
+class RecentRateTests(TimingTestCase):
+    """只有"最近"的速率才看得出环境在退化——全程平均会把早期的顺畅稀释掉。"""
+
+    def test_needs_at_least_two_samples(self):
+        st = self._state()
+        T.start(st)
+        self.assertEqual(T.recent_rate(st), {})
+        T.sample(st, 0)
+        self.assertEqual(T.recent_rate(st), {})
+
+    def test_measures_the_recent_window_not_the_whole_run(self):
+        st = self._state()
+        T.start(st)
+        # 前 10 轮很快（每轮 10s），后 10 轮很慢（每轮 100s）
+        for i in range(21):
+            if i:
+                self.clock.advance(10 if i <= 10 else 100)
+                T.tick(st)
+            T.sample(st, i)
+        recent = T.recent_rate(st, window=10)
+        self.assertAlmostEqual(recent["per_iter"], 100.0, places=0)   # 而不是全程均值 55
+        self.assertEqual(recent["rounds"], 10)
+
+    def test_breaks_down_by_category_so_degradation_is_visible(self):
+        """llm 占比从低涨到高，是"不是我慢、是服务端慢"的唯一依据。"""
+        st = self._state()
+        T.start(st)
+        T.sample(st, 0)
+        for i in range(1, 6):
+            with T.span(st, "llm"):
+                self.clock.advance(80)
+            with T.span(st, "tool"):
+                self.clock.advance(20)
+            T.tick(st)
+            T.sample(st, i)
+        recent = T.recent_rate(st, window=5)
+        self.assertAlmostEqual(recent["llm"], 80.0, places=0)
+        self.assertAlmostEqual(recent["tool"], 20.0, places=0)
+        self.assertGreater(recent["llm_share"], 0.7)
+
+    def test_samples_are_capped_and_serialisable(self):
+        import json
+        st = self._state()
+        T.start(st)
+        for i in range(200):
+            self.clock.advance(1)
+            T.tick(st)
+            T.sample(st, i)
+        samples = T.peek(st)["_samples"]
+        self.assertLessEqual(len(samples), 24)
+        json.dumps(samples)
+
+
+class GraphPaceTests(TimingTestCase):
+    """实测速率是"模型自己申请配额"能成立的前提——没有它，申请值永远是乐观值。"""
+
+    def _run_two_nodes(self, first=300, second=600):
+        st = self._state()
+        T.start(st)
+        G.create_graph(st, title="测速", nodes=[{"title": "a", "goal": "x"},
+                                                {"title": "b", "goal": "y"}])
+        for nid, secs in (("n1", first), ("n2", second)):
+            G.apply_op(st, {"op": "enter", "node": nid})
+            self.clock.advance(secs)
+            T.tick(st)
+            G.apply_op(st, {"op": "exit", "node": nid, "summary": "ok"})
+        return st
+
+    def test_pace_averages_closed_nodes(self):
+        st = self._run_two_nodes(300, 600)
+        pace = G.graph_pace(st)
+        self.assertEqual(pace["nodes"], 2)
+        self.assertAlmostEqual(pace["total"], 900.0, places=0)
+        self.assertAlmostEqual(pace["per_node"], 450.0, places=0)
+
+    def test_pace_is_empty_without_closed_nodes(self):
+        st = self._state()
+        T.start(st)
+        G.create_graph(st, title="空", nodes=[{"title": "a", "goal": "x"}])
+        self.assertEqual(G.graph_pace(st), {})
+
+    def test_pace_surfaces_when_no_graph_is_active(self):
+        """图关掉之后正是"要不要再开一张"的决策点，速率必须摆在这里。"""
+        st = self._run_two_nodes(300, 600)
+        G.apply_op(st, {"op": "complete"})
+        proj = G.render(st)
+        self.assertIn("7m30s", proj)          # 均 450s/节点
+        self.assertIn("15m", proj)            # 共 900s
+
+    def test_expired_graph_line_says_free_mode(self):
+        st = self._state()
+        T.start(st)
+        G.create_graph(st, title="到期", nodes=[{"title": "a", "goal": "x"}],
+                       time_budget_min=1)
+        self.clock.advance(120)
+        T.tick(st)
+        G.expire_if_out_of_time(st)
+        proj = G.render(st)
+        self.assertTrue("expired" in proj.lower() or "自由模式" in proj)
+
+
+class TimeProjectionTests(TimingTestCase):
+    def test_no_allowance_means_no_time_line(self):
+        """没申请配额就别拿时间行占每轮的 token。"""
+        st = self._state()
+        T.start(st)
+        # 标题里不要出现"配额"，否则断言会命中标题本身而不是时间行
+        G.create_graph(st, title="普通图", nodes=[{"title": "a", "goal": "x"}])
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        proj = G.render(st)
+        self.assertNotIn("配额", proj)
+        self.assertNotIn("allowance", proj.lower())
+
+    def test_allowance_shows_used_budget_and_left(self):
+        st = self._state()
+        T.start(st)
+        G.create_graph(st, title="有配额", nodes=[{"title": "a", "goal": "x"}],
+                       time_budget_min=30)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        self.clock.advance(600)
+        T.tick(st)
+        proj = G.render(st)
+        self.assertIn("10m", proj)     # 已用
+        self.assertIn("30m", proj)     # 配额
+        self.assertIn("20m", proj)     # 剩余
+
+    def test_rate_line_appears_once_there_are_samples(self):
+        """只给"剩 20 分钟"对模型是个死数字，有速率才谈得上推算。"""
+        st = self._state()
+        T.start(st)
+        G.create_graph(st, title="有配额", nodes=[{"title": "a", "goal": "x"}],
+                       time_budget_min=30)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        T.sample(st, 0)
+        for i in range(1, 6):
+            self.clock.advance(30)
+            T.tick(st)
+            T.sample(st, i)
+        proj = G.render(st)
+        self.assertIn("30s", proj)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

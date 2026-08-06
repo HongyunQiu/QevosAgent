@@ -773,6 +773,7 @@ def run(
     try:
         while True:
             _timing.tick(state)
+            _timing.sample(state, state.iteration)
             # ── Drain queued interrupt commands BEFORE checking iteration limit ──
             # Draining first ensures /+N typed during the last iteration can extend
             # max_iterations before the exit check, so it actually takes effect.
@@ -932,17 +933,28 @@ def run(
             _expired = _graph.expire_if_out_of_time(state)
             if _expired is not None:
                 _open = _graph.open_nodes(state, _expired)
-                _append_short_term(state, {"role": "user", "content": t(
+                _pace = _graph.graph_pace(state, _expired)
+                _notice = t(
                     "graph.expired.notice",
                     gid=_expired.get("gid", "?"),
                     used=_timing.fmt(_graph.graph_time_used(state, _expired)),
                     n=len(_open),
                     ids=", ".join(f"{o['node']}「{o['title']}」" for o in _open[:6]) or "-",
                     left=_timing.fmt(_run_time_left(state)) if _run_time_left(state) is not None else "-",
-                )})
+                )
+                # 把实测速率一并给出：只说"按实际速率估"而不给数字等于没说
+                if _pace.get("nodes"):
+                    _notice += "\n" + t(
+                        "graph.proj.pace", gid=_pace["gid"], n=_pace["nodes"],
+                        total=_timing.fmt(_pace["total"]),
+                        per_node=_timing.fmt(_pace["per_node"]),
+                    )
+                _append_short_term(state, {"role": "user", "content": _notice})
                 if hooks.on_error:
                     hooks.on_error(f"[执行图] {_expired.get('gid')} 时间配额用尽，已回到自由模式")
                 _checkpoint_state(state)
+
+            _graph_time_triage(state, hooks)
 
             # ── 执行图收敛检测 ─────────────────────────────────────────────────
             # 现有防呆全是签名式的，抓不住"每轮都在换工具、但一个节点都没关掉"
@@ -1751,6 +1763,51 @@ def _graph_boundary_compress(state: "AgentState", llm, op: dict, hooks=None) -> 
             _graph.mark_sealed(state, node, seg)
         if hooks and hooks.on_thought:
             hooks.on_thought(f"[执行图] 节点边界封段（{reason}），段号 {seg}")
+    except Exception:
+        return
+
+
+def _graph_time_triage(state: "AgentState", hooks: Optional["AgentHooks"] = None) -> None:
+    """图配额用到 70% / 90% 时各提醒一次，促成限期取舍。只提示，不阻断。
+
+    关键是**给出可判断的推算**，而不是只报个百分比：按已闭合节点的实测速率，
+    剩下的节点在剩余时间里跑不跑得完。模型据此才好决定砍哪些、换哪条更快的路。
+    """
+    try:
+        g = _graph.active_graph(state)
+        if g is None:
+            return
+        budget = g.get("time_budget")
+        if not isinstance(budget, (int, float)) or budget <= 0:
+            return
+        used = _graph.graph_time_used(state, g)
+        pct = used / float(budget)
+        for mark in (0.9, 0.7):
+            if pct < mark:
+                continue
+            flag = f"_graph_time_triage_{int(mark * 100)}"
+            if state.meta.get(flag):
+                break          # 高档位已发过，低档位不必再补
+            state.meta[flag] = True
+
+            open_nodes = _graph.open_nodes(state, g)
+            pace = _graph.graph_pace(state, g)
+            left = max(0.0, float(budget) - used)
+            need = (pace.get("per_node") or 0) * len(open_nodes)
+            verdict = t("graph.time.verdict_tight") if need > left > 0 else t("graph.time.verdict_ok")
+            _append_short_term(state, {"role": "user", "content": t(
+                "graph.time.triage",
+                pct=int(mark * 100), used=_timing.fmt(used), budget=_timing.fmt(budget),
+                left=_timing.fmt(left), n=len(open_nodes),
+                ids=", ".join(f"{o['node']}「{o['title']}」" for o in open_nodes[:6]) or "-",
+                per_node=_timing.fmt(pace["per_node"]) if pace.get("per_node") else "未知",
+                need=_timing.fmt(need) if need else "未知",
+                verdict=verdict,
+            )})
+            if hooks and hooks.on_thought:
+                hooks.on_thought(f"[执行图] 配额已用 {int(pct * 100)}%，剩 {_timing.fmt(left)}")
+            _checkpoint_state(state)
+            break
     except Exception:
         return
 
