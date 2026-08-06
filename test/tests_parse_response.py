@@ -47,6 +47,26 @@ def main():
         '{"thought":"x","action":"tool_call","tool":"shell","args":{"command":"echo hello',
     )
 
+    # 6) thought 写成嵌套对象（run 20260806-183910 的死循环起因）：
+    #    Action.thought 契约是 str，若把 dict 原样放行，下游循环检测会在
+    #    thought.lower() 上抛 AttributeError 并被静默吞掉，检测器永久熄火。
+    a = parse_response(
+        '{"thought":{"Observe":"看到格子","Decide":"提取视频帧"},'
+        '"action":"shell","args":{"command":"ffmpeg -i a.mp4"}}'
+    )
+    assert a.type.name == "TOOL_CALL", f"dict_thought unexpected type: {a.type}"
+    assert isinstance(a.thought, str), f"dict_thought not coerced: {type(a.thought)}"
+    assert "Observe" in a.thought, f"dict_thought content lost: {a.thought!r}"
+    assert a.tool == "shell", f"dict_thought tool wrong: {a.tool!r}"
+
+    # 7) thought 写成列表 / null 也不能漏下去
+    for name, raw in (
+        ("list_thought", '{"thought":["a","b"],"action":"done","final_answer":"ok"}'),
+        ("null_thought", '{"thought":null,"action":"done","final_answer":"ok"}'),
+    ):
+        a = parse_response(raw)
+        assert isinstance(a.thought, str), f"{name} not coerced: {type(a.thought)}"
+
     print("OK")
 
 

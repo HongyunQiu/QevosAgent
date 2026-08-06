@@ -2055,6 +2055,7 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
     Important: never stuff huge tool outputs into the LLM context.
     """
     import os
+    import sys
     import json as _json
     import hashlib
 
@@ -2082,6 +2083,12 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
 
             history = state.meta.setdefault("_call_sig_history", [])
 
+            # 先算好本轮之前的历史快照，再立刻把本次签名入账。
+            # 入账必须早于后续任何可能抛异常的逻辑：否则一次异常就会让历史永久
+            # 停止增长，检测器被静默熄火（曾因 dict 型 thought 触发过这个故障）。
+            _prev_history = list(history)
+            history.append(call_sig)
+
             # ── 语义豁免：模型 thought 表达了轮询/等待意图，跳过本次计数 ──────
             _POLLING_KEYWORDS = (
                 "等待", "轮询", "polling", "waiting", "wait",
@@ -2089,7 +2096,12 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                 "尚未", "还没", "稍后", "稍等", "重试", "retry",
                 "in progress", "not yet", "pending", "checking",
             )
-            _thought_lower = (action.thought or "").lower()
+            _thought_raw = action.thought
+            if not isinstance(_thought_raw, str):
+                _thought_raw = "" if _thought_raw is None else _json.dumps(
+                    _thought_raw, ensure_ascii=False, default=str
+                )
+            _thought_lower = _thought_raw.lower()
             _is_polling = any(kw in _thought_lower for kw in _POLLING_KEYWORDS)
             # job_wait / jobs_list 本身就是为了查询后台任务，天然豁免循环检测
             if action.tool in ("job_wait", "jobs_list"):
@@ -2097,7 +2109,7 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
 
             # ── A：连续重复检测 ──────────────────────────────────────────────
             consecutive = 0
-            for prev in reversed(history[-5:]):
+            for prev in reversed(_prev_history[-5:]):
                 if prev == call_sig:
                     consecutive += 1
                 else:
@@ -2106,10 +2118,8 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             # ── B：滑动窗口频率检测 ─────────────────────────────────────────
             win_size  = int(os.environ.get("LOOP_WINDOW_SIZE", "12"))
             win_thresh = int(os.environ.get("LOOP_WINDOW_THRESH", "5"))
-            window = history[-win_size:]
+            window = _prev_history[-win_size:]
             freq_in_window = sum(1 for h in window if h == call_sig)
-
-            history.append(call_sig)
 
             args_preview = _json.dumps(action.args, ensure_ascii=False)[:300]
 
@@ -2151,14 +2161,25 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             # 主循环负责：先折叠吸引子，再决定是 advisor 介入还是暂停求助用户。
             if loop_triggered:
                 state.meta["_loop_advisor_pending"] = True
-            else:
-                # 非循环调用：重置轮询计数
+            elif not _is_polling:
+                # 既非循环也非轮询：说明真正换了动作，重置轮询计数。
+                # 注意不能把 _is_polling 也算进来——A 段刚 +1，这里立刻清零的话
+                # 计数永远回不到阈值，⚠️ 轮询提示形同虚设（长期未被触发过）。
                 poll_counts = state.meta.get("_poll_counts", {})
                 if action.tool in poll_counts:
                     poll_counts[action.tool] = 0
 
-        except Exception:
-            pass
+        except Exception as _loop_det_exc:
+            # 循环检测失效是"看门狗自己瞎了"，绝不能无声无息：这里静默过一次，
+            # 结果整整 14 轮完全相同的调用没有任何机制拦下来。
+            try:
+                sys.stderr.write(
+                    f"[loop-detect] 重复调用检测异常，本轮跳过："
+                    f"{type(_loop_det_exc).__name__}: {_loop_det_exc}\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
     # ─────────────────────────────────────────────────────────────────────────
 
     if result.success:
@@ -2207,9 +2228,16 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             + repeat_warning
         )
     else:
+        # 失败时也要把 output 带上：不少工具（尤其是带 2>&1 的 shell 命令）把
+        # 真正的诊断信息留在 stdout，只回 error 会让模型收到一条空错误、无从调整。
+        _err_text = (result.error or "").strip() or "（无错误信息）"
+        _out_text = ("" if result.output is None else str(result.output)).strip()
+        _out_part = ""
+        if _out_text and _out_text not in ("（无输出）", _err_text) and _out_text not in _err_text:
+            _out_part = f"\n{t('marker.output')}\n{_summarize_large_text(_out_text, max_chars)}"
         return (
             f"{t('marker.tool_prefix', name=action.tool)} {t('marker.tool_failure')}\n"
-            f"{t('marker.error_label')} {result.error}\n"
+            f"{t('marker.error_label')} {_err_text}{_out_part}\n"
             f"{t('marker.retry_hint')}"
             + repeat_warning
         )

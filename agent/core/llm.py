@@ -1400,7 +1400,12 @@ def parse_response(raw: str) -> Action:
             error_type="unknown",
         )
 
+    # thought 归一化：模型有时会把 thought 写成嵌套对象（如 {"Observe":...,"Decide":...}）
+    # 或列表。Action.thought 契约是 str，下游（循环检测、日志、hooks）都按 str 用，
+    # 放任非 str 流下去会在下游炸出 AttributeError 并被静默吞掉。
     thought = data.get("thought", "")
+    if not isinstance(thought, str):
+        thought = "" if thought is None else json.dumps(thought, ensure_ascii=False)
     action_str = data.get("action", "tool_call")
     _sp_note = (data.get("scratchpad_note") or "").strip() or None
     # 执行图 inline 推进：只接受对象；模型偶尔会给列表或字符串，一律忽略而不报错——

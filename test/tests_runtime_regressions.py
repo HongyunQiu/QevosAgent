@@ -7,7 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent.core.executor import execute
-from agent.core.loop import _extract_claimed_artifact_paths, _parse_acceptance_evidence
+from agent.core.loop import (
+    _build_feedback,
+    _extract_claimed_artifact_paths,
+    _parse_acceptance_evidence,
+)
 from agent.core.types_def import Action, ActionType, AgentState, ToolResult, ToolSpec
 from agent.runtime.persistence import RunPersistence
 from agent.tools.standard import (
@@ -145,6 +149,97 @@ class ToolRepairFlowTests(unittest.TestCase):
         result = state.tools["http_get"].fn(state=state, url="example.com")
         self.assertTrue(result.success)
         self.assertEqual(result.output, "fixed:example.com")
+
+
+class LoopDetectionTests(unittest.TestCase):
+    """回归：run 20260806-183910 连续 14 轮完全相同的 shell 调用无人拦截。
+
+    根因是模型把 thought 写成嵌套对象，`thought.lower()` 抛 AttributeError 被
+    静默吞掉，导致 repeat_warning / _loop_advisor_pending 全部失效，且签名历史
+    永久停止增长。
+    """
+
+    @staticmethod
+    def _action(thought):
+        return Action(
+            type=ActionType.TOOL_CALL,
+            thought=thought,
+            tool="shell",
+            args={"command": "ffmpeg -i a.mp4 -frames:v 1 -y /tmp/f.png 2>&1"},
+        )
+
+    @staticmethod
+    def _failure():
+        return ToolResult(success=False, output="ffmpeg: not found", error="exit code 127")
+
+    def _run_n(self, thought, n):
+        state = AgentState(goal="loop test")
+        feedbacks = [
+            _build_feedback(self._action(thought), self._failure(), state)
+            for _ in range(n)
+        ]
+        return state, feedbacks
+
+    def test_identical_failing_calls_trigger_loop_detection(self):
+        state, feedbacks = self._run_n("提取视频帧确认格子形态", 5)
+        self.assertTrue(state.meta.get("_loop_advisor_pending"))
+        self.assertTrue(any("循环检测" in f for f in feedbacks))
+        self.assertEqual(len(state.meta["_call_sig_history"]), 5)
+
+    def test_dict_thought_still_triggers_loop_detection(self):
+        thought = {"Observe": "画面是格子", "Decide": "提取视频帧"}
+        state, feedbacks = self._run_n(thought, 5)
+        self.assertTrue(
+            state.meta.get("_loop_advisor_pending"),
+            "dict 型 thought 不能让循环检测熄火",
+        )
+        self.assertTrue(any("循环检测" in f for f in feedbacks))
+
+    def test_sig_history_keeps_growing_even_if_detection_body_raises(self):
+        # thought 为不可 JSON 序列化的对象：走 default=str 兜底，仍须正常计数
+        state, _ = self._run_n(object(), 4)
+        self.assertEqual(len(state.meta["_call_sig_history"]), 4)
+
+    def test_polling_thought_is_exempt_from_loop_detection(self):
+        state, feedbacks = self._run_n("等待下载完成，稍后重试", 5)
+        self.assertIsNone(state.meta.get("_loop_advisor_pending"))
+        self.assertTrue(any("轮询提示" in f for f in feedbacks))
+
+    def test_failure_feedback_includes_output_not_just_error(self):
+        action = self._action("提取视频帧")
+        result = ToolResult(success=False, output="ffmpeg: not found", error="exit code 127")
+        feedback = _build_feedback(action, result, AgentState(goal="x"))
+        self.assertIn("exit code 127", feedback)
+        self.assertIn("ffmpeg: not found", feedback)
+
+    def test_empty_error_feedback_is_not_blank(self):
+        action = self._action("提取视频帧")
+        result = ToolResult(success=False, output="", error="")
+        feedback = _build_feedback(action, result, AgentState(goal="x"))
+        self.assertIn("无错误信息", feedback)
+
+
+class ShellExitCodeTests(unittest.TestCase):
+    """回归：命令自带 2>&1 时 stderr 为空，失败只回一条空 Error，模型无从调整。"""
+
+    def test_failure_error_carries_exit_code_and_stdout(self):
+        from agent.tools.standard import tool_shell
+
+        state = AgentState(goal="x")
+        # stderr 被重定向进 stdout → stderr_text 为空，错误信息必须由 stdout 兜底
+        cmd = ("echo boom_marker 2>&1 & exit 3" if os.name == "nt"
+               else "echo boom_marker 2>&1; exit 3")
+        result = tool_shell(state, cmd)
+        self.assertFalse(result.success)
+        self.assertIn("exit code 3", result.error)
+        self.assertIn("boom_marker", result.error)
+
+    def test_success_has_no_error(self):
+        from agent.tools.standard import tool_shell
+
+        result = tool_shell(AgentState(goal="x"), "echo ok")
+        self.assertTrue(result.success)
+        self.assertIsNone(result.error)
 
 
 class AcceptancePathParsingTests(unittest.TestCase):

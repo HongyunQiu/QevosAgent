@@ -1042,10 +1042,20 @@ def tool_shell(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
     combined   = output
     if stderr_text:
         combined += f"\n[STDERR]: {stderr_text}"
+
+    error_text = None
+    if proc.returncode != 0:
+        # 命令自带 2>&1 时 stderr 是空的，诊断信息全在 stdout 里。
+        # 只回 stderr 会让模型看到一条空的 "Error:"，零信息量 → 必然原样重试。
+        # 所以退出码永远带上，stderr 为空时用 stdout 兜底。
+        error_text = f"exit code {proc.returncode}"
+        detail = stderr_text or output
+        if detail:
+            error_text += f"\n{detail[:2000]}"
     return ToolResult(
         success=(proc.returncode == 0),
         output=combined or "（无输出）",
-        error=stderr_text if proc.returncode != 0 else None,
+        error=error_text,
     )
 
 
