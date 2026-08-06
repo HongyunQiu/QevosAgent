@@ -673,13 +673,26 @@ _STRINGS: dict[str, dict[str, str]] = {
         ),
         # 注意：本条不带 kwargs，t() 不会走 str.format，因此大括号**不能**写成双写转义，
         # 否则模型会原样看到 {{node}}。同理，将来给它加参数时必须同时把这里改成双写。
+        # ⚠ 措辞必须钉死"顶层字段"：曾经写成"工具调用的同一个 JSON 里"，
+        # 模型理解成了 args，把 graph_op 塞进 args 后被参数过滤静默丢弃，
+        # 整整 11 次推进全部落空、图与实际进度彻底脱节。
         "graph.proj.protocol": (
-            "提示：可在工具调用的同一个 JSON 里附带 graph_op 推进本图（零额外迭代）：\n"
-            "enter{node} / exit{node,summary,side_effects,gaps} / extend{after,node} / "
+            "推进本图用 graph_op（零额外迭代）。它是与 thought / action / tool / args "
+            "**平级的顶层字段**，绝不能写进 args 里：\n"
+            "{\"thought\":\"…\",\"action\":\"tool_call\",\"tool\":\"edit_file\",\"args\":{…},"
+            "\"graph_op\":{\"op\":\"exit\",\"node\":\"n1\",\"summary\":\"做了什么\"}}\n"
+            "可用：enter{node} / exit{node,summary,side_effects,gaps} / extend{after,node} / "
             "fork{from,node} / abandon{node,reason,side_effects} / block{node,reason} / complete。\n"
             "extend、fork 每次限一个节点；批量改结构用 plan_revise。exit 与 abandon 请如实申报 side_effects。\n"
             "产物核验不过但工作确已完成时，可 exit 加 force=true 降级闭合，"
             "此时必须同时给出 residue（缺什么）与 impact（是否影响后续、为什么）。"
+        ),
+        "graph.op.misplaced": (
+            "⚠ 你把 graph_op 写进了 args 里。它是与 thought / action / tool / args **平级的顶层字段**，"
+            "放进 args 会被参数过滤丢弃、整个推进落空。\n"
+            "本次已替你按顶层字段执行：{applied}\n"
+            "后续请写成：{{\"thought\":…,\"action\":\"tool_call\",\"tool\":…,\"args\":{{…}},"
+            "\"graph_op\":{{\"op\":…}}}}"
         ),
         "graph.stall.hint_stall": (
             "[执行图] 已连续 {n} 轮没有任何节点闭合（当前节点 {node}）。"
@@ -1401,13 +1414,25 @@ Before calling action='done', you MUST complete the following two steps:
         ),
         # NOTE: this entry takes no kwargs, so t() never calls str.format — braces must
         # NOT be doubled here or the model sees a literal {{node}}.
+        # See the zh note: this entry takes no kwargs, so braces must stay single.
         "graph.proj.protocol": (
-            "Note: you may advance this graph by attaching a `graph_op` field to the same JSON as a normal tool call (no extra iteration):\n"
-            "enter{node} / exit{node,summary,side_effects,gaps} / extend{after,node} / "
+            "Advance this graph with `graph_op` (no extra iteration). It is a **top-level field**, "
+            "a sibling of thought / action / tool / args — never put it inside args:\n"
+            "{\"thought\":\"…\",\"action\":\"tool_call\",\"tool\":\"edit_file\",\"args\":{…},"
+            "\"graph_op\":{\"op\":\"exit\",\"node\":\"n1\",\"summary\":\"what you did\"}}\n"
+            "Available: enter{node} / exit{node,summary,side_effects,gaps} / extend{after,node} / "
             "fork{from,node} / abandon{node,reason,side_effects} / block{node,reason} / complete.\n"
             "extend and fork take one node at a time; use plan_revise for bulk changes. Report side_effects truthfully on exit and abandon.\n"
             "If artifact verification fails but the work really is done, exit with force=true to downgrade-close — "
             "you must then also give residue (what is missing) and impact (whether it affects later nodes, and why)."
+        ),
+        "graph.op.misplaced": (
+            "⚠ You put graph_op inside args. It is a **top-level field**, a sibling of "
+            "thought / action / tool / args; inside args it gets stripped by argument filtering "
+            "and the whole advance is lost.\n"
+            "It has been applied for you this time as a top-level field: {applied}\n"
+            "From now on write it as: {{\"thought\":…,\"action\":\"tool_call\",\"tool\":…,"
+            "\"args\":{{…}},\"graph_op\":{{\"op\":…}}}}"
         ),
         "graph.stall.hint_stall": (
             "[Execution graph] No node has closed for {n} consecutive iterations (current node {node}). "

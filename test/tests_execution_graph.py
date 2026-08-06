@@ -291,6 +291,58 @@ class DowngradeCloseTests(unittest.TestCase):
         self.assertIn("force", msg)
 
 
+class MisplacedGraphOpTests(unittest.TestCase):
+    """graph_op 被写进 args 时必须救回来并纠正。
+
+    实战：协议提示原先写"可在工具调用的同一个 JSON 里附带 graph_op"，模型理解成
+    args，11 次推进全被 executor 的参数过滤静默丢弃，图与实际进度彻底脱节，
+    模型最后自己放弃了图并写下"可能是 graph_op 未正确执行"。
+    """
+
+    def _action(self, *, top=None, in_args=None):
+        from agent.core.types_def import Action, ActionType
+        args = {"path": "x.py", "old_string": "a", "new_string": "b"}
+        if in_args is not None:
+            args["graph_op"] = in_args
+        return Action(type=ActionType.TOOL_CALL, thought="t", tool="edit_file",
+                      args=args, graph_op=top)
+
+    def test_top_level_op_is_used_as_is(self):
+        from agent.core.loop import _rescue_graph_op
+        op, misplaced = _rescue_graph_op(self._action(top={"op": "exit", "node": "n1"}))
+        self.assertEqual(op["op"], "exit")
+        self.assertFalse(misplaced)
+
+    def test_op_hidden_in_args_is_rescued_and_flagged(self):
+        from agent.core.loop import _rescue_graph_op
+        op, misplaced = _rescue_graph_op(self._action(in_args={"op": "exit", "node": "n1"}))
+        self.assertEqual(op["op"], "exit")
+        self.assertTrue(misplaced)
+
+    def test_top_level_wins_when_both_present(self):
+        from agent.core.loop import _rescue_graph_op
+        op, misplaced = _rescue_graph_op(
+            self._action(top={"op": "enter", "node": "n2"}, in_args={"op": "exit", "node": "n1"}))
+        self.assertEqual(op["op"], "enter")
+        self.assertFalse(misplaced)
+
+    def test_unrelated_args_are_not_mistaken_for_ops(self):
+        from agent.core.loop import _rescue_graph_op
+        for junk in (None, "exit", 42, [], {}, {"node": "n1"}):     # 缺 op 键的不算
+            op, misplaced = _rescue_graph_op(self._action(in_args=junk))
+            self.assertIsNone(op, f"不该把 {junk!r} 当成 graph_op")
+            self.assertFalse(misplaced)
+
+    def test_protocol_text_pins_down_top_level(self):
+        """措辞必须钉死"顶层字段"，否则模型只能猜——这正是当初出事的原因。"""
+        from agent.i18n import _STRINGS
+        for lang, needle in (("zh", "顶层字段"), ("en", "top-level field")):
+            text = _STRINGS[lang]["graph.proj.protocol"]
+            self.assertIn(needle, text)
+            self.assertIn("args", text)
+            self.assertNotIn("{{", text)     # 该条不带 kwargs，大括号不能双写
+
+
 class RouteHintTests(unittest.TestCase):
     """运行时不做条件求值，但把模型自己写下的退路在它撞墙那一刻还给它。"""
 
@@ -511,12 +563,29 @@ class ConvergenceMetricTests(unittest.TestCase):
             G.apply_op(st, {"op": "exit", "node": nid, "summary": "我观察到了"})
         self.assertEqual(G.metrics(st)["unverified_streak"], 2)
 
-    def test_fanout_flags_a_plan_that_only_widens(self):
+    def test_a_freshly_planned_graph_is_not_a_stall(self):
+        """扇出需要预热。一张刚画好的多节点计划，当然一个都还没闭合——
+        建图后第一轮就判 L2 停滞是误判，实战中直接导致 advisor 空转介入、
+        并在 20 轮后升级成 ask_user 打扰用户。"""
+        st = _state()
+        G.create_graph(st, title="刚画好", nodes=[
+            {"title": f"步骤{i}", "goal": "x"} for i in range(8)
+        ])
+        m = G.metrics(st)
+        self.assertGreaterEqual(m["open_fanout"], 5)      # 比值确实高
+        self.assertEqual(m["done_count"], 0)
+        self.assertEqual(G.stall_level(m)[0], 0)          # 但不构成停滞
+
+    def test_fanout_flags_a_plan_that_only_widens_after_first_closure(self):
+        """闭合过一个节点之后，"只分叉不闭合"才谈得上——它的前提是有过闭合的机会。"""
         st = _state()
         G.create_graph(st, title="只长叶子", nodes=[
             {"title": f"步骤{i}", "goal": "x"} for i in range(8)
         ])
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        G.apply_op(st, {"op": "exit", "node": "n1", "summary": "ok"})
         m = G.metrics(st)
+        self.assertEqual(m["done_count"], 1)
         self.assertGreaterEqual(m["open_fanout"], 5)
         self.assertEqual(G.stall_level(m), (2, "fanout"))
 

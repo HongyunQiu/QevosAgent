@@ -1397,9 +1397,16 @@ def stall_level(m: dict) -> tuple[int, str]:
     stalled_l2 = (stall >= _env_int("GRAPH_STALL_L2", 40)
                   or stall_secs >= _env_int("GRAPH_STALL_L2_SECS", 3600))
 
+    # 扇出需要预热：至少闭合过一个节点，"只分叉不闭合"这个说法才成立——
+    # 它的前提是**有过闭合的机会**。否则一张刚画好的 5 节点计划，
+    # 5 未闭合 / 0 已闭合 = 5.0，建图后第一轮就被判成 L2 停滞（实战踩过）。
+    # 真正"只长叶子"的图跑久了会被 stall 那两把尺子抓住，覆盖面不受影响。
+    fanout_ready = int(m.get("done_count") or 0) >= 1
+    fanout_hit = fanout_ready and fanout >= float(_env_int("GRAPH_FANOUT_L2", 5))
+
     if (stalled_l2
             or revisits >= _env_int("GRAPH_REVISIT_L2", 5)
-            or fanout >= float(_env_int("GRAPH_FANOUT_L2", 5))):
+            or fanout_hit):
         if stalled_l2:
             return 2, "stall"
         return 2, "revisit" if revisits >= _env_int("GRAPH_REVISIT_L2", 5) else "fanout"

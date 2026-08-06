@@ -1195,10 +1195,14 @@ def run(
 
                 # done 可以顺带闭合最后一个节点。先应用再过验收门：出口证据校验
                 # 失败时模型必须看到原因，否则它无从知道图上还挂着一个没关的节点。
-                if action.graph_op:
-                    _g_ok, _g_text = _graph.apply_op(state, action.graph_op)
+                _done_op, _done_misplaced = _rescue_graph_op(action)
+                if _done_op:
+                    _g_ok, _g_text = _graph.apply_op(state, _done_op)
                     if _g_text and hooks.on_thought:
                         hooks.on_thought(f"{t('graph.feedback_prefix')} {_g_text}")
+                    if _done_misplaced:
+                        _append_short_term(state, {"role": "user", "content": t(
+                            "graph.op.misplaced", applied=_g_text or "-")})
                     if not _g_ok and _g_text:
                         _append_short_term(
                             state,
@@ -1488,14 +1492,22 @@ def run(
                 # 与 scratchpad_note 同属"记账不收税"的 inline 字段：模型在同一响应里
                 # 顺带推进图，不消耗额外迭代。操作失败只回一条说明，绝不打断本轮工具调用。
                 _graph_msg = ""
-                if action.graph_op:
-                    _g_ok, _g_text = _graph.apply_op(state, action.graph_op)
+                _op, _misplaced = _rescue_graph_op(action)
+                if _op:
+                    _g_ok, _g_text = _graph.apply_op(state, _op)
                     if _g_text:
                         _graph_msg = f"{t('graph.feedback_prefix')} {_g_text}"
                         if hooks.on_thought:
                             hooks.on_thought(_graph_msg)
+                    if _misplaced:
+                        # 位置写错不能静默吞掉：整整一个 run 里模型试了 11 次推进图，
+                        # 每次都被参数过滤丢进黑洞，它自己都怀疑"graph_op 未正确执行"
+                        # 却无从确认。补执行 + 明确纠正，把静默失败变成可自愈。
+                        _graph_msg = t("graph.op.misplaced", applied=_g_text or "-") + "\n" + _graph_msg
+                        if hooks.on_error:
+                            hooks.on_error("[执行图] graph_op 被写进了 args，已补执行并纠正")
                     if _g_ok:
-                        _graph_boundary_compress(state, llm, action.graph_op, hooks)
+                        _graph_boundary_compress(state, llm, _op, hooks)
 
                 if action.tool == "ask_user":
                     q = action.args.get("question") or (result.output or {}).get("question")
@@ -1696,6 +1708,27 @@ def _graph_boundary_compress(state: "AgentState", llm, op: dict, hooks=None) -> 
         return
 
 
+def _rescue_graph_op(action: "Action") -> tuple[Optional[dict], bool]:
+    """取出本轮的 graph_op，并救回被写进 args 的那一种。
+
+    返回 (op, 是否位置写错)。
+
+    实战教训：协议提示原先写的是"可在工具调用的同一个 JSON 里附带 graph_op"，
+    模型把"同一个 JSON"理解成了 args，于是 11 次推进全部被 executor 的参数过滤
+    静默丢弃（meta.ignored_tool_args 里躺着记录），图与实际进度彻底脱节，
+    最后模型自己放弃了图并写下"可能是 graph_op 未正确执行"。
+    措辞已改，但格式猜错这类事还会再发生——所以这里补执行、并当场纠正。
+    """
+    op = action.graph_op if isinstance(action.graph_op, dict) else None
+    if op:
+        return op, False
+    args = action.args if isinstance(action.args, dict) else {}
+    candidate = args.get("graph_op")
+    if isinstance(candidate, dict) and candidate.get("op"):
+        return candidate, True
+    return None, False
+
+
 def _graph_time_triage(state: "AgentState", hooks: Optional["AgentHooks"] = None) -> None:
     """图配额用到 70% / 90% 时各提醒一次，促成限期取舍。只提示，不阻断。
 
@@ -1797,8 +1830,13 @@ def _graph_convergence_check(state: "AgentState", llm, hooks: Optional["AgentHoo
                 return False
 
             # ── L3：advisor 之后仍然停滞 → 暂停求助用户 ────────────────────
-            _extra = _graph._env_int("GRAPH_STALL_L3_EXTRA", 20)
+            # 退避：用户答完"请继续"（没给新信息）后续跑会重置梯子，若门槛不变，
+            # 20 轮后又原样问一遍——实战里连问了两次。每被打扰一次，
+            # 下一次的门槛翻倍；这个计数**刻意不随续跑重置**。
+            _l3_count = int(state.meta.get("_graph_l3_count") or 0)
+            _extra = _graph._env_int("GRAPH_STALL_L3_EXTRA", 20) * (2 ** _l3_count)
             if now - int(_l2_at) >= _extra:
+                state.meta["_graph_l3_count"] = _l3_count + 1
                 state.meta["awaiting_input"] = t(
                     "graph.stall.l3_question",
                     gid=m.get("gid", "?"), stall=m.get("stall_iters", 0),
