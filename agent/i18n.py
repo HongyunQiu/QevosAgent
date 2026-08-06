@@ -725,6 +725,10 @@ _STRINGS: dict[str, dict[str, str]] = {
             "比预想的复杂——考虑用 extend 把它拆小分步闭合，或者重新判断这条路是否走得通。"
         ),
         "graph.gaps.line": "[图 {node}「{title}」/{status}] {goal}（出口: {etype} — {expect}）",
+        "graph.gaps.likely_done_line": (
+            "[图 {node}「{title}」/疑似已完成] 图上未闭合，但声明的产物已存在（{expect}）"
+            "——很可能是图到期后在自由模式下做完的，未经图确认，续作前核对一下即可。"
+        ),
         "graph.done_open_nodes": (
             "[执行图] 你正要结束任务，但图 {gid} 上还有 {n} 个节点没有闭合：{ids}。\n"
             "如果它们确实已经不必做了，请先把它们 abandon 或 block 掉并写明原因，"
@@ -1456,6 +1460,11 @@ Before calling action='done', you MUST complete the following two steps:
             "complex than expected. Consider splitting it with extend, or re-checking whether this route works at all."
         ),
         "graph.gaps.line": "[graph {node} \"{title}\"/{status}] {goal} (exit: {etype} — {expect})",
+        "graph.gaps.likely_done_line": (
+            "[graph {node} \"{title}\"/likely done] Never closed on the graph, but the declared artifacts "
+            "now exist ({expect}) — most likely finished in free-form mode after the graph expired. "
+            "Unconfirmed by the graph; just verify before continuing."
+        ),
         "graph.done_open_nodes": (
             "[Execution graph] You are about to finish, but graph {gid} still has {n} unclosed node(s): {ids}.\n"
             "If they are genuinely no longer needed, abandon or block them with a reason first, then call done again — "

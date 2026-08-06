@@ -1007,6 +1007,21 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
   display:inline-block; width:5px; height:5px; border-radius:50%;
   background:var(--blue); margin-left:5px; vertical-align:middle;
 }
+/* 时间账本：一条按分类着色的占比条 + 图例。分类比总数有用得多——
+   llm 占比从 40% 涨到 85% 这种信号，只有分开看才浮得出来。 */
+.graph-ledger {
+  flex-shrink:0; padding:6px 16px; border-bottom:1px solid var(--border);
+  background:var(--bg2); font-size:11px; color:var(--muted);
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+}
+.gl-total { color:var(--text); font-family:var(--mono); }
+.graph-ledger .gl-bar {
+  display:flex; height:7px; border-radius:4px; overflow:hidden;
+  min-width:160px; flex:1; background:var(--bg3);
+}
+.graph-ledger .gl-bar i { display:block; }
+.gl-legend { font-family:var(--mono); font-size:10.5px; }
+.gl-legend b { margin-right:2px; }
 .graph-body { flex:1; display:flex; overflow:hidden; }
 .graph-canvas { flex:1; overflow:auto; background:var(--bg); position:relative; }
 .graph-canvas svg { display:block; }
@@ -1775,6 +1790,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
         <select class="graph-select" id="graphSelect" onchange="onGraphSelect(this.value)" style="display:none"></select>
         <button class="icon-btn" onclick="fitGraph()" title="适应窗口">⤢ Fit</button>
       </div>
+      <div class="graph-ledger" id="graphLedger" style="display:none"></div>
       <div class="graph-body" id="graphBody">
         <div class="graph-canvas" id="graphCanvas"></div>
         <div class="graph-side" id="graphSide"></div>
@@ -4392,7 +4408,9 @@ function renderGraph(data) {
   document.getElementById('graphTitle').textContent = `${g.gid} · ${g.title || ''}`;
   document.getElementById('graphStats').textContent =
     `${statusLabel(g.status)} · 节点 ${done}/${total} 已闭合 · 未闭合 ${open}`
+    + graphTimeLabel(g, data)
     + (granted ? ` · 图授予迭代 ${granted}` : '');
+  renderTimeLedger(data);
 
   canvas.innerHTML = layoutGraphSvg(g);
   if (!gGraphSelNode || !g.nodes[gGraphSelNode]) {
@@ -4526,6 +4544,9 @@ function renderGraphSide(g) {
   if (rng[0] != null) kv.push(`迭代 ${rng[0]}–${rng[1] != null ? rng[1] : '进行中'}`);
   if (n.budget) kv.push(`自估 ${n.budget}`);
   if (rng[0] != null && rng[1] != null) kv.push(`实用 ${rng[1] - rng[0]}`);
+  // 节点实际耗时——跨 run 唯一可复用的那个量（"这类节点通常 20 分钟"）
+  const tr = n.time_range;
+  if (Array.isArray(tr) && tr[0] != null && tr[1] != null) kv.push(`耗时 ${fmtSecs(tr[1] - tr[0])}`);
   if (n.visits > 1) kv.push(`进入 ${n.visits} 次`);
   if (kv.length) parts.push(`<div class="gs-block gs-kv">${esc(kv.join(' · '))}</div>`);
 
@@ -4565,6 +4586,58 @@ function renderGraphSide(g) {
 
 function statusCn(s) {
   return { done: '已闭合', active: '进行中', planned: '待办', abandoned: '已废弃', blocked: '受阻' }[s] || s;
+}
+
+/** 时长格式化——与 agent 侧 timing.fmt 保持一致，避免两处读数长得不一样。 */
+function fmtSecs(s) {
+  s = Math.max(0, Number(s) || 0);
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60), sec = Math.round(s % 60);
+  if (m < 60) return sec ? `${m}m${String(sec).padStart(2, '0')}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h${String(m % 60).padStart(2, '0')}m`;
+}
+
+/** 图已用工作时长。
+ *  关闭后 time_end 已冻结，直接用它——否则一张早到期的图会显示成一路涨。
+ *  进行中的图用 status.time.active 减去 time_start：两者同源同量纲
+ *  （都是账本的 active 秒数），所以这不是看板自行推算，而是读同一份账。 */
+function graphTimeUsed(g, data) {
+  if (typeof g.time_start !== 'number') return null;
+  if (typeof g.time_end === 'number') return Math.max(0, g.time_end - g.time_start);
+  const active = data && data.status && data.status.time && data.status.time.active;
+  if (typeof active !== 'number') return null;
+  return Math.max(0, active - g.time_start);
+}
+
+function graphTimeLabel(g, data) {
+  if (!g.time_budget) return '';
+  const used = graphTimeUsed(g, data);
+  if (used == null) return ` · 配额 ${fmtSecs(g.time_budget)}`;
+  const pct = Math.round((used / g.time_budget) * 100);
+  const over = pct >= 90 ? ' ⚠' : '';
+  return ` · 用时 ${fmtSecs(used)}/${fmtSecs(g.time_budget)}（${pct}%${over}）`;
+}
+
+/** run 级时间账本：分类占比一眼可读，"环境在退化"就是从这里看出来的。 */
+function renderTimeLedger(data) {
+  const el = document.getElementById('graphLedger');
+  if (!el) return;
+  const tm = data && data.status && data.status.time;
+  if (!tm || !tm.total) { el.style.display = 'none'; return; }
+  const cats = [
+    ['llm', '模型', 'var(--blue)'], ['tool', '工具', 'var(--green)'],
+    ['wait', '等待', 'var(--purple)'], ['retry', '重试', 'var(--orange)'],
+    ['paused', '等人', 'var(--muted)'], ['untracked', '其他', 'var(--bg4)'],
+  ].filter(([k]) => (tm[k] || 0) > 0);
+  el.style.display = '';
+  el.innerHTML =
+    `<span class="gl-total">运行总时长 ${esc(fmtSecs(tm.total))}`
+    + (tm.paused ? `（净工作 ${esc(fmtSecs(tm.active))}）` : '') + `</span>`
+    + `<div class="gl-bar">${cats.map(([k, , c]) =>
+        `<i style="flex:${tm[k]};background:${c}" title="${esc(k)} ${esc(fmtSecs(tm[k]))}"></i>`).join('')}</div>`
+    + `<span class="gl-legend">${cats.map(([k, label, c]) =>
+        `<b style="color:${c}">■</b>${esc(label)} ${esc(fmtSecs(tm[k]))}`).join(' · ')}</span>`;
 }
 function closedByCn(s) {
   return { evidence_verified: '产物已核验', self_certified: '自证', implicit: '隐式',

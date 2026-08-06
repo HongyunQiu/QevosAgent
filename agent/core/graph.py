@@ -1448,8 +1448,25 @@ def _gap_source(state: AgentState) -> Optional[dict]:
     return last if isinstance(last, dict) and last.get("status") == "expired" else None
 
 
+def _artifacts_present(state: AgentState, node: dict) -> bool:
+    """这个未闭合节点声明的产物，现在是不是已经真实存在了。"""
+    exit_spec = node.get("exit") or {}
+    if exit_spec.get("evidence_type") != "artifact":
+        return False          # 不可实证的出口无从判断，一律不臆测
+    expect = exit_spec.get("expect") or []
+    if not expect:
+        return False
+    return all(_path_exists(p, state) for p in expect)
+
+
 def open_nodes(state: AgentState, g: Optional[dict] = None) -> list[dict]:
-    """未达终态的节点，供 run 收尾时并入 run_outcome.gaps。"""
+    """未达终态的节点，供 run 收尾时并入 run_outcome.gaps。
+
+    每个节点带 `likely_done`：图上它还开着，但声明的产物现在已经存在了。
+    典型来路是图到期后自动回自由模式、模型三分钟后把活干完了——
+    **图不改（那是历史），但 gaps 要认这笔账**，否则会把做完的事报成缺口，
+    让续作白跑一遍。
+    """
     try:
         if g is None:
             g = _gap_source(state)
@@ -1466,6 +1483,7 @@ def open_nodes(state: AgentState, g: Optional[dict] = None) -> list[dict]:
                 "status": node.get("status", ""),
                 "exit": node.get("exit", {}),
                 "parent": node.get("parent", ""),
+                "likely_done": _artifacts_present(state, node),
             })
         out.sort(key=lambda n: n.get("node", ""))
         return out
@@ -1507,9 +1525,17 @@ def gap_lines(state: AgentState) -> list[str]:
     这里不改契约、只把结构化信息压进一行；结构化原文另放 graph_gaps。
     """
     lines: list[str] = []
+    likely: list[str] = []
     for n in open_nodes(state):
         exit_spec = n.get("exit") or {}
         expect = ", ".join(exit_spec.get("expect") or [])
+        if n.get("likely_done"):
+            # 产物已经在了 → 不报为缺口，但也不假装图上闭合过；单列一行说明
+            likely.append(t(
+                "graph.gaps.likely_done_line",
+                node=n.get("node", "?"), title=n.get("title", ""), expect=expect or "-",
+            ))
+            continue
         lines.append(t(
             "graph.gaps.line",
             node=n.get("node", "?"),
@@ -1525,4 +1551,4 @@ def gap_lines(state: AgentState) -> list[str]:
             node=n.get("node", "?"), title=n.get("title", ""),
             residue=n.get("residue", ""), impact=n.get("impact", "") or "-",
         ))
-    return lines
+    return lines + likely

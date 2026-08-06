@@ -540,6 +540,71 @@ class GraphPaceTests(TimingTestCase):
         self.assertTrue("expired" in proj.lower() or "自由模式" in proj)
 
 
+class GapRecomputeTests(TimingTestCase):
+    """图是历史、gaps 是前瞻。
+
+    图到期后自动回自由模式，模型很可能三分钟后就把活干完了——图上那个节点
+    永远停在 planned，但把它当缺口报出去就是在说谎，会让续作白跑一遍。
+    """
+
+    def _expired_with(self, expect):
+        from pathlib import Path
+        st = self._state()
+        T.start(st)
+        G.create_graph(st, title="到期", nodes=[
+            {"title": "出报告", "goal": "生成报告",
+             "exit": {"evidence_type": "artifact", "expect": expect}},
+        ], time_budget_min=1)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        self.clock.advance(120)
+        T.tick(st)
+        G.expire_if_out_of_time(st)
+        return st, Path(st.persistence.run_dir)
+
+    def test_missing_artifact_stays_a_gap(self):
+        st, _ = self._expired_with(["report.md"])
+        nodes = G.open_nodes(st)
+        self.assertFalse(nodes[0]["likely_done"])
+        self.assertTrue(any("n1" in line for line in G.gap_lines(st)))
+
+    def test_artifact_that_appeared_later_is_not_reported_as_a_gap(self):
+        st, run_dir = self._expired_with(["report.md"])
+        (run_dir / "report.md").write_text("done", encoding="utf-8")   # 自由模式下补完了
+        nodes = G.open_nodes(st)
+        self.assertTrue(nodes[0]["likely_done"])
+        lines = G.gap_lines(st)
+        self.assertFalse(any("/planned]" in line or "/待办]" in line for line in lines))
+        self.assertTrue(any("likely" in line.lower() or "疑似" in line for line in lines))
+
+    def test_the_graph_itself_is_never_rewritten(self):
+        """图必须保持"到期那一刻 n1 还开着"这个真实历史——它也是校准数据。"""
+        st, run_dir = self._expired_with(["report.md"])
+        (run_dir / "report.md").write_text("done", encoding="utf-8")
+        G.gap_lines(st)
+        node = st.meta["_graph"]["graphs"][0]["nodes"]["n1"]
+        self.assertEqual(node["status"], "active")     # 未被悄悄改成 done
+        self.assertEqual(node["closed_by"], "")
+
+    def test_unverifiable_exits_are_never_guessed(self):
+        """observation 类出口无从判断，不能因为"看起来像做完了"就不报。"""
+        st = self._state()
+        T.start(st)
+        G.create_graph(st, title="自证", nodes=[{"title": "看一眼", "goal": "观察"}],
+                       time_budget_min=1)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        self.clock.advance(120)
+        T.tick(st)
+        G.expire_if_out_of_time(st)
+        self.assertFalse(G.open_nodes(st)[0]["likely_done"])
+
+    def test_run_outcome_marks_them_for_downstream(self):
+        from agent.core.loop import RUN_OUTCOME_PARTIAL, _set_run_outcome
+        st, run_dir = self._expired_with(["report.md"])
+        (run_dir / "report.md").write_text("done", encoding="utf-8")
+        rec = _set_run_outcome(st, RUN_OUTCOME_PARTIAL)
+        self.assertTrue(rec["graph_gaps"][0]["likely_done"])   # 结构化侧保留判断
+
+
 class TimeProjectionTests(TimingTestCase):
     def test_no_allowance_means_no_time_line(self):
         """没申请配额就别拿时间行占每轮的 token。"""
