@@ -2090,11 +2090,15 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             history.append(call_sig)
 
             # ── 语义豁免：模型 thought 表达了轮询/等待意图，跳过本次计数 ──────
+            # 关键词只收"确实在等一件正在发生的事"的说法。刻意排除：
+            #   重试 / retry —— 卡死的模型最爱说的就是"再试一次"，放行等于发免死金牌；
+            #   裸的 wait / 进度 / 尚未 / 还没 / 稍后 —— 太短，正常叙述里俯拾皆是。
             _POLLING_KEYWORDS = (
-                "等待", "轮询", "polling", "waiting", "wait",
-                "检查进度", "检查状态", "进度", "下载中", "下载完",
-                "尚未", "还没", "稍后", "稍等", "重试", "retry",
-                "in progress", "not yet", "pending", "checking",
+                "等待", "轮询", "polling", "waiting",
+                "检查进度", "查看进度", "检查状态", "查看状态",
+                "下载中", "下载完", "尚未完成", "还没完成", "还在跑", "仍在运行",
+                "稍等", "再等",
+                "in progress", "not yet", "still running", "pending", "checking",
             )
             _thought_raw = action.thought
             if not isinstance(_thought_raw, str):
@@ -2104,16 +2108,33 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             _thought_lower = _thought_raw.lower()
             _is_polling = any(kw in _thought_lower for kw in _POLLING_KEYWORDS)
             # job_wait / jobs_list 本身就是为了查询后台任务，天然豁免循环检测
-            if action.tool in ("job_wait", "jobs_list"):
+            _is_job_tool = action.tool in ("job_wait", "jobs_list")
+            if _is_job_tool:
                 _is_polling = True
 
+            # 轮询豁免的有效期上限：豁免是宽限期，不是免检权。
+            _poll_hard_cap = int(os.environ.get(
+                "LOOP_POLL_HARD_CAP", "20" if _is_job_tool else "8"
+            ))
+
             # ── A：连续重复检测 ──────────────────────────────────────────────
+            # 扫描深度要够到硬上限，否则 consecutive 被截断、上限永远够不到。
             consecutive = 0
-            for prev in reversed(_prev_history[-5:]):
+            for prev in reversed(_prev_history[-max(5, _poll_hard_cap):]):
                 if prev == call_sig:
                     consecutive += 1
                 else:
                     break
+
+            # ── A'：轮询豁免撤销 ────────────────────────────────────────────
+            # 签名里含 result：真轮询的结果一定在变（进度条、状态字段），签名随之
+            # 变化，consecutive 会归零，永远碰不到这个上限。只有连结果都一字不差地
+            # 重复 N 次，才说明"等待"期间什么都没发生——那不是等待，是卡死。
+            _poll_exhausted = False
+            if _is_polling and consecutive + 1 >= _poll_hard_cap:
+                _is_polling = False
+                _poll_exhausted = True
+                state.meta.get("_poll_counts", {}).pop(action.tool, None)
 
             # ── B：滑动窗口频率检测 ─────────────────────────────────────────
             win_size  = int(os.environ.get("LOOP_WINDOW_SIZE", "12"))
@@ -2139,6 +2160,16 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                         f"如果你判断有必要继续轮询，请继续；"
                         f"如果认为需要换一种方式推进任务，请立刻调整策略。"
                     )
+            elif _poll_exhausted:
+                loop_triggered = True
+                repeat_warning = (
+                    f"\n\n⛔ 循环检测（轮询无进展）：你已连续 {consecutive + 1} 次调用 `{action.tool}`，"
+                    f"且每次返回的结果一字不差——说明等待期间什么都没有发生，"
+                    f"这不是轮询而是卡死，继续等下去不会有任何变化。"
+                    f"请立刻停止等待：换一种方式确认目标状态（如直接查进程/查文件/看日志），"
+                    f"或判定该路径不通并改走别的方案。"
+                    f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
+                )
             elif consecutive >= 3:
                 loop_triggered = True
                 repeat_warning = (

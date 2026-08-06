@@ -172,12 +172,15 @@ class LoopDetectionTests(unittest.TestCase):
     def _failure():
         return ToolResult(success=False, output="ffmpeg: not found", error="exit code 127")
 
-    def _run_n(self, thought, n):
+    def _run_n(self, thought, n, tool="shell", result=None):
         state = AgentState(goal="loop test")
-        feedbacks = [
-            _build_feedback(self._action(thought), self._failure(), state)
-            for _ in range(n)
-        ]
+        feedbacks = []
+        for i in range(n):
+            action = self._action(thought)
+            action.tool = tool
+            feedbacks.append(
+                _build_feedback(action, result(i) if result else self._failure(), state)
+            )
         return state, feedbacks
 
     def test_identical_failing_calls_trigger_loop_detection(self):
@@ -201,9 +204,54 @@ class LoopDetectionTests(unittest.TestCase):
         self.assertEqual(len(state.meta["_call_sig_history"]), 4)
 
     def test_polling_thought_is_exempt_from_loop_detection(self):
-        state, feedbacks = self._run_n("等待下载完成，稍后重试", 5)
+        state, feedbacks = self._run_n("等待下载完成，稍等再看", 5)
         self.assertIsNone(state.meta.get("_loop_advisor_pending"))
         self.assertTrue(any("轮询提示" in f for f in feedbacks))
+
+    # ── 轮询豁免的收窄 ──────────────────────────────────────────────────────
+    def test_retry_wording_is_not_a_polling_exemption(self):
+        # "重试"/"retry" 是卡死的模型最爱说的词，放行等于发免死金牌
+        for thought in ("失败了，让我重试一次", "command failed, will retry"):
+            state, feedbacks = self._run_n(thought, 5)
+            self.assertTrue(
+                state.meta.get("_loop_advisor_pending"),
+                f"{thought!r} 不该被当成轮询豁免",
+            )
+            self.assertTrue(any("循环检测" in f for f in feedbacks))
+
+    def test_short_incidental_words_are_not_polling_exemptions(self):
+        # 裸的"进度"/"尚未"/"还没"/"稍后"/"wait" 在正常叙述里俯拾皆是，不再豁免
+        for thought in ("进度不对", "尚未找到原因", "还没定位到", "稍后总结", "no wait, check again"):
+            state, _ = self._run_n(thought, 5)
+            self.assertTrue(
+                state.meta.get("_loop_advisor_pending"),
+                f"{thought!r} 不该被当成轮询豁免",
+            )
+
+    def test_polling_exemption_is_revoked_when_result_never_changes(self):
+        # 豁免是宽限期不是免检权：结果一字不差地重复到硬上限就撤销
+        state, feedbacks = self._run_n("等待下载完成", 8)
+        self.assertTrue(state.meta.get("_loop_advisor_pending"))
+        self.assertTrue(any("轮询无进展" in f for f in feedbacks))
+
+    def test_real_polling_with_changing_result_never_triggers(self):
+        # 真轮询的结果在变 → 签名跟着变 → consecutive 归零 → 永远碰不到上限
+        state, feedbacks = self._run_n(
+            "等待下载完成",
+            30,
+            result=lambda i: ToolResult(success=True, output=f"downloaded {i}MB"),
+        )
+        self.assertIsNone(state.meta.get("_loop_advisor_pending"))
+        self.assertFalse(any("循环检测" in (f or "") for f in feedbacks))
+
+    def test_job_wait_exemption_is_wider_but_still_finite(self):
+        # job_wait 天然豁免，上限放宽到 20，但不是无限
+        state, _ = self._run_n("查后台任务", 8, tool="job_wait")
+        self.assertIsNone(state.meta.get("_loop_advisor_pending"))
+
+        state, feedbacks = self._run_n("查后台任务", 20, tool="job_wait")
+        self.assertTrue(state.meta.get("_loop_advisor_pending"))
+        self.assertTrue(any("轮询无进展" in f for f in feedbacks))
 
     def test_failure_feedback_includes_output_not_just_error(self):
         action = self._action("提取视频帧")
