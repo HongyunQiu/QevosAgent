@@ -281,61 +281,49 @@ class NodeTimingTests(TimingTestCase):
         self.assertTrue(G.apply_op(st, {"op": "exit", "node": "n1", "summary": "ok"})[0])
 
 
-class RunTimeBudgetTests(TimingTestCase):
-    """run 级时限：人给的现实截止期，用 total（挂起等人那段是真的消耗掉了）。"""
+class NoRunLevelDeadlineTests(TimingTestCase):
+    """run 级刻意不设墙钟时限。
 
-    def setUp(self):
-        super().setUp()
+    曾经有过 RUN_TIME_BUDGET，后来整个取消：开放式任务的总时长根本估不准，
+    估错就是砍掉有用的工作——正是当初反对迭代上限的同一个理由的时间版。
+    时间预算只留在图那一层（自己给自己的承诺，估错代价小）。
+    """
+
+    def test_no_run_level_time_api_exists(self):
+        import agent.core.loop as L
+        for gone in ("_run_time_budget", "_run_time_left", "_WRAPUP_SECONDS"):
+            self.assertFalse(hasattr(L, gone), f"{gone} 应已随 RUN_TIME_BUDGET 一起移除")
+
+    def test_env_var_has_no_effect(self):
+        """留着这个环境变量的老配置不该悄悄改变行为。"""
         import os
-        self._env = os.environ.pop("RUN_TIME_BUDGET", None)
-        self.addCleanup(
-            lambda: os.environ.__setitem__("RUN_TIME_BUDGET", self._env)
-            if self._env is not None else os.environ.pop("RUN_TIME_BUDGET", None)
-        )
-
-    def test_unset_means_no_time_limit(self):
-        """不给默认值是刻意的：凭空塞一个截止期会让今天所有靠迭代跑的长任务
-        突然在某个时刻被掐断。迁移到时间预算是自愿的。"""
-        from agent.core.loop import _run_time_budget, _run_time_left
-        st = self._state()
-        self.assertIsNone(_run_time_budget(st))
-        self.assertIsNone(_run_time_left(st))
-
-    def test_env_is_read_in_minutes(self):
-        import os
-        from agent.core.loop import _run_time_budget
-        os.environ["RUN_TIME_BUDGET"] = "90"
-        st = self._state()
-        self.assertAlmostEqual(_run_time_budget(st), 5400.0)
-
-    def test_left_counts_paused_time(self):
-        """run 级是对现实的承诺——半夜挂起等人那段是真的消耗掉了。"""
-        import os
-        from agent.core.loop import _run_time_left
-        os.environ["RUN_TIME_BUDGET"] = "10"        # 600s
+        os.environ["RUN_TIME_BUDGET"] = "1"
+        self.addCleanup(os.environ.pop, "RUN_TIME_BUDGET", None)
         st = self._state()
         T.start(st)
-        self.clock.advance(120)
+        self.clock.advance(9999)
         T.tick(st)
-        T.ledger(st)["paused"] = 100.0              # 其中 100s 是等人
-        self.assertAlmostEqual(_run_time_left(st), 480.0)   # 而不是 580
+        self.assertNotIn("_time_budget", st.meta)
 
-    def test_garbage_env_is_treated_as_unset(self):
-        import os
-        from agent.core.loop import _run_time_budget
-        os.environ["RUN_TIME_BUDGET"] = "不是数字"
-        self.assertIsNone(_run_time_budget(self._state()))
+    def test_ledger_still_records_everything(self):
+        """取消的只是"用时间终止 run"，计量本身照旧。"""
+        st = self._state()
+        T.start(st)
+        with T.span(st, "llm"):
+            self.clock.advance(30)
+        T.tick(st)
+        self.assertAlmostEqual(T.snapshot(st)["llm"], 30.0)
 
 
 class GraphTimeAllowanceTests(TimingTestCase):
     """图级配额：模型申请的工作量额度，用 active（人去睡觉的时间不算）。"""
 
-    def _graph(self, minutes=None, left=None):
+    def _graph(self, minutes=None):
         st = self._state()
         T.start(st)
         g, msg = G.create_graph(
             st, title="配额", nodes=[{"title": "a", "goal": "x"}, {"title": "b", "goal": "y"}],
-            time_budget_min=minutes, time_left_secs=left,
+            time_budget_min=minutes,
         )
         return st, g, msg
 
@@ -352,12 +340,11 @@ class GraphTimeAllowanceTests(TimingTestCase):
         self.assertAlmostEqual(g["time_budget"], 1800.0)
         self.assertIn("30m", msg)
 
-    def test_allowance_is_clamped_to_remaining_run_time(self):
-        """不能承诺超过总时限——图是切在 run 时间范围内的一块。"""
-        _st, g, msg = self._graph(minutes=120, left=600.0)
-        self.assertAlmostEqual(g["time_budget"], 600.0)
-        # 断言语言中立：本仓库 zh/en 双语，LANG 由环境决定
-        self.assertTrue("下调" in msg or "clamp" in msg.lower(), msg)
+    def test_allowance_is_not_capped(self):
+        """配额不设上界：run 级没有墙钟时限可供夹取，而配额本就是模型给自己的
+        承诺——要多少给多少，到期也只是回自由模式。"""
+        _st, g, _msg = self._graph(minutes=600)
+        self.assertAlmostEqual(g["time_budget"], 36000.0)
 
     def test_expiry_marks_expired_not_abandoned(self):
         """expired 是"时间到了活没干完"，abandoned 是"模型判断分解错了"——

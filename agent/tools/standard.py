@@ -3384,7 +3384,6 @@ def tool_plan_create(
     time_budget_min=None,
 ) -> ToolResult:
     from ..core import graph as _graph
-    from ..core.loop import _run_time_left
 
     g, msg = _graph.create_graph(
         state,
@@ -3394,7 +3393,6 @@ def tool_plan_create(
         reason=reason,
         from_skill=from_skill or None,
         time_budget_min=time_budget_min,
-        time_left_secs=_run_time_left(state),
     )
     if g is None:
         return ToolResult(success=False, output=None, error=msg)

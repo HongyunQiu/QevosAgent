@@ -542,13 +542,15 @@ def create_graph(
     reason: str = "",
     from_skill: Optional[str] = None,
     time_budget_min: Any = None,
-    time_left_secs: Optional[float] = None,
 ) -> tuple[Optional[dict], str]:
     """建立一张新图。返回 (graph, 说明文字)；nodes 为空时返回 (None, 错误说明)。
 
-    time_budget_min 是**模型自己申请**的配额（分钟）。图是一份相对确定的计划，
-    模型对它有预判能力；而且从第二张图起它手里就有上一张的实测速率了。
-    time_left_secs 是 run 级剩余时间，用于把申请值夹住——不能承诺超过总时限。
+    time_budget_min 是**模型自己申请**的配额（分钟），可不给（那样图不会到期）。
+    图是一份相对确定的计划，模型对它有预判能力；而且从第二张图起它手里就有
+    上一张的实测速率了。
+
+    不设上界：run 级没有墙钟时限可供夹取（见 loop 里 _WRAPUP_BUDGET 附近的说明），
+    而配额本来就是模型给自己的承诺——要多少给多少，到期也只是回自由模式。
     """
     raw_nodes = nodes
     if isinstance(raw_nodes, dict):
@@ -568,17 +570,13 @@ def create_graph(
         previous["closed_reason"] = t("graph.tool.replaced")
         notes.append(t("graph.tool.replace_active", gid=previous.get("gid", "?")))
 
-    # 配额：模型申请，被 run 级剩余时间夹住
+    # 配额：模型自己申请，不设上界
     requested = None
     try:
         if time_budget_min is not None and str(time_budget_min).strip() != "":
             requested = max(0.0, float(time_budget_min) * 60.0)
     except Exception:
         requested = None
-    clamped = False
-    if requested and time_left_secs is not None and requested > time_left_secs > 0:
-        requested = float(time_left_secs)
-        clamped = True
 
     gid = f"g{len(root['graphs']) + 1}"
     g: dict = {
@@ -681,11 +679,7 @@ def create_graph(
         n=len(g["nodes"]) - 1,
     )
     if requested:
-        notes.append(t(
-            "graph.tool.allocated",
-            budget=_timing.fmt(requested),
-            clamped=(" " + t("graph.tool.clamped")) if clamped else "",
-        ))
+        notes.append(t("graph.tool.allocated", budget=_timing.fmt(requested)))
     if notes:
         msg = msg + "\n" + "\n".join(notes)
     return g, msg
