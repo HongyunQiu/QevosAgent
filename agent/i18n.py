@@ -563,6 +563,12 @@ _STRINGS: dict[str, dict[str, str]] = {
             "请询问用户是否需要增加迭代次数（用户可输入 /+N 增加，例如 /+50）。"
         ),
         "warn.iter_limit_console": "⚠️  [迭代警告] 剩余 {remaining} 次迭代，即将达到上限",
+        "warn.time_limit": (
+            "[系统提示] 本次任务的时间预算还剩约 {left}（总计 {total}）。"
+            "时间用尽后会进入受限收尾窗口，届时只能提交完成报告、无法继续干活。"
+            "请现在就判断：剩下的时间够不够做完手头的事？不够就先做最要紧的部分，"
+            "并把没做完的写清楚。"
+        ),
 
         # ── graph.py — 执行图 ────────────────────────────────────────────────
         "graph.root.title": "前序工作",
@@ -574,6 +580,19 @@ _STRINGS: dict[str, dict[str, str]] = {
         "graph.tool.replace_active": "（原活动图 {gid} 已自动标记为 abandoned：同时只能有一张活动图）",
         "graph.tool.abandoned":     "执行图 {gid} 已放弃：{reason}。后续回到自由模式，不再注入图。",
         "graph.tool.revised":       "执行图已修订：{ok} 项成功，{failed} 项失败。",
+        "graph.tool.allocated":     "本图时间配额 {budget}。{clamped}",
+        "graph.tool.clamped":       "（你申请的超过了本次任务的剩余总时间，已按剩余时间下调）",
+        "graph.expired.reason":     "时间配额用尽（实用 {used}）",
+        "graph.expired.notice": (
+            "[执行图] {gid} 的时间配额已用尽（实用 {used}），该图标记为 expired，"
+            "**已自动回到自由模式**——任务没有结束，本次任务还剩 {left}。\n"
+            "图上还有 {n} 个节点没闭合：{ids}\n"
+            "这些节点会作为遗留缺口带出去。现在你可以：\n"
+            "  ① 用剩余时间开一张更小的图（plan_create，只放真正要紧的节点）\n"
+            "  ② 不再用图，直接把最要紧的部分做完\n"
+            "  ③ 如果剩下的确实不必做了，提交完成报告收尾\n"
+            "注意上一张图的实际速率——申请新配额时按它估，别再按乐观值。"
+        ),
         "graph.tool.orphans": (
             "⚠ 以下节点在 edges 里没有入边，已按 nodes 的给出顺序补链：{ids}。"
             "如果不是你想要的结构，请用 plan_revise 修正。"
@@ -1257,6 +1276,12 @@ Before calling action='done', you MUST complete the following two steps:
             "Please ask the user whether to add more iterations (the user can type /+N, e.g. /+50)."
         ),
         "warn.iter_limit_console": "⚠️  [Iteration warning] {remaining} iterations remaining — limit approaching",
+        "warn.time_limit": (
+            "[System notice] About {left} of this run's time budget remains (of {total} total). "
+            "When it runs out you enter a restricted wrap-up window where you can only submit the "
+            "completion report, not keep working. Decide now: is the remaining time enough to finish "
+            "what you are on? If not, do the most important part first and state clearly what is left."
+        ),
 
         # ── graph.py — execution graph ───────────────────────────────────────
         "graph.root.title": "Prior work",
@@ -1268,6 +1293,19 @@ Before calling action='done', you MUST complete the following two steps:
         "graph.tool.replace_active": "(Previous active graph {gid} was automatically marked abandoned — only one graph can be active at a time.)",
         "graph.tool.abandoned":     "Execution graph {gid} abandoned: {reason}. Returning to free-form mode; the graph will no longer be injected.",
         "graph.tool.revised":       "Execution graph revised: {ok} operation(s) succeeded, {failed} failed.",
+        "graph.tool.allocated":     "Time allowance for this graph: {budget}.{clamped}",
+        "graph.tool.clamped":       " (You asked for more than the time left for this task; clamped to what remains.)",
+        "graph.expired.reason":     "time allowance exhausted (spent {used})",
+        "graph.expired.notice": (
+            "[Execution graph] {gid} has used up its time allowance (spent {used}) and is now marked expired. "
+            "**You are back in free-form mode** — the task is not over; {left} remains for this run.\n"
+            "{n} node(s) never closed: {ids}\n"
+            "They will be carried out as remaining gaps. You can now:\n"
+            "  (1) plan_create a smaller graph with the time left — only what truly matters\n"
+            "  (2) drop the graph and just finish the most important part\n"
+            "  (3) if the rest genuinely is not needed, submit the completion report and wrap up\n"
+            "Note the previous graph's actual pace — estimate the next allowance from it, not from optimism."
+        ),
         "graph.tool.orphans": (
             "⚠ These nodes had no incoming edge and were chained in the order they appear in `nodes`: {ids}. "
             "Use plan_revise if that is not the structure you intended. "

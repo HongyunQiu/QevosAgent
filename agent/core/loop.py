@@ -383,6 +383,39 @@ def _set_run_outcome(
 # 因此耗尽时额外给一小段预算，且只放行收尾类工具，防止 agent 拿它继续干新活。
 
 _WRAPUP_BUDGET = 2
+# 时间触发的收尾窗口也得有时间余量，否则下一轮立刻又判超时，窗口等于没开。
+_WRAPUP_SECONDS = 180.0
+
+
+def _run_time_budget(state: AgentState) -> Optional[float]:
+    """run 级时限（秒）。人给的现实截止期；未配置则返回 None = 不设时限。
+
+    刻意**不给默认值**：凭空塞一个默认截止期会让今天所有靠迭代预算跑的长任务
+    突然在某个时刻被掐断。迁移到时间预算是自愿的——配了才生效。
+    """
+    cached = state.meta.get("_time_budget")
+    if isinstance(cached, (int, float)):
+        return float(cached) if cached > 0 else None
+    raw = (os.environ.get("RUN_TIME_BUDGET") or "").strip()
+    if not raw:
+        state.meta["_time_budget"] = 0.0
+        return None
+    try:
+        minutes = float(raw)
+    except Exception:
+        state.meta["_time_budget"] = 0.0
+        return None
+    seconds = max(0.0, minutes * 60.0)
+    state.meta["_time_budget"] = seconds
+    return seconds or None
+
+
+def _run_time_left(state: AgentState) -> Optional[float]:
+    budget = _run_time_budget(state)
+    if budget is None:
+        return None
+    # 用 total 而非 active：run 级时限是对现实的承诺，挂起等人那段是真的消耗掉了
+    return budget - _timing.total_seconds(state)
 
 _WRAPUP_ALLOWED_TOOLS = {
     "submit_completion_report",
@@ -782,10 +815,39 @@ def run(
                 if not _nostop_mode:
                     state.meta['_max_iterations'] = max_iterations
 
-            if not _nostop_mode and state.iteration >= max_iterations:
+            # ── run 级时限：配了就由它终止，迭代不再承担终止职责 ──────────────
+            _t_left = _run_time_left(state)
+            if _t_left is not None and _t_left <= 0:
+                # 收尾窗口的时间也用完了 → 这次是真的结束。
+                # 这里不能加 `not _wrapup_window` 的前置条件：那会让窗口一开就
+                # 永久关掉时间检查，而迭代此时又不承担终止职责，run 将永远跑下去。
+                if state.meta.get("_wrapup_window_used"):
+                    state.meta["timeout"] = True
+                    _set_run_outcome(state, RUN_OUTCOME_EXHAUSTED, reason="time_budget_exhausted")
+                    _checkpoint_state(state, status="failed")
+                    break
+                state.meta["_wrapup_window_used"] = True
+                state.meta["_wrapup_window"] = True
+                state.meta["_time_budget"] = float(state.meta.get("_time_budget") or 0.0) + _WRAPUP_SECONDS
+                max_iterations = max(max_iterations, state.iteration + _WRAPUP_BUDGET)
+                state.meta["_max_iterations"] = max_iterations
+                _append_short_term(
+                    state, {"role": "user", "content": _WRAPUP_PROMPT.format(budget=_WRAPUP_BUDGET)}
+                )
+                if hooks.on_error:
+                    hooks.on_error(
+                        f"[收尾窗口] 时间预算已用尽（{_timing.fmt(_timing.total_seconds(state))}），"
+                        f"额外给予 {_timing.fmt(_WRAPUP_SECONDS)} 用于提交完成报告"
+                    )
+                _checkpoint_state(state)
+
+            # 配了时限就以时间为准：迭代耗尽不再触发收尾，避免两个终止条件打架
+            _iteration_governs = _t_left is None
+
+            if not _nostop_mode and _iteration_governs and state.iteration >= max_iterations:
                 # 图还有未闭合节点 → 补一笔继续跑，而不是收尾退出。
-                # 这就是"图激活期不设迭代上限"的落地：供给跟着图上的活走，
-                # 真正的停止条件是收敛检测（stall → advisor → 求助用户）。
+                # 未配置时间预算时，迭代仍是图的预算单位（时间是首选、迭代是兜底，
+                # 同一个概念的两种量纲，不是两套打架的机制）。
                 _topup = _graph.topup_budget(state)
                 if _topup:
                     max_iterations += _topup
@@ -816,10 +878,25 @@ def run(
                     )
                 _checkpoint_state(state)
 
+            # ── 时限临近警告 ──────────────────────────────────────────────────
+            if (_t_left is not None and _t_left > 0
+                    and not state.meta.get("_time_warn_injected")):
+                _budget = _run_time_budget(state) or 1.0
+                if _t_left <= max(300.0, _budget * 0.1):
+                    state.meta["_time_warn_injected"] = True
+                    _append_short_term(state, {"role": "user", "content": t(
+                        "warn.time_limit", left=_timing.fmt(_t_left),
+                        total=_timing.fmt(_budget),
+                    )})
+                    if hooks.on_thought:
+                        hooks.on_thought(f"⏳ [时限警告] 剩余 {_timing.fmt(_t_left)}")
+
             # ── Iteration limit warning ───────────────────────────────────────
             # 图上还有活时不发这个警告：供给会自动补，"剩余 N 次"是误导，
             # 只会诱使模型仓促收尾或去求用户加预算。
-            if (not _nostop_mode and not state.meta.get("_iter_warn_injected")
+            # 配了时间预算时也不发——那时迭代根本不是终止条件。
+            if (not _nostop_mode and _iteration_governs
+                    and not state.meta.get("_iter_warn_injected")
                     and not _graph.has_open_work(state)):
                 _remaining = max_iterations - state.iteration
                 if 0 < _remaining <= 10:
@@ -847,6 +924,25 @@ def run(
             # 遍历已注册 watcher，按 interval 触发执行，输出注入 short_term。
             # 单条注入硬上限 500 字符，超限自动落 artifacts/ 降级为路径。
             _poll_watchers(state, hooks)
+
+            # ── 图级时间配额到期 ───────────────────────────────────────────────
+            # 只关这张图，**不碰运行时的收口**——图是插入在运行时中的一段，
+            # 图跑完 run 未必结束。之后自动回自由模式，模型可以用剩余总时间
+            # 开一张更小的图、直接收尾、或先处理最要紧的部分。
+            _expired = _graph.expire_if_out_of_time(state)
+            if _expired is not None:
+                _open = _graph.open_nodes(state, _expired)
+                _append_short_term(state, {"role": "user", "content": t(
+                    "graph.expired.notice",
+                    gid=_expired.get("gid", "?"),
+                    used=_timing.fmt(_graph.graph_time_used(state, _expired)),
+                    n=len(_open),
+                    ids=", ".join(f"{o['node']}「{o['title']}」" for o in _open[:6]) or "-",
+                    left=_timing.fmt(_run_time_left(state)) if _run_time_left(state) is not None else "-",
+                )})
+                if hooks.on_error:
+                    hooks.on_error(f"[执行图] {_expired.get('gid')} 时间配额用尽，已回到自由模式")
+                _checkpoint_state(state)
 
             # ── 执行图收敛检测 ─────────────────────────────────────────────────
             # 现有防呆全是签名式的，抓不住"每轮都在换工具、但一个节点都没关掉"

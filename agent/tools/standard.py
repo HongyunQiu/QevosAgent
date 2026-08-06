@@ -3381,8 +3381,10 @@ def tool_plan_create(
     edges=None,
     reason: str = "",
     from_skill: str = "",
+    time_budget_min=None,
 ) -> ToolResult:
     from ..core import graph as _graph
+    from ..core.loop import _run_time_left
 
     g, msg = _graph.create_graph(
         state,
@@ -3391,6 +3393,8 @@ def tool_plan_create(
         edges=_coerce_json_arg(edges),
         reason=reason,
         from_skill=from_skill or None,
+        time_budget_min=time_budget_min,
+        time_left_secs=_run_time_left(state),
     )
     if g is None:
         return ToolResult(success=False, output=None, error=msg)
@@ -4309,6 +4313,12 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 ),
                 "reason": "（可选）为什么此时值得用图的方式推进",
                 "from_skill": "（可选）本图源自哪个 SKILL",
+                "time_budget_min": (
+                    "（可选）为这张图申请的时间配额，单位分钟。用尽后图会标记为 expired 并"
+                    "自动回到自由模式（任务不会因此结束，剩余总时间仍可用）。"
+                    "超过本次任务剩余总时间会被自动下调。"
+                    "第一次靠估，之后请按上一张图的实际速率来估"
+                ),
             },
             fn=tool_plan_create,
         ),

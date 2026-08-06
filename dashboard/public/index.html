@@ -4411,7 +4411,8 @@ function onGraphSelect(i) {
 }
 
 function statusLabel(s) {
-  return { active: '进行中', completed: '已完成', abandoned: '已放弃' }[s] || s || '';
+  return { active: '进行中', completed: '已完成', abandoned: '已放弃',
+           expired: '配额用尽' }[s] || s || '';
 }
 
 /** 分层布局：深度按 parent 链计算，同层横排居中。 */

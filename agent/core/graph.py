@@ -28,7 +28,9 @@ ROOT_ID = "n0"
 
 _NODE_STATUS   = ("planned", "active", "done", "abandoned", "blocked")
 _OPEN_STATUS   = ("planned", "active", "blocked")      # 未达终态 → 可并入 gaps
-_GRAPH_STATUS  = ("active", "completed", "abandoned")
+# expired 与 abandoned 必须分开：abandoned 是"模型判断这个分解错了"，
+# expired 是"时间到了但活没干完"——两种完全不同的历史，混在一起地图就说不清。
+_GRAPH_STATUS  = ("active", "completed", "abandoned", "expired")
 _EDGE_KINDS    = ("then", "alt", "fallback")
 # 与验收门的证据分类保持一致（见 loop._parse_acceptance_evidence），不另起炉灶
 _EVIDENCE_TYPES = ("artifact", "tool_result", "observation", "none")
@@ -302,6 +304,67 @@ def has_open_work(state: AgentState) -> bool:
     return any(n.get("status") in _OPEN_STATUS for n in _nodes(g).values())
 
 
+# ── 图级时间配额 ──────────────────────────────────────────────────────────────
+# 用 active（扣掉等人的时间）：这是一份**工作量额度**，人去睡觉的 8 小时不该算。
+# run 级时限则用 total，那是对现实的承诺。两级时限见 doc §7B。
+
+def graph_time_used(state: AgentState, g: dict) -> float:
+    """图实际消耗的工作时间。
+
+    图关闭后必须**冻结**：否则一张早就到期的图，它的"实用时长"会跟着 run 一路
+    涨下去，地图上就再也读不出"它当初花了多久"——而那恰恰是下一张图估配额时
+    唯一可靠的依据。
+    """
+    started = g.get("time_start")
+    if not isinstance(started, (int, float)):
+        return 0.0
+    ended = g.get("time_end")
+    if not isinstance(ended, (int, float)):
+        ended = _timing.active_seconds(state)
+    return max(0.0, float(ended) - float(started))
+
+
+def _close_graph_time(state: AgentState, g: dict) -> None:
+    if not isinstance(g.get("time_end"), (int, float)):
+        g["time_end"] = round(_timing.active_seconds(state), 2)
+
+
+def graph_time_left(state: AgentState, g: Optional[dict] = None) -> Optional[float]:
+    """图的剩余配额（秒）；没有活动图或未申请配额时返回 None。"""
+    if g is None:
+        g = active_graph(state)
+    if g is None:
+        return None
+    budget = g.get("time_budget")
+    if not isinstance(budget, (int, float)) or budget <= 0:
+        return None
+    return float(budget) - graph_time_used(state, g)
+
+
+def expire_if_out_of_time(state: AgentState) -> Optional[dict]:
+    """配额用尽则把图置为 expired 并返回它，否则 None。
+
+    **只关这张图，不碰运行时的收口。** 图是插入在运行时中的一段，图跑完 run 未必
+    结束——之后自动回自由模式，模型可以用剩余总时间开一张更小的图、直接收尾、
+    或先处理最要紧的部分。"一张接一张开图"由 run 级总时限兜底。
+    """
+    try:
+        g = active_graph(state)
+        if g is None:
+            return None
+        left = graph_time_left(state, g)
+        if left is None or left > 0:
+            return None
+        g["status"] = "expired"
+        g["closed_iter"] = _iter(state)
+        _close_graph_time(state, g)
+        g["closed_reason"] = t("graph.expired.reason", used=_timing.fmt(graph_time_used(state, g)))
+        save(state)
+        return g
+    except Exception:
+        return None
+
+
 def _grant_budget(state: AgentState, node: dict) -> int:
     """节点首次进入时按它自报的 budget 发放迭代预算。
 
@@ -451,8 +514,15 @@ def create_graph(
     edges: Any = None,
     reason: str = "",
     from_skill: Optional[str] = None,
+    time_budget_min: Any = None,
+    time_left_secs: Optional[float] = None,
 ) -> tuple[Optional[dict], str]:
-    """建立一张新图。返回 (graph, 说明文字)；nodes 为空时返回 (None, 错误说明)。"""
+    """建立一张新图。返回 (graph, 说明文字)；nodes 为空时返回 (None, 错误说明)。
+
+    time_budget_min 是**模型自己申请**的配额（分钟）。图是一份相对确定的计划，
+    模型对它有预判能力；而且从第二张图起它手里就有上一张的实测速率了。
+    time_left_secs 是 run 级剩余时间，用于把申请值夹住——不能承诺超过总时限。
+    """
     raw_nodes = nodes
     if isinstance(raw_nodes, dict):
         raw_nodes = [raw_nodes]
@@ -467,12 +537,27 @@ def create_graph(
     if previous is not None:
         previous["status"] = "abandoned"
         previous["closed_iter"] = _iter(state)
+        _close_graph_time(state, previous)
         previous["closed_reason"] = t("graph.tool.replaced")
         notes.append(t("graph.tool.replace_active", gid=previous.get("gid", "?")))
+
+    # 配额：模型申请，被 run 级剩余时间夹住
+    requested = None
+    try:
+        if time_budget_min is not None and str(time_budget_min).strip() != "":
+            requested = max(0.0, float(time_budget_min) * 60.0)
+    except Exception:
+        requested = None
+    clamped = False
+    if requested and time_left_secs is not None and requested > time_left_secs > 0:
+        requested = float(time_left_secs)
+        clamped = True
 
     gid = f"g{len(root['graphs']) + 1}"
     g: dict = {
         "gid": gid,
+        "time_budget": requested or None,
+        "time_start": round(_timing.active_seconds(state), 2),
         "status": "active",
         "title": _clip(title, 60) or gid,
         "created_iter": _iter(state),
@@ -568,6 +653,12 @@ def create_graph(
         title=g["title"],
         n=len(g["nodes"]) - 1,
     )
+    if requested:
+        notes.append(t(
+            "graph.tool.allocated",
+            budget=_timing.fmt(requested),
+            clamped=(" " + t("graph.tool.clamped")) if clamped else "",
+        ))
     if notes:
         msg = msg + "\n" + "\n".join(notes)
     return g, msg
@@ -580,6 +671,7 @@ def abandon_graph(state: AgentState, reason: str) -> tuple[bool, str]:
     g["status"] = "abandoned"
     g["closed_iter"] = _iter(state)
     g["closed_reason"] = _clip(reason, 300)
+    _close_graph_time(state, g)
     save(state)
     return True, t("graph.tool.abandoned", gid=g.get("gid", "?"), reason=_clip(reason, 200))
 
@@ -875,6 +967,7 @@ def _op_complete(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
     g["status"] = "completed"
     g["closed_iter"] = _iter(state)
     g["closed_reason"] = _clip(op.get("reason"), 300)
+    _close_graph_time(state, g)
     save(state)
     return True, t("graph.op.graph_completed", gid=g.get("gid", "?"))
 
@@ -1186,12 +1279,24 @@ def metrics(state: AgentState) -> dict:
             else:
                 break
 
+        # 停滞也要有时间这把尺子：承认迭代非均匀之后，"20 轮没闭合"同样站不住——
+        # 20 轮可能是 100 秒，也可能是 10 小时。两把尺子各抓一类空转。
+        stall_secs = 0.0
+        if closed:
+            last_t = closed[-1].get("time_range")
+            if isinstance(last_t, list) and len(last_t) == 2 and last_t[1] is not None:
+                stall_secs = max(0.0, _timing.active_seconds(state) - float(last_t[1]))
+        elif isinstance(g.get("time_start"), (int, float)):
+            stall_secs = max(0.0, _timing.active_seconds(state) - float(g["time_start"]))
+
         active = _active_node(g)
         active_used = 0
         if active and isinstance(active.get("iter_range"), list) and active["iter_range"][0] is not None:
             active_used = max(0, now - int(active["iter_range"][0]))
         return {
             "gid": g.get("gid", ""),
+            "stall_secs": round(stall_secs, 1),
+            "time_left": graph_time_left(state, g),
             "active_used": active_used,
             "active_budget": int((active or {}).get("budget") or 0),
             "stall_iters": max(0, now - int(last_progress)),
@@ -1219,15 +1324,22 @@ def stall_level(m: dict) -> tuple[int, str]:
     revisits = int(m.get("node_revisits") or 0)
     fanout = float(m.get("open_fanout") or 0)
     unverified = int(m.get("unverified_streak") or 0)
+    stall_secs = float(m.get("stall_secs") or 0.0)
 
-    if (stall >= _env_int("GRAPH_STALL_L2", 40)
+    # 迭代与时间取先到者：短促的空转和漫长的空转都是空转，两把尺子各抓一类
+    stalled_l1 = (stall >= _env_int("GRAPH_STALL_L1", 20)
+                  or stall_secs >= _env_int("GRAPH_STALL_L1_SECS", 1800))
+    stalled_l2 = (stall >= _env_int("GRAPH_STALL_L2", 40)
+                  or stall_secs >= _env_int("GRAPH_STALL_L2_SECS", 3600))
+
+    if (stalled_l2
             or revisits >= _env_int("GRAPH_REVISIT_L2", 5)
             or fanout >= float(_env_int("GRAPH_FANOUT_L2", 5))):
-        if stall >= _env_int("GRAPH_STALL_L2", 40):
+        if stalled_l2:
             return 2, "stall"
         return 2, "revisit" if revisits >= _env_int("GRAPH_REVISIT_L2", 5) else "fanout"
 
-    if stall >= _env_int("GRAPH_STALL_L1", 20):
+    if stalled_l1:
         return 1, "stall"
     if revisits >= _env_int("GRAPH_REVISIT_L1", 3):
         return 1, "revisit"
@@ -1248,10 +1360,28 @@ def stall_hint(m: dict, reason: str) -> str:
     return t("graph.stall.hint_unverified", n=m.get("unverified_streak", 0))
 
 
-def open_nodes(state: AgentState) -> list[dict]:
+def _gap_source(state: AgentState) -> Optional[dict]:
+    """哪张图的未闭合节点该算作遗留缺口。
+
+    活动图当然算。没有活动图时，只有 **expired** 的那张还算——它是"时间到了但
+    活没干完"，未闭合节点就是实打实的缺口；而 abandoned 是模型主动判定这个分解
+    不对、有意丢弃的，把它的节点当缺口报上去只会误导续作。
+    """
+    g = active_graph(state)
+    if g is not None:
+        return g
+    root = peek_root(state)
+    if not root or not root.get("graphs"):
+        return None
+    last = root["graphs"][-1]
+    return last if isinstance(last, dict) and last.get("status") == "expired" else None
+
+
+def open_nodes(state: AgentState, g: Optional[dict] = None) -> list[dict]:
     """未达终态的节点，供 run 收尾时并入 run_outcome.gaps。"""
     try:
-        g = active_graph(state)
+        if g is None:
+            g = _gap_source(state)
         if g is None:
             return []
         out: list[dict] = []
@@ -1276,7 +1406,7 @@ def override_nodes(state: AgentState) -> list[dict]:
     """以降级方式闭合的节点。它们状态是 done，但**带着未兑现的承诺**，
     因此同样是遗留缺口——不进 gaps 就等于在续作时把这笔账抹掉了。"""
     try:
-        g = active_graph(state)
+        g = _gap_source(state)
         if g is None:
             return []
         out = []

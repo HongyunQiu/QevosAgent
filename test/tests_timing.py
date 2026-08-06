@@ -281,5 +281,163 @@ class NodeTimingTests(TimingTestCase):
         self.assertTrue(G.apply_op(st, {"op": "exit", "node": "n1", "summary": "ok"})[0])
 
 
+class RunTimeBudgetTests(TimingTestCase):
+    """run 级时限：人给的现实截止期，用 total（挂起等人那段是真的消耗掉了）。"""
+
+    def setUp(self):
+        super().setUp()
+        import os
+        self._env = os.environ.pop("RUN_TIME_BUDGET", None)
+        self.addCleanup(
+            lambda: os.environ.__setitem__("RUN_TIME_BUDGET", self._env)
+            if self._env is not None else os.environ.pop("RUN_TIME_BUDGET", None)
+        )
+
+    def test_unset_means_no_time_limit(self):
+        """不给默认值是刻意的：凭空塞一个截止期会让今天所有靠迭代跑的长任务
+        突然在某个时刻被掐断。迁移到时间预算是自愿的。"""
+        from agent.core.loop import _run_time_budget, _run_time_left
+        st = self._state()
+        self.assertIsNone(_run_time_budget(st))
+        self.assertIsNone(_run_time_left(st))
+
+    def test_env_is_read_in_minutes(self):
+        import os
+        from agent.core.loop import _run_time_budget
+        os.environ["RUN_TIME_BUDGET"] = "90"
+        st = self._state()
+        self.assertAlmostEqual(_run_time_budget(st), 5400.0)
+
+    def test_left_counts_paused_time(self):
+        """run 级是对现实的承诺——半夜挂起等人那段是真的消耗掉了。"""
+        import os
+        from agent.core.loop import _run_time_left
+        os.environ["RUN_TIME_BUDGET"] = "10"        # 600s
+        st = self._state()
+        T.start(st)
+        self.clock.advance(120)
+        T.tick(st)
+        T.ledger(st)["paused"] = 100.0              # 其中 100s 是等人
+        self.assertAlmostEqual(_run_time_left(st), 480.0)   # 而不是 580
+
+    def test_garbage_env_is_treated_as_unset(self):
+        import os
+        from agent.core.loop import _run_time_budget
+        os.environ["RUN_TIME_BUDGET"] = "不是数字"
+        self.assertIsNone(_run_time_budget(self._state()))
+
+
+class GraphTimeAllowanceTests(TimingTestCase):
+    """图级配额：模型申请的工作量额度，用 active（人去睡觉的时间不算）。"""
+
+    def _graph(self, minutes=None, left=None):
+        st = self._state()
+        T.start(st)
+        g, msg = G.create_graph(
+            st, title="配额", nodes=[{"title": "a", "goal": "x"}, {"title": "b", "goal": "y"}],
+            time_budget_min=minutes, time_left_secs=left,
+        )
+        return st, g, msg
+
+    def test_no_allowance_means_no_expiry(self):
+        st, g, _ = self._graph()
+        self.assertIsNone(g["time_budget"])
+        self.clock.advance(99999)
+        T.tick(st)
+        self.assertIsNone(G.expire_if_out_of_time(st))
+        self.assertEqual(g["status"], "active")
+
+    def test_allowance_is_requested_in_minutes(self):
+        _st, g, msg = self._graph(minutes=30)
+        self.assertAlmostEqual(g["time_budget"], 1800.0)
+        self.assertIn("30m", msg)
+
+    def test_allowance_is_clamped_to_remaining_run_time(self):
+        """不能承诺超过总时限——图是切在 run 时间范围内的一块。"""
+        _st, g, msg = self._graph(minutes=120, left=600.0)
+        self.assertAlmostEqual(g["time_budget"], 600.0)
+        # 断言语言中立：本仓库 zh/en 双语，LANG 由环境决定
+        self.assertTrue("下调" in msg or "clamp" in msg.lower(), msg)
+
+    def test_expiry_marks_expired_not_abandoned(self):
+        """expired 是"时间到了活没干完"，abandoned 是"模型判断分解错了"——
+        混在一起地图就说不清。"""
+        st, g, _ = self._graph(minutes=10)
+        self.clock.advance(700)
+        T.tick(st)
+        expired = G.expire_if_out_of_time(st)
+        self.assertIsNotNone(expired)
+        self.assertEqual(g["status"], "expired")
+        self.assertNotEqual(g["status"], "abandoned")
+        self.assertTrue(g["closed_reason"])          # 记下了到期原因（措辞随语言）
+        self.assertEqual(g["closed_iter"], st.iteration)
+
+    def test_paused_time_does_not_burn_the_allowance(self):
+        """图级是工作量额度，人去睡觉的一小时不该吃掉它。"""
+        from datetime import datetime, timedelta, timezone
+        st, g, _ = self._graph(minutes=10)
+        self.clock.advance(300)
+        T.tick(st)
+        T.ledger(st)["_wall_seen"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=3600)
+        ).isoformat().replace("+00:00", "Z")
+        T.absorb_pause(st)
+        self.assertIsNone(G.expire_if_out_of_time(st))    # 睡了一小时也没到期
+        self.assertEqual(g["status"], "active")
+
+    def test_expired_graph_still_feeds_gaps(self):
+        """图到期后不再 active，但它的未闭合节点恰恰是最该带出去的缺口。"""
+        st, g, _ = self._graph(minutes=1)
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        self.clock.advance(120)
+        T.tick(st)
+        G.expire_if_out_of_time(st)
+        self.assertEqual(g["status"], "expired")
+        self.assertEqual([n["node"] for n in G.open_nodes(st)], ["n1", "n2"])
+        self.assertTrue(G.gap_lines(st))
+
+    def test_abandoned_graph_does_not_feed_gaps(self):
+        """主动放弃的分解是有意丢弃的，把它的节点报成缺口只会误导续作。"""
+        st, _g, _ = self._graph()
+        G.abandon_graph(st, "分解错了")
+        self.assertEqual(G.open_nodes(st), [])
+
+    def test_expiry_never_touches_the_run(self):
+        """图的收口 ≠ 运行时的收口。图跑完，run 未必结束。"""
+        st, _g, _ = self._graph(minutes=1)
+        self.clock.advance(120)
+        T.tick(st)
+        G.expire_if_out_of_time(st)
+        for key in ("_wrapup_window", "_wrapup_window_used", "paused", "run_outcome"):
+            self.assertNotIn(key, st.meta, f"图到期不该动 {key}")
+
+
+class StallTimeThresholdTests(TimingTestCase):
+    """承认迭代非均匀之后，"20 轮没闭合"同样站不住——20 轮可能是 100 秒也可能是 10 小时。"""
+
+    def test_time_alone_can_trigger_a_stall(self):
+        st = self._state()
+        T.start(st)
+        G.create_graph(st, title="慢", nodes=[{"title": "a", "goal": "x"}])
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        self.clock.advance(2400)          # 40 分钟，但只走了 0 轮
+        T.tick(st)
+        m = G.metrics(st)
+        self.assertGreater(m["stall_secs"], 1800)
+        self.assertEqual(m["stall_iters"], 0)
+        self.assertGreaterEqual(G.stall_level(m)[0], 1)   # 迭代看不出来，时间看得出来
+
+    def test_iterations_alone_still_trigger(self):
+        """两把尺子取先到者，时间没到不影响迭代那把。"""
+        st = self._state()
+        T.start(st)
+        G.create_graph(st, title="快", nodes=[{"title": "a", "goal": "x"}])
+        G.apply_op(st, {"op": "enter", "node": "n1"})
+        st.iteration = 45                  # 40 轮空转，但只花了几秒
+        m = G.metrics(st)
+        self.assertLess(m["stall_secs"], 60)
+        self.assertEqual(G.stall_level(m)[0], 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
