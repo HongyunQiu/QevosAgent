@@ -39,6 +39,18 @@ def _fire_pro_hook(name: str, *args) -> None:
         pass
 
 
+def _time_snapshot(state) -> dict:
+    """时间账本快照（见 agent/core/timing.py）。延迟导入避免运行时层反向依赖 core。"""
+    if state is None:
+        return {}
+    try:
+        from agent.core import timing as _timing
+
+        return _timing.snapshot(state)
+    except Exception:
+        return {}
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -169,6 +181,7 @@ class RunPersistence:
             "run_outcome": (run_outcome or {}).get("outcome"),
             "resumable": bool((run_outcome or {}).get("resumable")),
             "run_outcome_detail": run_outcome,
+            "time": _time_snapshot(state),
             "run_id": self.run_dir.name,
             "goal": goal,
             "summary": summary,

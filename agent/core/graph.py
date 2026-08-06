@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+from . import timing as _timing
 from .types_def import AgentState
 from ..i18n import t
 
@@ -267,6 +268,11 @@ def _normalize_node(raw: Any, node_id: str, parent: Optional[str] = None) -> dic
         "budget": budget,
         "granted": False,          # 预算发放（批 2）
         "iter_range": [None, None],
+        # 实际耗时区间（active 秒数，扣掉了等人的时间）。批 A 只记录不使用；
+        # 批 C 用它算"均 11.8 分钟/节点"喂给模型规划下一张图，
+        # 也是将来蒸馏进 SKILL 时唯一有跨 run 复用价值的那个量——
+        # "这类节点通常 20 分钟"是真实世界知识，"通常 8 轮"只是本运行时的内部产物。
+        "time_range": [None, None],
         "seg": None,               # 仅 isolate 封段时记录
         "isolate": bool(raw.get("isolate")),
         "outcome": {"summary": "", "gaps": []},
@@ -350,6 +356,27 @@ def pending_isolate(state: AgentState) -> Optional[dict]:
 def mark_sealed(state: AgentState, node: dict, seg: Any) -> None:
     node["seg"] = seg
     save(state)
+
+
+def _stamp_time_end(state: AgentState, node: dict) -> None:
+    """节点达终态时收口耗时区间。没进过的节点（time_range[0] 为 None）不记。"""
+    rng = node.get("time_range")
+    if not isinstance(rng, list) or len(rng) != 2 or rng[0] is None:
+        return
+    rng[1] = round(_timing.active_seconds(state), 2)
+
+
+def node_seconds(node: dict) -> Optional[float]:
+    """节点实际耗时（秒）；未闭合或未进入过则为 None。"""
+    rng = node.get("time_range")
+    if not isinstance(rng, list) or len(rng) != 2:
+        return None
+    if rng[0] is None or rng[1] is None:
+        return None
+    try:
+        return max(0.0, float(rng[1]) - float(rng[0]))
+    except Exception:
+        return None
 
 
 def _merge_side_effects(node: dict, items: Any) -> None:
@@ -665,6 +692,11 @@ def _op_enter(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
     if node["iter_range"][0] is None:
         node["iter_range"][0] = _iter(state)
     node["iter_range"][1] = None
+    if not isinstance(node.get("time_range"), list) or len(node["time_range"]) != 2:
+        node["time_range"] = [None, None]
+    if node["time_range"][0] is None:
+        node["time_range"][0] = round(_timing.active_seconds(state), 2)
+    node["time_range"][1] = None
     g["cursor"] = node_id
     granted = _grant_budget(state, node)
     save(state)
@@ -720,6 +752,7 @@ def _op_exit(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
     node["status"] = "done"
     node["closed_by"] = closed_by
     node["iter_range"][1] = _iter(state)
+    _stamp_time_end(state, node)
     node["outcome"] = {
         "summary": _clip(op.get("summary"), 600),
         "gaps": _str_list(op.get("gaps"), limit=10),
@@ -790,6 +823,7 @@ def _op_abandon(state: AgentState, g: dict, op: dict) -> tuple[bool, str]:
     node["abandon_reason"] = reason
     if isinstance(node.get("iter_range"), list) and len(node["iter_range"]) == 2:
         node["iter_range"][1] = _iter(state)
+    _stamp_time_end(state, node)
 
     # 级联：依赖它的下游（then）里还没开始的一起废弃，避免留下孤儿。
     # 但 alt / fallback 指向的是它的**替代方案**，必须留着——见 _descendants。

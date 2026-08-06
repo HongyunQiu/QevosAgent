@@ -26,6 +26,7 @@ from .compression import (
     _apply_runtime_patch,
 )
 from . import graph as _graph
+from . import timing as _timing
 from .artifact_index import register_artifact
 from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice, ensure_progress_log
 from agent.i18n import t
@@ -47,6 +48,12 @@ def _log_token_stats(state: AgentState, record: dict) -> None:
 
 
 def _checkpoint_state(state: AgentState, status: str = "running", error: Optional[str] = None) -> None:
+    # 先推进时间账本再落盘：total 必须在每个快照点都是当前值，否则最后一段
+    # （比如收尾那次 LLM 调用）永远等不到下一轮的打点，会凭空丢掉。
+    try:
+        _timing.tick(state)
+    except Exception:
+        pass
     persistence = _get_persistence(state)
     if persistence is not None:
         persistence.checkpoint(state, status=status, error=error)
@@ -629,9 +636,24 @@ def run(
 
     # 将 LLM 退避重试通知接到 hooks.on_llm_retry，让 UI 可以渲染"等待中"。
     # 仅对支持 on_retry 属性的后端生效（OpenAIBackend）；AnthropicBackend 等忽略。
-    if hooks.on_llm_retry is not None and hasattr(llm, "on_retry"):
+    # 同时把退避等待时长记进时间账本：退避发生在 llm.complete() 内部，
+    # 若不单独扣出来就会全被算成"模型很慢"，而它其实是"服务端在拒绝"——
+    # 这两件事对 agent 的决策含义完全不同。
+    _retry_acc = {"seconds": 0.0}
+
+    if hasattr(llm, "on_retry"):
+        _user_retry_hook = hooks.on_llm_retry
+
+        def _on_retry(attempt, wait_seconds, reason):
+            try:
+                _retry_acc["seconds"] += max(0.0, float(wait_seconds or 0.0))
+            except Exception:
+                pass
+            if _user_retry_hook is not None:
+                _user_retry_hook(attempt, wait_seconds, reason)
+
         try:
-            llm.on_retry = hooks.on_llm_retry  # type: ignore[attr-defined]
+            llm.on_retry = _on_retry  # type: ignore[attr-defined]
         except Exception:
             pass
 
@@ -705,12 +727,19 @@ def run(
         state.meta.pop("_graph_l1_at", None)
         state.meta.pop("_graph_l2_at", None)
         state.meta["_graph_stall_baseline"] = int(getattr(state, "iteration", 0) or 0)
+        # 补记"暂停等人"的时长：那段时间进程根本不在跑，单调钟无从计量。
+        _timing.absorb_pause(state)
         _checkpoint_state(state)
 
     _nostop_mode = state.meta.get("nostop", False)
     state.meta['_max_iterations'] = "∞" if _nostop_mode else max_iterations
+    # 时间账本（批 A：纯计量，不影响终止）。start() 必须在这里重打锚点——
+    # `_mark` 是进程内的单调钟读数，跨进程毫无意义，续跑时沿用会把两个进程的
+    # 时钟差当成本次耗时记进去。
+    _timing.start(state)
     try:
         while True:
+            _timing.tick(state)
             # ── Drain queued interrupt commands BEFORE checking iteration limit ──
             # Draining first ensures /+N typed during the last iteration can extend
             # max_iterations before the exit check, so it actually takes effect.
@@ -842,14 +871,17 @@ def run(
                     _ih_w = state.meta.get("_interrupt_handler")
                     _stop_wait = False
                     _slept = 0.0
-                    while _slept < _interval:
-                        if _ih_w is not None and getattr(_ih_w, "force_stop", False):
-                            _ih_w.force_stop = False
-                            _stop_wait = True
-                            break
-                        _step = min(0.5, _interval - _slept)
-                        _time.sleep(_step)
-                        _slept += _step
+                    # 阻塞等待单独归类：这段时间迭代数几乎不动而挂钟一直在走，
+                    # 正是迭代预算完全失效的那一类场景（见 §7B）。
+                    with _timing.span(state, "wait"):
+                        while _slept < _interval:
+                            if _ih_w is not None and getattr(_ih_w, "force_stop", False):
+                                _ih_w.force_stop = False
+                                _stop_wait = True
+                                break
+                            _step = min(0.5, _interval - _slept)
+                            _time.sleep(_step)
+                            _slept += _step
                     if _stop_wait:
                         # 用户 /stop：跳出等待，注入说明后本轮直接恢复 LLM
                         # （后台任务仍在运行，不受影响）。
@@ -986,6 +1018,8 @@ def run(
                 print(f"{DEEP_GREEN}\n[DEBUG_LLM_IO] >>> request{RESET}\n{s}\n")
 
             finish_reason = None
+            _retry_acc["seconds"] = 0.0
+            _llm_started = _timing.now()
             try:
                 raw_response = llm.complete(messages, system)
                 # 紧接 complete() 抓取 finish_reason：后续 _apply_runtime_patch 的
@@ -1034,6 +1068,7 @@ def run(
                 if state.meta.get("_consec_llm_errors"):
                     state.meta["_consec_llm_errors"] = 0
             except Exception as e:
+                _record_llm_time(state, _llm_started, _retry_acc)
                 error_msg = f"LLM 调用失败: {e}"
                 if hooks.on_error:
                     hooks.on_error(error_msg)
@@ -1086,6 +1121,8 @@ def run(
                 if _consec >= max(1, _max_consec):
                     state.iteration += 1
                 continue
+
+            _record_llm_time(state, _llm_started, _retry_acc)
 
             if os.environ.get("DEBUG_LLM_IO", "0") == "1":
                 DARK_RED = "\033[31m"
@@ -1394,7 +1431,8 @@ def run(
                         ),
                     )
                 else:
-                    result = execute(action, state)
+                    with _timing.span(state, "tool"):
+                        result = execute(action, state)
 
                 if hooks.on_tool_result:
                     hooks.on_tool_result(result)
@@ -1543,10 +1581,33 @@ def run(
             _set_run_outcome(state, RUN_OUTCOME_ABORTED, reason="user_stopped")
             _checkpoint_state(state)
 
+    # 收口最后一段：异常退出路径不一定走过 checkpoint
+    try:
+        _timing.tick(state)
+    except Exception:
+        pass
     return state
 
 
 # ── 内部辅助 ──────────────────────────────────────────────────────────────────
+
+
+def _record_llm_time(state: "AgentState", started: float, retry_acc: dict) -> None:
+    """把一次 llm.complete() 的耗时拆成 llm 与 retry 两笔。
+
+    退避等待发生在 complete() 内部。不拆出来的话，"服务端在拒绝我"会被记成
+    "模型很慢"——这两件事对 agent 的决策含义完全不同，前者该换策略/换槽位，
+    后者只是这活儿本来就重。五个分类互斥，所以这里要相减而不是各记各的。
+    """
+    try:
+        elapsed = max(0.0, _timing.now() - started)
+        retry = max(0.0, float(retry_acc.get("seconds") or 0.0))
+        retry = min(retry, elapsed)          # 防御：退避不可能超过整段耗时
+        _timing.add(state, "retry", retry)
+        _timing.add(state, "llm", elapsed - retry)
+        retry_acc["seconds"] = 0.0
+    except Exception:
+        pass
 
 
 def _graph_boundary_compress(state: "AgentState", llm, op: dict, hooks=None) -> None:
