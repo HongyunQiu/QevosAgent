@@ -117,6 +117,8 @@ def _slot_config(slot: str) -> dict:
         "base": (os.environ.get(prefix + "OPENAI_BASE_URL") or "").strip(),
         "key": os.environ.get(prefix + "OPENAI_API_KEY"),
         "model": (os.environ.get(prefix + "OPENAI_MODEL") or "").strip(),
+        # 采样温度按槽（=按模型）各自设置，不同模型的最佳温度不同；留空 = 用默认 0.8
+        "temp": (os.environ.get(prefix + "OPENAI_TEMPERATURE") or "").strip(),
     }
 
 
@@ -259,6 +261,11 @@ def probe_openai_configuration(list_models=None):
         os.environ["OPENAI_API_KEY"] = active["key"]
     if active_model:
         os.environ["OPENAI_MODEL"] = active_model
+    # 温度同理写回。没配就把键清掉——否则 API 1 的温度会串到胜出的 API 2/3 上。
+    if active["temp"]:
+        os.environ["OPENAI_TEMPERATURE"] = active["temp"]
+    else:
+        os.environ.pop("OPENAI_TEMPERATURE", None)
 
     if active_model in model_ids:
         return {

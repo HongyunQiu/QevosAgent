@@ -2001,11 +2001,14 @@ def tool_request_advisor(state: AgentState, reason: str = "") -> ToolResult:
     )
 
 
-def _resolve_advisor_config(advisor) -> Tuple[str, str, str, str]:
-    """解析顾问模型配置，返回 (n, base_url, api_key, model)。
+def _resolve_advisor_config(advisor) -> Tuple[str, str, str, str, Optional[float]]:
+    """解析顾问模型配置，返回 (n, base_url, api_key, model, temperature)。
 
     优先读 os.environ（启动时已从 .env 载入），缺失时再直接解析 .env 文件，
     以便看板保存后无需重启 agent 也能取到最新值。
+
+    temperature 留空 = None = 请求里不带该参数（顾问常是拒收 temperature 的推理模型，
+    这条路径没有主链路那套「被拒就自动摘掉」的兜底，所以不给默认值）。
     """
     n = str(advisor).strip() or "1"
     if n not in ("1", "2"):
@@ -2015,6 +2018,7 @@ def _resolve_advisor_config(advisor) -> Tuple[str, str, str, str]:
     base_url = (os.environ.get(prefix + "BASE_URL") or "").strip()
     api_key = (os.environ.get(prefix + "API_KEY") or "").strip()
     model = (os.environ.get(prefix + "MODEL") or "").strip()
+    temp = (os.environ.get(prefix + "TEMPERATURE") or "").strip()
     if not (base_url and model):
         env_path = os.path.join(os.getcwd(), ".env")
         if os.path.exists(env_path):
@@ -2033,9 +2037,15 @@ def _resolve_advisor_config(advisor) -> Tuple[str, str, str, str]:
                             api_key = v
                         elif k == prefix + "MODEL" and not model:
                             model = v
+                        elif k == prefix + "TEMPERATURE" and not temp:
+                            temp = v
             except Exception:
                 pass
-    return n, base_url, api_key, model
+    try:
+        temperature = float(temp) if temp and temp.lower() != "none" else None
+    except ValueError:
+        temperature = None
+    return n, base_url, api_key, model, temperature
 
 
 def tool_consult_advisor(
@@ -2052,7 +2062,7 @@ def tool_consult_advisor(
     兼容 OpenAI / 本地模型 / OpenAI 兼容代理；命中 anthropic.com 时自动改用原生
     Anthropic SDK（功能最全，非兼容层）。
     """
-    n, base_url, api_key, cfg_model = _resolve_advisor_config(advisor)
+    n, base_url, api_key, cfg_model, temperature = _resolve_advisor_config(advisor)
     if not base_url or not cfg_model:
         return ToolResult(
             success=False,
@@ -2062,6 +2072,8 @@ def tool_consult_advisor(
 
     use_model = model or cfg_model
     host = re.sub(r"^https?://", "", base_url).split("/")[0].lower()
+    # 顾问温度在「设置 → LLM 服务 → 顾问模型n」按模型各配一份；留空则整个参数不发。
+    temp_kw = {} if temperature is None else {"temperature": temperature}
 
     # Anthropic 官方 endpoint：仅当域名命中 anthropic.com 才走原生 SDK；OpenAI 兼容代理
     # （含转发 Claude 的网关）仍走 OpenAI SDK。原生失败则回退到 OpenAI 兼容层。
@@ -2075,6 +2087,7 @@ def tool_consult_advisor(
                 model=use_model,
                 max_tokens=int(max_tokens),
                 messages=[{"role": "user", "content": question}],
+                **temp_kw,
             )
             text = "".join(
                 getattr(b, "text", "") for b in resp.content if getattr(b, "type", None) == "text"
@@ -2091,6 +2104,7 @@ def tool_consult_advisor(
             model=use_model,
             messages=[{"role": "user", "content": question}],
             max_tokens=int(max_tokens),
+            **temp_kw,
         )
         return ToolResult(success=True, output=resp.choices[0].message.content)
     except Exception as e:

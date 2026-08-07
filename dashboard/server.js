@@ -2271,6 +2271,8 @@ const server = http.createServer(async (req, res) => {
       OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
       OPENAI_API_KEY:  process.env.OPENAI_API_KEY  || '',
       OPENAI_MODEL:    process.env.OPENAI_MODEL    || '',
+      // 采样温度按槽（=按模型）各配一份，跟着 base/key/model 一起放在「LLM 服务」页
+      OPENAI_TEMPERATURE: process.env.OPENAI_TEMPERATURE || '',
       MAX_ITERS:       process.env.MAX_ITERS       || '100',
       INSTANCE_NAME:   process.env.INSTANCE_NAME   || '',
       HTTPS_PROXY:     process.env.HTTPS_PROXY     || '',
@@ -2279,17 +2281,21 @@ const server = http.createServer(async (req, res) => {
       BACKUP_OPENAI_BASE_URL: process.env.BACKUP_OPENAI_BASE_URL || '',
       BACKUP_OPENAI_API_KEY:  process.env.BACKUP_OPENAI_API_KEY  || '',
       BACKUP_OPENAI_MODEL:    process.env.BACKUP_OPENAI_MODEL    || '',
+      BACKUP_OPENAI_TEMPERATURE: process.env.BACKUP_OPENAI_TEMPERATURE || '',
       BACKUP2_OPENAI_BASE_URL: process.env.BACKUP2_OPENAI_BASE_URL || '',
       BACKUP2_OPENAI_API_KEY:  process.env.BACKUP2_OPENAI_API_KEY  || '',
       BACKUP2_OPENAI_MODEL:    process.env.BACKUP2_OPENAI_MODEL    || '',
+      BACKUP2_OPENAI_TEMPERATURE: process.env.BACKUP2_OPENAI_TEMPERATURE || '',
       PREFERRED_API:          process.env.PREFERRED_API          || 'primary',
       // 顾问模型 1 / 2 —— 仅供 consult_advisor 工具按需调用，不参与主备 fallback
       ADVISOR1_OPENAI_BASE_URL: process.env.ADVISOR1_OPENAI_BASE_URL || '',
       ADVISOR1_OPENAI_API_KEY:  process.env.ADVISOR1_OPENAI_API_KEY  || '',
       ADVISOR1_OPENAI_MODEL:    process.env.ADVISOR1_OPENAI_MODEL    || '',
+      ADVISOR1_OPENAI_TEMPERATURE: process.env.ADVISOR1_OPENAI_TEMPERATURE || '',
       ADVISOR2_OPENAI_BASE_URL: process.env.ADVISOR2_OPENAI_BASE_URL || '',
       ADVISOR2_OPENAI_API_KEY:  process.env.ADVISOR2_OPENAI_API_KEY  || '',
       ADVISOR2_OPENAI_MODEL:    process.env.ADVISOR2_OPENAI_MODEL    || '',
+      ADVISOR2_OPENAI_TEMPERATURE: process.env.ADVISOR2_OPENAI_TEMPERATURE || '',
       // 高级设置 —— 局域网可见性
       DASHBOARD_HOST:  process.env.DASHBOARD_HOST  || '',
       DASHBOARD_PORT:  process.env.DASHBOARD_PORT  || '',
@@ -2298,7 +2304,7 @@ const server = http.createServer(async (req, res) => {
       // 高级设置 —— Agent 运行参数
       MAX_TOOL_FEEDBACK_CHARS: process.env.MAX_TOOL_FEEDBACK_CHARS || '',
       LLM_MAX_TOKENS:  process.env.LLM_MAX_TOKENS  || '',
-      LLM_TEMPERATURE: process.env.LLM_TEMPERATURE || '',
+      // 采样温度已按模型拆到各 API 槽位（*_OPENAI_TEMPERATURE），这里不再回传旧的全局键
       LLM_CONTEXT_WINDOW: process.env.LLM_CONTEXT_WINDOW || '',
       // 任一槽位配了 base 就算配置过（首选可以是 API 2/3，此时 API 1 允许留空）
       configured: !!(process.env.OPENAI_BASE_URL || process.env.BACKUP_OPENAI_BASE_URL

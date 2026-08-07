@@ -212,8 +212,11 @@ class OpenAIBackend(LLMBackend):
           Env: OPENAI_THINKING_BUDGET (default 0).
           Can be changed at runtime: llm.thinking_budget = N
 
-        temperature: sampling temperature. Defaults to 0.3 via env LLM_TEMPERATURE.
-          Pass None or set LLM_TEMPERATURE=none to omit the parameter entirely
+        temperature: sampling temperature. Defaults to 0.8, resolved per API slot:
+          run_goal writes the winning slot's temperature into OPENAI_TEMPERATURE,
+          so each model can carry its own best value. LLM_TEMPERATURE is the older
+          global knob and is only consulted when the slot has none.
+          Pass None or set the env var to "none" to omit the parameter entirely
           (required by some providers such as reasoning models that reject it).
           Auto-detected: if the provider returns 400 "Unsupported parameter: temperature",
           the parameter is dropped and all subsequent calls omit it automatically.
@@ -298,9 +301,15 @@ class OpenAIBackend(LLMBackend):
             thinking_budget = int(os.environ.get("OPENAI_THINKING_BUDGET", "0"))
         self.thinking_budget = max(0, int(thinking_budget))
         # Sampling temperature. None = omit from request (for providers that reject it).
-        # Env: LLM_TEMPERATURE (float or "none")
+        # Env: OPENAI_TEMPERATURE（当前生效槽位的温度，由 run_goal 探测后写回）
+        #   → LLM_TEMPERATURE（旧的全局设置，兜底）→ 0.8
+        # 值为 float 或 "none"。
         if temperature is None:
-            _env_temp = os.environ.get("LLM_TEMPERATURE", "0.3")
+            _env_temp = (
+                (os.environ.get("OPENAI_TEMPERATURE") or "").strip()
+                or (os.environ.get("LLM_TEMPERATURE") or "").strip()
+                or "0.8"
+            )
             self.temperature: Optional[float] = (
                 None if _env_temp.lower() == "none"
                 else float(_env_temp)

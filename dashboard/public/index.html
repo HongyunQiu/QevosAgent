@@ -2175,6 +2175,11 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
           <input type="text" id="setModel" placeholder="gpt-4o / qwen3-72b / deepseek-chat">
           <div class="set-model-chips" id="setModelChips" style="display:none;"></div>
         </div>
+
+        <div class="set-fg">
+          <label for="setTemp">采样温度 <span class="set-hint-inline" id="setHintTemp">（0~2，越高越发散。每个模型各配一份——不同模型的最佳温度不同，留空 = 默认 0.8）</span></label>
+          <input type="number" id="setTemp" placeholder="（留空=默认 0.8）" min="0" max="2" step="0.1">
+        </div>
       </div>
 
       <!-- ── 通用设置 ── tab 在上，内容紧随其后 ── -->
@@ -2232,18 +2237,13 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
       <!-- 高级设置 · 运行参数 -->
       <div class="set-pane" id="setPaneRuntime" style="display:none;">
         <div class="set-fg">
-          <label for="setToolFeedback">工具反馈最大字符数 <span class="set-hint-inline">（MAX_TOOL_FEEDBACK_CHARS，单次工具结果回灌给模型的截断上限，默认 4000；编程相关任务建议用 24000）</span></label>
-          <input type="number" id="setToolFeedback" placeholder="4000" min="200">
+          <label for="setToolFeedback">工具反馈最大字符数 <span class="set-hint-inline">（MAX_TOOL_FEEDBACK_CHARS，单次工具结果回灌给模型的截断上限，默认 24000；上下文吃紧时可调小）</span></label>
+          <input type="number" id="setToolFeedback" placeholder="24000" min="200">
         </div>
 
         <div class="set-fg">
           <label for="setMaxTokens">LLM 单次最大 tokens <span class="set-hint-inline">（LLM_MAX_TOKENS，模型单次回复的最大输出长度，留空=默认 16384）</span></label>
           <input type="number" id="setMaxTokens" placeholder="（留空=默认 16384）" min="1">
-        </div>
-
-        <div class="set-fg">
-          <label for="setTemp">采样温度 <span class="set-hint-inline">（LLM_TEMPERATURE，0~2，越高越发散，留空=默认 0.3）</span></label>
-          <input type="number" id="setTemp" placeholder="（留空=默认 0.3）" min="0" max="2" step="0.1">
         </div>
 
         <div class="set-fg">
@@ -6906,13 +6906,15 @@ fetch('/api/version').then(r => r.json()).then(d => {
   const inBase = document.getElementById('setBase');
   const inKey  = document.getElementById('setKey');
   const inModel= document.getElementById('setModel');
+  const inTemp = document.getElementById('setTemp');
   // Two independent tab groups, each with its own content area shown below it:
   //   • "api"  (LLM 服务)   API 1/2/3 + 顾问 1/2 — share one set of inputs, switching swaps values.
   //   • "general" (通用设置) 其他配置/局域网/运行参数 — each its own pane.
   // Both groups' content is visible at once; only the tabs within a group are exclusive.
-  const tabState = { primary: { base:'', key:'', model:'' }, backup: { base:'', key:'', model:'' },
-                     backup2: { base:'', key:'', model:'' },
-                     advisor1: { base:'', key:'', model:'' }, advisor2: { base:'', key:'', model:'' } };
+  // temp（采样温度）随槽位走：不同模型最佳温度不同，所以它属于「模型」而非全局运行参数。
+  const tabState = { primary: { base:'', key:'', model:'', temp:'' }, backup: { base:'', key:'', model:'', temp:'' },
+                     backup2: { base:'', key:'', model:'', temp:'' },
+                     advisor1: { base:'', key:'', model:'', temp:'' }, advisor2: { base:'', key:'', model:'', temp:'' } };
   // 三个可互为 fallback 的 API 槽位；顾问模型不在其列（只被 consult_advisor 调用）。
   const API_TABS = ['primary', 'backup', 'backup2'];
   const isAdvisorTab = n => n === 'advisor1' || n === 'advisor2';
@@ -6925,8 +6927,8 @@ fetch('/api/version').then(r => r.json()).then(d => {
   // takes effect after the whole dashboard process restarts (not just the agent).
   // Remember what was loaded so we can warn on save only when they actually change.
   let loadedHost = '127.0.0.1', loadedPort = '';
-  const snap = () => { tabState[apiTab].base = inBase.value; tabState[apiTab].key = inKey.value; tabState[apiTab].model = inModel.value; };
-  const loadTab = n => { inBase.value = tabState[n].base; inKey.value = tabState[n].key; inModel.value = tabState[n].model; };
+  const snap = () => { tabState[apiTab].base = inBase.value; tabState[apiTab].key = inKey.value; tabState[apiTab].model = inModel.value; tabState[apiTab].temp = inTemp.value; };
+  const loadTab = n => { inBase.value = tabState[n].base; inKey.value = tabState[n].key; inModel.value = tabState[n].model; inTemp.value = tabState[n].temp; };
   function marks() {
     // 只有「首选 API」的 base/model 为必填；另外两个 API 与顾问模型均可选（留空 = 不启用）。
     const isAdv = isAdvisorTab(apiTab);
@@ -6940,6 +6942,11 @@ fetch('/api/version').then(r => r.json()).then(d => {
     document.getElementById('setHintModel').textContent =
       isAdv ? '（该顾问 endpoint 的 model id）'
             : '（与该 endpoint 返回的 model id 一致，不同 endpoint 通常不同）';
+    // 顾问路径没有「被拒就自动摘掉 temperature」的兜底，留空就干脆不发这个参数，
+    // 免得推理类顾问模型直接 400。主链路留空则用默认 0.8。
+    document.getElementById('setHintTemp').textContent =
+      isAdv ? '（0~2，越高越发散。留空 = 请求里不带该参数，交给顾问模型自己的默认值）'
+            : '（0~2，越高越发散。每个模型各配一份——不同模型的最佳温度不同，留空 = 默认 0.8）';
     // 首选开关：只对三个 API 槽位有意义，顾问 tab 下隐藏
     const pref = document.getElementById('setBtnPref');
     pref.style.display = isAdv ? 'none' : '';
@@ -6986,7 +6993,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
   document.getElementById('setBtnPref').addEventListener('click', () => setPreferred(apiTab));
   document.querySelectorAll('.set-tabs[data-group="api"] .set-tab').forEach(e => e.addEventListener('click', () => switchApiTab(e.dataset.tab)));
   document.querySelectorAll('.set-tabs[data-group="general"] .set-tab').forEach(e => e.addEventListener('click', () => switchGeneralTab(e.dataset.tab)));
-  [inBase, inKey, inModel].forEach(e => e.addEventListener('input', () => { snap(); dots(); }));
+  [inBase, inKey, inModel, inTemp].forEach(e => e.addEventListener('input', () => { snap(); dots(); }));
 
   document.getElementById('setEye').addEventListener('click', () => {
     const p = inKey.type === 'password';
@@ -7033,11 +7040,11 @@ fetch('/api/version').then(r => r.json()).then(d => {
       const res = await fetch('/api/env');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const env = await res.json();
-      tabState.primary = { base: env.OPENAI_BASE_URL || '', key: env.OPENAI_API_KEY || '', model: env.OPENAI_MODEL || '' };
-      tabState.backup  = { base: env.BACKUP_OPENAI_BASE_URL || '', key: env.BACKUP_OPENAI_API_KEY || '', model: env.BACKUP_OPENAI_MODEL || '' };
-      tabState.backup2 = { base: env.BACKUP2_OPENAI_BASE_URL || '', key: env.BACKUP2_OPENAI_API_KEY || '', model: env.BACKUP2_OPENAI_MODEL || '' };
-      tabState.advisor1 = { base: env.ADVISOR1_OPENAI_BASE_URL || '', key: env.ADVISOR1_OPENAI_API_KEY || '', model: env.ADVISOR1_OPENAI_MODEL || '' };
-      tabState.advisor2 = { base: env.ADVISOR2_OPENAI_BASE_URL || '', key: env.ADVISOR2_OPENAI_API_KEY || '', model: env.ADVISOR2_OPENAI_MODEL || '' };
+      tabState.primary = { base: env.OPENAI_BASE_URL || '', key: env.OPENAI_API_KEY || '', model: env.OPENAI_MODEL || '', temp: env.OPENAI_TEMPERATURE || '' };
+      tabState.backup  = { base: env.BACKUP_OPENAI_BASE_URL || '', key: env.BACKUP_OPENAI_API_KEY || '', model: env.BACKUP_OPENAI_MODEL || '', temp: env.BACKUP_OPENAI_TEMPERATURE || '' };
+      tabState.backup2 = { base: env.BACKUP2_OPENAI_BASE_URL || '', key: env.BACKUP2_OPENAI_API_KEY || '', model: env.BACKUP2_OPENAI_MODEL || '', temp: env.BACKUP2_OPENAI_TEMPERATURE || '' };
+      tabState.advisor1 = { base: env.ADVISOR1_OPENAI_BASE_URL || '', key: env.ADVISOR1_OPENAI_API_KEY || '', model: env.ADVISOR1_OPENAI_MODEL || '', temp: env.ADVISOR1_OPENAI_TEMPERATURE || '' };
+      tabState.advisor2 = { base: env.ADVISOR2_OPENAI_BASE_URL || '', key: env.ADVISOR2_OPENAI_API_KEY || '', model: env.ADVISOR2_OPENAI_MODEL || '', temp: env.ADVISOR2_OPENAI_TEMPERATURE || '' };
       // 未设 / 值非法 → 回落到 API 1，与后端 run_goal.preferred_api_slot() 同一套默认
       preferred = API_TABS.includes(env.PREFERRED_API) ? env.PREFERRED_API : 'primary';
       apiTab = preferred; loadTab(preferred); switchApiTab(preferred);
@@ -7054,7 +7061,6 @@ fetch('/api/version').then(r => r.json()).then(d => {
       document.getElementById('setDeny').value         = env.DASHBOARD_DENY || '';
       document.getElementById('setToolFeedback').value = env.MAX_TOOL_FEEDBACK_CHARS || '';
       document.getElementById('setMaxTokens').value    = env.LLM_MAX_TOKENS || '';
-      document.getElementById('setTemp').value         = env.LLM_TEMPERATURE || '';
       document.getElementById('setCtxWindow').value    = env.LLM_CONTEXT_WINDOW || '';
     } catch (e) {
       // Surface the failure instead of silently showing an empty form — most
@@ -7137,6 +7143,18 @@ fetch('/api/version').then(r => r.json()).then(d => {
       }
     }
 
+    // 采样温度：留空合法（走默认），填了就必须是 0~2 的数。
+    for (const n of ['primary', 'backup', 'backup2', 'advisor1', 'advisor2']) {
+      const t = (tabState[n].temp || '').trim();
+      if (!t) continue;
+      const v = Number(t);
+      if (!Number.isFinite(v) || v < 0 || v > 2) {
+        if (apiTab !== n) switchApiTab(n);
+        showMsg('error', '「' + TAB_LABELS[n] + '」的采样温度必须是 0~2 之间的数字（留空则用默认值）');
+        return;
+      }
+    }
+
     // 三个 API 槽位：首选必须配齐 base + model（Agent 起不来的兜底线）；
     // 另外两个可留空不启用，但一旦动过就必须 base + model 成对（key 本地服务可空）。
     const api = {};
@@ -7153,7 +7171,7 @@ fetch('/api/version').then(r => r.json()).then(d => {
         showMsg('error', '「' + TAB_LABELS[n] + '」需要同时填写 base URL 和模型名称（API 密钥可空）');
         return;
       }
-      api[n] = { base: aB, key: any ? (aK || 'local') : '', model: aM };
+      api[n] = { base: aB, key: any ? (aK || 'local') : '', model: aM, temp: (s.temp || '').trim() };
     }
     // 顾问模型 1 / 2：可选；若填写则 base URL 与模型名称必须成对。
     const adv = {};
@@ -7164,27 +7182,32 @@ fetch('/api/version').then(r => r.json()).then(d => {
         showMsg('error', '顾问模型' + n.slice(-1) + ' 需要同时填写 base URL 和模型名称（API 密钥可空）');
         return;
       }
-      adv[n] = { base: aB, key: (aB || aK || aM) ? (aK || 'local') : '', model: aM };
+      adv[n] = { base: aB, key: (aB || aK || aM) ? (aK || 'local') : '', model: aM, temp: (s.temp || '').trim() };
     }
     const proxy = document.getElementById('setProxy').value.trim();
     const data = {
       OPENAI_BASE_URL: api.primary.base,
       OPENAI_API_KEY:  api.primary.key,
       OPENAI_MODEL:    api.primary.model,
+      OPENAI_TEMPERATURE: api.primary.temp,
       BACKUP_OPENAI_BASE_URL: api.backup.base,
       BACKUP_OPENAI_API_KEY:  api.backup.key,
       BACKUP_OPENAI_MODEL:    api.backup.model,
+      BACKUP_OPENAI_TEMPERATURE: api.backup.temp,
       BACKUP2_OPENAI_BASE_URL: api.backup2.base,
       BACKUP2_OPENAI_API_KEY:  api.backup2.key,
       BACKUP2_OPENAI_MODEL:    api.backup2.model,
+      BACKUP2_OPENAI_TEMPERATURE: api.backup2.temp,
       // 空 = 从 .env 删键 = 默认首选 API 1，与后端默认一致
       PREFERRED_API: preferred === 'primary' ? '' : preferred,
       ADVISOR1_OPENAI_BASE_URL: adv.advisor1.base,
       ADVISOR1_OPENAI_API_KEY:  adv.advisor1.key,
       ADVISOR1_OPENAI_MODEL:    adv.advisor1.model,
+      ADVISOR1_OPENAI_TEMPERATURE: adv.advisor1.temp,
       ADVISOR2_OPENAI_BASE_URL: adv.advisor2.base,
       ADVISOR2_OPENAI_API_KEY:  adv.advisor2.key,
       ADVISOR2_OPENAI_MODEL:    adv.advisor2.model,
+      ADVISOR2_OPENAI_TEMPERATURE: adv.advisor2.temp,
       MAX_ITERS:     document.getElementById('setIters').value.trim() || '100',
       INSTANCE_NAME: document.getElementById('setName').value.trim(),
       HTTPS_PROXY:   proxy,
@@ -7197,7 +7220,9 @@ fetch('/api/version').then(r => r.json()).then(d => {
       // 高级设置 —— Agent 运行参数
       MAX_TOOL_FEEDBACK_CHARS: document.getElementById('setToolFeedback').value.trim(),
       LLM_MAX_TOKENS:  document.getElementById('setMaxTokens').value.trim(),
-      LLM_TEMPERATURE: document.getElementById('setTemp').value.trim(),
+      // 温度已按模型拆到各槽位；空值 = 从 .env 删键，顺手清掉旧的全局 LLM_TEMPERATURE，
+      // 否则它会继续压过新的默认值 0.8。
+      LLM_TEMPERATURE: '',
       LLM_CONTEXT_WINDOW: document.getElementById('setCtxWindow').value.trim(),
     };
     const btn = document.getElementById('setSave');

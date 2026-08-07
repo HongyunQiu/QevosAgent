@@ -2097,7 +2097,7 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
     import json as _json
     import hashlib
 
-    max_chars = int(os.environ.get("MAX_TOOL_FEEDBACK_CHARS", "4000"))
+    max_chars = int(os.environ.get("MAX_TOOL_FEEDBACK_CHARS", "24000"))
 
     # ── 重复调用检测（连续 + 滑动窗口频率）────────────────────────────────────
     # 两种循环模式：
