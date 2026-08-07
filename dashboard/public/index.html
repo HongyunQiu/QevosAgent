@@ -480,6 +480,20 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .expand-btn { background:none; border:none; color:var(--blue); font-size:11px; padding:0 12px 7px; display:block; opacity:0.8; }
 .expand-btn:hover { opacity:1; }
 
+/* 事件正文里被识别出来的文件路径 —— 点一下跳到对应的文件浏览器 */
+.path-link {
+  color: var(--blue); cursor: pointer;
+  text-decoration: underline; text-decoration-style: dotted;
+  text-underline-offset: 2px; text-decoration-color: rgba(88,166,255,0.45);
+}
+.path-link:hover { text-decoration-style: solid; background: rgba(88,166,255,0.12); border-radius: 3px; }
+.hl-str .path-link { color: inherit; }
+[data-theme="light"] .path-link       { text-decoration-color: rgba(9,105,218,0.45); }
+[data-theme="light"] .path-link:hover { background: rgba(9,105,218,0.10); }
+/* 跳过去以后闪一下，告诉用户落点在哪 */
+@keyframes ftree-flash { 0%,100% { background: transparent; } 25%,60% { background: rgba(88,166,255,0.32); } }
+.ftree-flash { animation: ftree-flash 1.1s ease-in-out 1; }
+
 .ev-done { background: rgba(227,179,65,0.08); border: 1px solid rgba(227,179,65,0.25); border-radius: 7px; padding: 11px 13px; }
 .ev-done .ev-label { font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--yellow); margin-bottom: 5px; }
 .ev-done .ev-body  { font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
@@ -3447,13 +3461,13 @@ function toggleGoal(btn) {
 // and by the synthesized "active" entry (renderEvents) that sources its text from
 // the authoritative meta.awaiting_input when the short_term parse yields no entry.
 function renderAskUserEntry(question, thought, isActiveAsk) {
-  const thoughtHtml = thought ? `<div class="ev-mini-thought">💭 ${esc(thought)}</div>` : '';
+  const thoughtHtml = thought ? `<div class="ev-mini-thought">💭 ${escPaths(thought)}</div>` : '';
   const activeCls = isActiveAsk ? ' ev-ask-active' : '';
   const awaitHint = isActiveAsk ? `<div class="ev-ask-await">${uiT('ask_user.awaiting')}</div>` : '';
   return `<div class="ev ev-ask-user${activeCls}"${isActiveAsk ? ' id="evAskActive"' : ''}>
     ${thoughtHtml}
     <div class="ev-ask-label">${uiT('ask_user.label')}</div>
-    <div class="ev-ask-q">${esc(question)}</div>
+    <div class="ev-ask-q">${escPaths(question)}</div>
     ${awaitHint}
   </div>`;
 }
@@ -3470,14 +3484,14 @@ function renderEvent(ev, goalHead = '', isActiveAsk = false) {
       if (!head || !remainder) {
         return `<div class="ev ev-goal">
           <div class="ev-label">🎯 Goal<span class="ev-tok">${fmtTok(full)}</span></div>
-          <div class="ev-body">${esc(full)}</div>
+          <div class="ev-body">${escPaths(full)}</div>
         </div>`;
       }
       const exp = gGoalExpanded;
       return `<div class="ev ev-goal">
         <div class="ev-label">🎯 Goal<span class="ev-tok">${fmtTok(full)}</span></div>
-        <div class="ev-body">${esc(head)}</div>
-        <div class="ev-goal-extra" id="goalextra" style="${exp ? '' : 'display:none'}">${esc(remainder)}</div>
+        <div class="ev-body">${escPaths(head)}</div>
+        <div class="ev-goal-extra" id="goalextra" style="${exp ? '' : 'display:none'}">${escPaths(remainder)}</div>
         <button class="expand-btn" onclick="toggleGoal(this)">${exp ? '▲ show less' : '▼ show more'}</button>
       </div>`;
     }
@@ -3491,14 +3505,14 @@ function renderEvent(ev, goalHead = '', isActiveAsk = false) {
     }
     case 'thought':
       if (!ev.thought) return '';
-      return `<div class="ev ev-thought"><div class="ev-body">💭 ${esc(ev.thought)}</div></div>`;
+      return `<div class="ev ev-thought"><div class="ev-body">💭 ${escPaths(ev.thought)}</div></div>`;
     case 'tool_call': {
       if (ev.tool === 'ask_user') {
         const q = (ev.args && ev.args.question) || fmtArgs(ev.args || {});
         return renderAskUserEntry(q, ev.thought, isActiveAsk);
       }
       const argsHL  = fmtArgsHL(ev.args || {});
-      const thought = ev.thought ? `<div class="ev-mini-thought">💭 ${esc(ev.thought)}</div>` : '';
+      const thought = ev.thought ? `<div class="ev-mini-thought">💭 ${escPaths(ev.thought)}</div>` : '';
       return `<div class="ev ev-tool-call">
         ${thought}
         <div class="ev-header"><span class="ev-arrow">⚡</span><span class="tool-name-badge">${esc(ev.tool)}</span></div>
@@ -3522,9 +3536,9 @@ function renderEvent(ev, goalHead = '', isActiveAsk = false) {
       </div>`;
     }
     case 'done':
-      return `<div class="ev ev-done"><div class="ev-label">✓ Task complete</div><div class="ev-body">${esc(ev.answer || '')}</div></div>`;
+      return `<div class="ev ev-done"><div class="ev-label">✓ Task complete</div><div class="ev-body">${escPaths(ev.answer || '')}</div></div>`;
     case 'error':
-      return `<div class="ev ev-error"><div class="ev-body">✗ ${esc(ev.text || 'Error occurred')}</div></div>`;
+      return `<div class="ev ev-error"><div class="ev-body">✗ ${escPaths(ev.text || 'Error occurred')}</div></div>`;
     case 'advisor': {
       // Find the matching advisor_log entry index for this in-timeline advisor
       // event. They appear in chronological order, so we pop the next queued
@@ -3576,7 +3590,7 @@ function renderEvent(ev, goalHead = '', isActiveAsk = false) {
         </div>
         <details class="adv-inline" ${adviceOpenAttr} ${advToggle}>
           <summary class="adv-inline-sum">Advice <span class="adv-inline-hint">— advisor's strategic guidance</span></summary>
-          <div class="ev-body adv-inline-body" id="${adviceUid}">${esc(ev.text || '')}</div>
+          <div class="ev-body adv-inline-body" id="${adviceUid}">${escPaths(ev.text || '')}</div>
         </details>
         <details class="adv-inline"${contextOpenAttr} ${ctxToggle}>
           <summary class="adv-inline-sum">User Context <span class="adv-inline-hint">— what the advisor saw ${lazyHint}</span></summary>
@@ -3589,16 +3603,16 @@ function renderEvent(ev, goalHead = '', isActiveAsk = false) {
       </div>`;
     }
     case 'injected':
-      return `<div class="ev ev-injected"><span class="arrow">→</span><span class="cmd">${esc(ev.text)}</span></div>`;
+      return `<div class="ev ev-injected"><span class="arrow">→</span><span class="cmd">${escPaths(ev.text)}</span></div>`;
     case 'user_answer':
-      return `<div class="ev ev-user-answer"><div class="ev-body">👤 ${esc(trunc(ev.text || '', 300))}</div></div>`;
+      return `<div class="ev ev-user-answer"><div class="ev-body">👤 ${escPaths(trunc(ev.text || '', 300))}</div></div>`;
     case 'user_msg': {
       const t = ev.text;
       if (!t || t.length < 4) return '';
-      return `<div class="ev ev-user-msg"><div class="ev-body">${esc(trunc(t, 300))}</div></div>`;
+      return `<div class="ev ev-user-msg"><div class="ev-body">${escPaths(trunc(t, 300))}</div></div>`;
     }
     case 'env_obs':
-      return `<div class="ev ev-env-obs"><div class="ev-body">🌸 ${esc(trunc(ev.text || '', 300))}</div></div>`;
+      return `<div class="ev ev-env-obs"><div class="ev-body">🌸 ${escPaths(trunc(ev.text || '', 300))}</div></div>`;
     default: return '';
   }
 }
@@ -4092,7 +4106,8 @@ function syntaxHL(jsonStr) {
       const tail = m[0].slice(quoted.length);
       out += `<span class="hl-key">${esc(quoted)}</span>${esc(tail)}`;
     } else if (m[2] !== undefined) {
-      out += `<span class="hl-str">${esc(m[0])}</span>`;
+      // 整个字符串值就是一条路径时把它变成链接（tool_call 的 path/output_path 参数）
+      out += `<span class="hl-str">&quot;${escPathWhole(m[2])}&quot;</span>`;
     } else if (m[3] !== undefined) {
       out += `<span class="hl-num">${esc(m[3])}</span>`;
     } else if (m[4] !== undefined) {
@@ -4121,13 +4136,106 @@ function fmtOutputHL(text) {
       return syntaxHL(JSON.stringify(parsed, null, 2));
     } catch {}
   }
-  return esc(text);
+  return escPaths(text);
 }
 
 function esc(str) {
   return String(str)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+// ── 事件正文里的文件路径 → 可点链接 ────────────────────────────────────────
+// 只认"带分隔符 + 末段有像样后缀"的 token（或以分隔符结尾的目录），所以 4/5、
+// 2026/08/07、and/or、https://… 这类都不会被误伤。命中后交给 openPathLink()：
+// 属于当前这轮 run 的跳 Run Files 并选中，其余的开一个独立的链接文件浏览器。
+const _PATH_SEG = '[\\w.+\\-@#\\u4e00-\\u9fff]+';
+const _PATH_RE  = new RegExp(
+  '(?:[A-Za-z]:[\\\\/]|~[\\\\/]|\\.{1,2}[\\\\/]|/)?' +   // 可选的根：盘符 / ~ / ./ ../ /
+  '(?:' + _PATH_SEG + '[\\\\/])+' +                       // 至少一级目录
+  _PATH_SEG + '[\\\\/]?', 'g');
+const _PATH_TAIL_PUNCT = /[.,;:!?)\]}>"'`，。；：！？）】》、]+$/;
+
+// 把一次匹配收敛成真正的路径；不像路径就返回 null。
+function _pathCandidate(tok) {
+  const s = String(tok).replace(_PATH_TAIL_PUNCT, '');
+  if (!s || !/[\\/]/.test(s)) return null;
+  if (/[\\/]$/.test(s)) return s;                       // 目录（以分隔符结尾）
+  const ext = (s.split(/[\\/]/).pop().match(/\.([A-Za-z0-9]{1,8})$/) || [])[1];
+  if (!ext || !/[A-Za-z]/.test(ext)) return null;       // 没后缀、或后缀纯数字（1.5/2.0）
+  return s;
+}
+
+function _pathLinkHTML(p, label) {
+  return `<span class="path-link" data-p="${esc(p)}" title="在文件浏览器中打开：${esc(p)}"`
+       + ` onclick="openPathLink(this.dataset.p)">${esc(label == null ? p : label)}</span>`;
+}
+
+/** esc() 的加强版：转义之余把路径变成链接。非匹配部分照常转义，绝不在 HTML 上跑正则。 */
+function escPaths(str) {
+  const s = String(str == null ? '' : str);
+  if (!s || s.length > 300000) return esc(s);            // 超大输出不值得扫
+  _PATH_RE.lastIndex = 0;
+  let out = '', last = 0, m;
+  while ((m = _PATH_RE.exec(s)) !== null) {
+    if (m[0] === '') { _PATH_RE.lastIndex++; continue; }
+    const prev = s.charAt(m.index - 1);
+    const p    = (prev === '/' || prev === '\\') ? null : _pathCandidate(m[0]);
+    if (!p) continue;                                    // URL 尾巴 / 不像路径 → 原样输出
+    out += esc(s.slice(last, m.index)) + _pathLinkHTML(p);
+    last = m.index + p.length;
+    _PATH_RE.lastIndex = last;
+  }
+  return out + esc(s.slice(last));
+}
+
+/** JSON 字符串值专用：整个值就是一条路径才连接。传进来的是 JSON 字面量原文，
+ *  所以 `\\` 才是真正的反斜杠，落单的 `\n` `\t` 是转义符 —— 含这种转义的一律
+ *  放弃（否则 "line1\nrun.py" 会被当成 line1\nrun.py 这条"路径"）。链接指向
+ *  反转义后的真路径，显示的仍是字面量原文。 */
+function escPathWhole(str) {
+  const s = String(str == null ? '' : str);
+  if (!s || s.length > 4096) return esc(s);
+  if (/(?:^|[^\\])(?:\\\\)*\\[^\\]/.test(s)) return esc(s);
+  const real = s.replace(/\\\\/g, '\\');
+  _PATH_RE.lastIndex = 0;
+  const m = _PATH_RE.exec(real);
+  if (!m || m.index !== 0 || m[0].length !== real.length) return esc(s);
+  const p = _pathCandidate(real);
+  return p && p.length === real.length ? _pathLinkHTML(p, s) : esc(s);
+}
+
+// /api/fs/roots 只为拿 agentDir / home 解析相对路径，取一次就够
+let _fsRootsCache = null;
+async function _getFsRoots() {
+  if (_fsRootsCache) return _fsRootsCache;
+  try { _fsRootsCache = await fetch('/api/fs/roots').then(r => r.json()) || {}; }
+  catch { _fsRootsCache = {}; }
+  return _fsRootsCache;
+}
+
+/** 点击路径链接的总入口。 */
+async function openPathLink(raw) {
+  const p = String(raw || '').trim();
+  if (!p) return;
+  const norm = p.replace(/\\+/g, '/').replace(/^\.\//, '');
+
+  // 本轮 run 里的文件 → Run Files 面板（历史 run 的路径不算，走文件浏览器）
+  const m = norm.match(/(?:^|\/)runs\/(\d{8}-\d{6})\/(.+)$/);
+  if (m && gViewRunId && m[1] === gViewRunId) {
+    const rel = m[2].replace(/\/+$/, '');
+    if (await revealInRunFiles(rel)) return;
+  }
+
+  const roots = await _getFsRoots();
+  const slash = s => String(s || '').replace(/\\+/g, '/').replace(/\/+$/, '');
+  let abs = norm;
+  if (/^~\//.test(norm))                    abs = slash(roots.home || '~') + norm.slice(1);
+  else if (/^([A-Za-z]:\/|\/)/.test(norm))  abs = norm;
+  // runs/... 走 RUNS_DIR（可能被环境变量指到别处），其余相对路径以项目根为准
+  else if (m && roots.runsDir)              abs = slash(roots.runsDir) + '/' + norm.replace(/^.*?runs\//, '');
+  else                                      abs = slash(roots.agentDir || '.') + '/' + norm;
+  return openPathInFsBrowser(abs);
 }
 
 function trunc(str, max) {
@@ -5802,7 +5910,7 @@ function renderFileTree(files, runId) {
       html += `<div class="ftree-dir" style="padding-left:${pad}px">📁 ${esc(name)}</div>`;
     } else {
       const sel = f.path === gSelectedFile ? ' selected' : '';
-      html += `<div class="ftree-file${sel}" style="padding-left:${pad}px"
+      html += `<div class="ftree-file${sel}" style="padding-left:${pad}px" data-path="${esc(f.path)}"
           onclick="selectRunFile(${esc(JSON.stringify(runId))},${esc(JSON.stringify(f.path))},this)">
           <span class="ftree-name">${esc(name)}</span>
           <span class="ftree-size">${fmtSize(f.size)}</span>
@@ -5810,6 +5918,46 @@ function renderFileTree(files, runId) {
     }
   }
   tree.innerHTML = html;
+  if (_pendingRunReveal) _applyRunReveal(runId);
+}
+
+// ── 路径链接 → Run Files 定位 ──────────────────────────────────────────────
+// setCenterTab('files') 自己会发一次 loadRunFiles，我们再 await 一次，两次渲染
+// 谁后到都行：定位动作挂在 renderFileTree 末尾，命中即清 pending。
+let _pendingRunReveal = null;
+
+function _applyRunReveal(runId) {
+  const rel  = _pendingRunReveal;
+  const tree = document.getElementById('filesTree');
+  if (!rel || !tree) return false;
+  const rows = [...tree.querySelectorAll('.ftree-file')];
+  const el = rows.find(r => r.dataset.path === rel)
+          || rows.find(r => (r.dataset.path || '').toLowerCase() === rel.toLowerCase());
+  if (!el) return false;
+  _pendingRunReveal = null;
+  el.scrollIntoView({ block: 'center' });
+  el.classList.add('ftree-flash');
+  setTimeout(() => el.classList.remove('ftree-flash'), 1200);
+  // 切标签页会再渲染一次树，这时内容已经加载好了，别再拉一遍文件
+  if (gFilesRunId !== runId || gFilesPath !== el.dataset.path) selectRunFile(runId, el.dataset.path, el);
+  return true;
+}
+
+/** 返回是否真的定位到了文件；没找到（比如是目录、或文件不在本轮 run 里）返回 false。
+ *  先在后台把树渲染出来确认命中，再切标签页——否则找不到时会先跳一下 Run Files
+ *  再跳文件浏览器，白闪一下。切过去会再触发一次 loadRunFiles，所以重新武装
+ *  pending，让最后落地的那次渲染负责滚动 + 高亮。 */
+async function revealInRunFiles(rel) {
+  _pendingRunReveal = rel;
+  await loadRunFiles();
+  const ok = !_pendingRunReveal;
+  _pendingRunReveal = null;
+  if (ok) {
+    _pendingRunReveal = rel;
+    setCenterTab('files');
+    setTimeout(() => { if (_pendingRunReveal === rel) _pendingRunReveal = null; }, 3000);
+  }
+  return ok;
 }
 
 let gFilesContent  = '';
@@ -6329,6 +6477,81 @@ function downloadDirFile(id) {
   });
   document.body.appendChild(a); a.click();
   document.body.removeChild(a); URL.revokeObjectURL(a.href);
+}
+
+// ── 链接文件浏览器（路径链接专用，独立于用户自己开的目录标签页）─────────────
+// 复用 dir-tab 那一整套渲染/预览/编辑逻辑（它们都只认一个 id），但故意不进
+// gDirTabs、不打 /api/file-tab：
+//   · updateFilesTabsFromState() 每次广播都会把 gDirTabs 全拆了重建，混进去
+//     就会被反复销毁，选中的文件也没了；
+//   · 它是"跟着链接走"的临时视图，不该被持久化成用户的目录标签页。
+// 所有路径链接共用这一个标签页（换路径就地导航），不会越点越多。
+const FSVIEW_ID = 'fsview';
+
+function ensureFsBrowserTab() {
+  if (document.getElementById('cpane-' + FSVIEW_ID)) return;
+  gDirTabState[FSVIEW_ID] = { content:'', filePath:'', rawUrl:'', preview:true,
+                              editMode:false, cmEditor:null, selectedFile:'', currentDir:'' };
+
+  const strip = document.querySelector('.center-tab-strip');
+  const btn = document.createElement('button');
+  btn.className = 'center-tab'; btn.id = 'ctab-' + FSVIEW_ID;
+  btn.innerHTML = '🔗 <span class="fsview-label">Files</span> <span class="ctab-close" title="Close tab">✕</span>';
+  btn.querySelector('.ctab-close').addEventListener('click', e => { e.stopPropagation(); closeFsBrowserTab(); });
+  btn.addEventListener('click', () => setCenterTab(FSVIEW_ID));
+  strip.insertBefore(btn, strip.querySelector('#ctab-addDir') || strip.querySelector('.bar-gap'));
+
+  const pane = document.createElement('div');
+  pane.className = 'center-pane'; pane.id = 'cpane-' + FSVIEW_ID;
+  pane.innerHTML = _dirPaneHTML(FSVIEW_ID, 'Files', '');
+  document.querySelector('.events-panel').appendChild(pane);
+}
+
+function closeFsBrowserTab() {
+  const s = gDirTabState[FSVIEW_ID];
+  if (s?.cmEditor) { s.cmEditor.destroy(); s.cmEditor = null; }
+  const codeHost = document.getElementById(FSVIEW_ID + '-code');
+  if (codeHost?.__cm6) { codeHost.__cm6.destroy(); codeHost.__cm6 = null; }
+  delete gDirTabState[FSVIEW_ID];
+  document.getElementById('ctab-'  + FSVIEW_ID)?.remove();
+  document.getElementById('cpane-' + FSVIEW_ID)?.remove();
+  if (gCenterTab === FSVIEW_ID) setCenterTab('events');
+}
+
+/** 在链接文件浏览器里打开一个绝对路径：目录就列出来，文件就列父目录并选中它。 */
+async function openPathInFsBrowser(absPath) {
+  const raw = String(absPath || '');
+  const p   = raw.replace(/\/+$/, '') || raw;
+  const tail = p.split('/').pop() || '';
+  let dir = p, file = '';
+  if (/\/$/.test(raw)) {
+    /* 以分隔符结尾，肯定是目录 */
+  } else if (/\.[A-Za-z0-9]{1,8}$/.test(tail)) {
+    dir = p.replace(/\/[^/]*$/, '') || p; file = p;      // 带后缀，当文件处理
+  } else {
+    // 分不清就问一次：目录能 list，文件会 400
+    try {
+      const r = await fetch('/api/fs/list?path=' + encodeURIComponent(p)).then(r => r.json());
+      if (r.error) { dir = p.replace(/\/[^/]*$/, '') || p; file = p; }
+    } catch { dir = p.replace(/\/[^/]*$/, '') || p; file = p; }
+  }
+
+  ensureFsBrowserTab();
+  const lbl = document.querySelector('#ctab-' + FSVIEW_ID + ' .fsview-label');
+  if (lbl) lbl.textContent = (file || dir).split('/').pop() || dir;
+  setCenterTab(FSVIEW_ID);
+  await loadDirTabFiles(FSVIEW_ID, dir);
+  if (!file) return;
+
+  const norm = s => String(s || '').replace(/\\+/g, '/');
+  const rows = [...document.querySelectorAll('#' + FSVIEW_ID + '-tree .ftree-file')];
+  const el = rows.find(r => norm(r.dataset.fullpath) === norm(file))
+          || rows.find(r => norm(r.dataset.fullpath).toLowerCase() === norm(file).toLowerCase());
+  if (!el) { toast('✗ 找不到文件：' + file); return; }
+  el.scrollIntoView({ block: 'center' });
+  el.classList.add('ftree-flash');
+  setTimeout(() => el.classList.remove('ftree-flash'), 1200);
+  selectDirTabFile(FSVIEW_ID, el);
 }
 
 // ── Dir-tab right-click: upload / download ────────────────────────────────

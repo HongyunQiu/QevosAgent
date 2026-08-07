@@ -3350,6 +3350,7 @@ const server = http.createServer(async (req, res) => {
         home: os.homedir(),
         cwd:  process.cwd(),
         agentDir: AGENT_DIR,
+        runsDir:  RUNS_DIR,
         sep:  path.sep,
       });
     } catch (e) { return json(400, { error: String(e.message) }); }
