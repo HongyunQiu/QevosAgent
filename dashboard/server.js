@@ -1935,6 +1935,18 @@ const MIME = {
   '.svg':  'image/svg+xml',
   '.mp4':  'video/mp4',
   '.webm': 'video/webm',
+  '.m4v':  'video/mp4',
+  '.ogv':  'video/ogg',
+  '.mov':  'video/quicktime',
+  '.mkv':  'video/x-matroska',
+  '.mp3':  'audio/mpeg',
+  '.wav':  'audio/wav',
+  '.ogg':  'audio/ogg',
+  '.oga':  'audio/ogg',
+  '.opus': 'audio/ogg',
+  '.m4a':  'audio/mp4',
+  '.aac':  'audio/aac',
+  '.flac': 'audio/flac',
   '.mjs':  'application/javascript; charset=utf-8',
   '.map':  'application/json',
   '.wasm': 'application/wasm',
@@ -1943,6 +1955,35 @@ const MIME = {
   '.ttf':   'font/ttf',
   '.otf':   'font/otf',
 };
+
+// 带 Range 的文件响应。视频/音频要能拖进度条，浏览器就得拿到 Accept-Ranges 和
+// 206；顺便把整文件 readFileSync 换成流，几百 MB 的录屏不会再整个读进内存。
+function serveFileRanged(req, res, filePath) {
+  let st;
+  try { st = fs.statSync(filePath); } catch (e) { res.writeHead(404); res.end(String(e)); return; }
+  if (!st.isFile()) { res.writeHead(404); res.end('not a file'); return; }
+  const mime = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+  const base = { 'Content-Type': mime, 'Cache-Control': 'no-cache', 'Accept-Ranges': 'bytes' };
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || '').trim());
+
+  if (m && (m[1] || m[2])) {
+    // bytes=N-M / bytes=N- / bytes=-N（末尾 N 字节）
+    const start = m[1] ? parseInt(m[1], 10) : Math.max(0, st.size - parseInt(m[2], 10));
+    const end   = m[1] ? (m[2] ? parseInt(m[2], 10) : st.size - 1) : st.size - 1;
+    if (!(start >= 0 && start <= end && end < st.size)) {
+      res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }); res.end(); return;
+    }
+    res.writeHead(206, { ...base, 'Content-Range': `bytes ${start}-${end}/${st.size}`,
+                                  'Content-Length': end - start + 1 });
+    if (req.method === 'HEAD') { res.end(); return; }
+    fs.createReadStream(filePath, { start, end }).pipe(res);
+    return;
+  }
+
+  res.writeHead(200, { ...base, 'Content-Length': st.size });
+  if (req.method === 'HEAD') { res.end(); return; }
+  fs.createReadStream(filePath).pipe(res);
+}
 
 // ── 文本嗅探 ────────────────────────────────────────────────────────────────
 // 文件浏览器过去按后缀白名单决定能不能预览，于是 .rules / .inc / .gcode /
@@ -3231,11 +3272,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(403); res.end('forbidden'); return;
     }
     try {
-      const ext = path.extname(fullPath).toLowerCase();
-      const mime = MIME[ext] || 'application/octet-stream';
-      const data = fs.readFileSync(fullPath);
-      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
-      res.end(data);
+      serveFileRanged(req, res, fullPath);
     } catch (e) {
       res.writeHead(e.code === 'ENOENT' ? 404 : 500); res.end(String(e));
     }
@@ -3383,11 +3420,7 @@ const server = http.createServer(async (req, res) => {
       const u        = new URL(req.url, 'http://x');
       const filePath = u.searchParams.get('path');
       if (!filePath) { res.writeHead(400); res.end('path required'); return; }
-      const ext  = path.extname(filePath).toLowerCase();
-      const mime = MIME[ext] || 'application/octet-stream';
-      const data = fs.readFileSync(filePath);
-      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
-      res.end(data);
+      serveFileRanged(req, res, filePath);
     } catch (e) { res.writeHead(404); res.end(String(e)); }
     return;
   }

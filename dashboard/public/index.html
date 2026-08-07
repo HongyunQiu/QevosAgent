@@ -1442,6 +1442,18 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 .img-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .img-preview svg { max-width: 100%; max-height: 100%; }
 
+/* ── Video / audio preview ───────────────────────────────────────────────── */
+.media-preview {
+  flex: 1; overflow: auto; min-height: 0; padding: 16px; background: var(--bg);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+}
+.media-preview video { max-width: 100%; max-height: 100%; background: #000; border-radius: 6px; }
+.media-preview audio { width: min(560px, 100%); }
+.media-err {
+  font-size: 12px; color: var(--red); text-align: center; line-height: 1.6;
+  max-width: 520px; word-break: break-all;
+}
+
 /* ── HTML iframe preview ─────────────────────────────────────────────────── */
 .html-preview {
   flex: 1; border: none; width: 100%; min-height: 0; background: #fff;
@@ -2039,6 +2051,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
           <div class="md-render" id="filesMdView" style="display:none"></div>
           <div class="json-render" id="filesJsonView" style="display:none"></div>
           <div class="img-preview" id="filesImageView" style="display:none"><img id="filesImageEl" alt=""></div>
+          <div class="media-preview" id="filesMediaView" style="display:none"></div>
           <iframe class="html-preview" id="filesHtmlView" style="display:none" sandbox="allow-scripts allow-same-origin"></iframe>
           <div class="csv-render" id="filesCsvView" style="display:none"></div>
           <div class="code-render" id="filesCodeView" style="display:none"></div>
@@ -4302,6 +4315,9 @@ function setCenterTab(name) {
   document.querySelectorAll('.center-pane').forEach(pane => {
     pane.classList.toggle('active', pane.id === 'cpane-' + name);
   });
+  // 切走的面板里还在放的视频/音频要暂停 —— 只暂停不拆，回来还停在原来那一帧
+  document.querySelectorAll('.center-pane:not(.active) video, .center-pane:not(.active) audio')
+          .forEach(el => { try { el.pause(); } catch {} });
   document.getElementById('autoScrollBtn').style.display = name === 'events' ? '' : 'none';
   if (name === 'agentsmd')       loadProfileTab('agents');
   if (name === 'graph')          renderGraph(gAdvisorView || gState);
@@ -5972,6 +5988,11 @@ let gCmEditor      = null;
 // 只有图片还按后缀判断（要走 <img> 而不是解码成文本）。文本/二进制不再看后缀，
 // 由后端嗅探字节内容决定：拿到 {binary:true} 才显示"二进制"占位。
 const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp','ico','tiff']);
+// 视频/音频同理走 <video>/<audio> + raw URL，别去解码成文本。能不能真的放得动
+// 取决于浏览器的解码器（mov/mkv 常常不行），放不了时元素 error 事件里给提示。
+const VIDEO_EXTS = new Set(['mp4','webm','ogv','mov','m4v','mkv']);
+const AUDIO_EXTS = new Set(['mp3','wav','ogg','oga','opus','m4a','aac','flac']);
+const isMediaExt = ext => VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext);
 
 // 两种情况能看不能编辑，否则保存会毁文件：
 //   非 UTF-8（GBK、UTF-16…）——/api/fs/write 只写 UTF-8，等于偷偷换了编码；
@@ -6080,11 +6101,12 @@ async function selectRunFile(runId, filePath, el) {
   pathEl.style.display = '';
 
   const ext = filePath.split('.').pop().toLowerCase();
-  if (IMG_EXTS.has(ext)) {
+  if (IMG_EXTS.has(ext) || isMediaExt(ext)) {
     gFilesContent = '';
     gFilesRawUrl  = `/api/run-file-raw/${encodeURIComponent(runId)}/${filePath}`;
-    document.getElementById('filesView').innerHTML = '<span class="files-placeholder">[binary image]</span>';
+    document.getElementById('filesView').innerHTML = '<span class="files-placeholder">[binary]</span>';
     applyPreview('', gFilesPath, gFilesPreview);
+    _updateFilesToolbar(false);
     return;
   }
   document.getElementById('filesView').innerHTML = '<span class="files-placeholder">Loading…</span>';
@@ -6119,21 +6141,55 @@ function fmtSize(bytes) {
 const RUN_CTX = {
   view:'filesView', md:'filesMdView', json:'filesJsonView',
   imgDiv:'filesImageView', imgEl:'filesImageEl', html:'filesHtmlView',
-  csv:'filesCsvView', code:'filesCodeView', editor:'filesEditor'
+  csv:'filesCsvView', code:'filesCodeView', editor:'filesEditor',
+  media:'filesMediaView'
 };
 function dirCtx(id) {
   return {
     view:id+'-view', md:id+'-md', json:id+'-json',
     imgDiv:id+'-imgDiv', imgEl:id+'-imgEl', html:id+'-html',
-    csv:id+'-csv', code:id+'-code', editor:id+'-editor'
+    csv:id+'-csv', code:id+'-code', editor:id+'-editor',
+    media:id+'-media'
   };
 }
+
+// 挂载 <video>/<audio>。同一个 URL 不重挂，否则每次切 Preview 都从头开始播。
+function _mountMedia(host, url, kind, filePath) {
+  if (host.dataset.src === url && host.firstElementChild) return;
+  _stopMedia(host);
+  host.dataset.src = url;
+  const el = document.createElement(kind);
+  el.controls = true; el.preload = 'metadata'; el.src = url;
+  const err = document.createElement('div');
+  err.className = 'media-err'; err.style.display = 'none';
+  err.textContent = '这个文件浏览器放不动（多半是编码不支持，例如 mkv/mov 里的 H.265）'
+                  + ' —— 用工具栏的 ↓ Download 存下来本地播放';
+  el.addEventListener('error', () => { err.style.display = ''; });
+  host.appendChild(el); host.appendChild(err);
+}
+// 切走时必须停掉，否则藏起来的 <audio> 还在响、<video> 还在后台下载。
+function _stopMedia(host) {
+  const el = host && host.querySelector('video,audio');
+  if (el) { try { el.pause(); el.removeAttribute('src'); el.load(); } catch {} }
+  if (host) { host.dataset.src = ''; host.innerHTML = ''; }
+}
+
 function applyPreviewCtx(ctx, content, filePath, preview, rawUrl) {
   const g   = k => document.getElementById(ctx[k]);
   const ext = (filePath || '').split('.').pop().toLowerCase();
-  const all = ['view','md','json','imgDiv','html','csv','code','editor'].map(k => g(k)).filter(Boolean);
-  const showOnly = el => { all.forEach(e => e.style.display = 'none'); if (el) el.style.display = ''; };
+  const all = ['view','md','json','imgDiv','html','csv','code','editor','media'].map(k => g(k)).filter(Boolean);
+  const showOnly = el => {
+    const med = g('media');
+    if (med && med !== el) _stopMedia(med);
+    all.forEach(e => e.style.display = 'none');
+    if (el) el.style.display = '';
+  };
   if (IMG_EXTS.has(ext)) { if (g('imgEl') && rawUrl) g('imgEl').src = rawUrl; showOnly(g('imgDiv')); return; }
+  // 图片和媒体一样无视 Preview 开关：关掉也没有"源码"可看
+  if (isMediaExt(ext) && rawUrl && g('media')) {
+    _mountMedia(g('media'), rawUrl, AUDIO_EXTS.has(ext) ? 'audio' : 'video', filePath);
+    showOnly(g('media')); return;
+  }
   if (!preview || !content) { showOnly(g('view')); return; }
   if (ext === 'svg') { g('imgDiv').innerHTML = content; showOnly(g('imgDiv')); return; }
   if (ext === 'html' || ext === 'htm') { g('html').srcdoc = content; showOnly(g('html')); return; }
@@ -6189,7 +6245,8 @@ function toggleFilesEdit() {
   document.getElementById('filesCancelBtn').style.display = '';
   document.getElementById('filesRenderBtn').style.display = 'none';
   const ed = document.getElementById('filesEditor');
-  ['filesView','filesMdView','filesJsonView','filesImageView','filesHtmlView','filesCsvView','filesCodeView']
+  _stopMedia(document.getElementById('filesMediaView'));
+  ['filesView','filesMdView','filesJsonView','filesImageView','filesHtmlView','filesCsvView','filesCodeView','filesMediaView']
     .forEach(id => document.getElementById(id).style.display = 'none');
   ed.style.display = '';
   ed.innerHTML = '';
@@ -6250,6 +6307,7 @@ function _dirPaneHTML(id, label, dirPath) {
       <div class="md-render"   id="${id}-md"   style="display:none"></div>
       <div class="json-render" id="${id}-json" style="display:none"></div>
       <div class="img-preview" id="${id}-imgDiv" style="display:none"><img id="${id}-imgEl" alt=""></div>
+      <div class="media-preview" id="${id}-media" style="display:none"></div>
       <iframe class="html-preview" id="${id}-html" style="display:none" sandbox="allow-scripts allow-same-origin"></iframe>
       <div class="csv-render"  id="${id}-csv"  style="display:none"></div>
       <div class="code-render" id="${id}-code" style="display:none"></div>
@@ -6300,6 +6358,7 @@ async function closeDirTab(id) {
   if (st?.cmEditor) { st.cmEditor.destroy(); st.cmEditor = null; }
   const codeHost = document.getElementById(id + '-code');
   if (codeHost?.__cm6) { codeHost.__cm6.destroy(); codeHost.__cm6 = null; }
+  _stopMedia(document.getElementById(id + '-media'));
   delete gDirTabState[id];
   document.getElementById('ctab-' + id)?.remove();
   document.getElementById('cpane-' + id)?.remove();
@@ -6376,7 +6435,7 @@ async function selectDirTabFile(id, el) {
   pb.textContent = fullPath; pb.style.display = '';
 
   const ext = fullPath.split('.').pop().toLowerCase();
-  if (IMG_EXTS.has(ext)) {
+  if (IMG_EXTS.has(ext) || isMediaExt(ext)) {
     s.content = '';
     applyPreviewCtx(dirCtx(id), '', fullPath, s.preview, s.rawUrl);
     document.getElementById(id + '-editBtn').style.display = 'none';
@@ -6419,7 +6478,8 @@ function toggleDirEdit(id) {
   document.getElementById(id+'-cancelBtn').style.display = '';
   document.getElementById(id+'-renderBtn').style.display = 'none';
   const ed = document.getElementById(id + '-editor');
-  ['view','md','json','imgDiv','html','csv','code'].forEach(k => {
+  _stopMedia(document.getElementById(id + '-media'));
+  ['view','md','json','imgDiv','html','csv','code','media'].forEach(k => {
     const el = document.getElementById(id+'-'+k); if (el) el.style.display = 'none';
   });
   ed.style.display = '';
@@ -6470,10 +6530,13 @@ function _exitDirEditMode(id) {
 
 function downloadDirFile(id) {
   const s = gDirTabState[id];
-  if (!s || !s.content || !s.filePath) return;
+  if (!s || !s.filePath) return;
+  const name = s.filePath.split(/[/\\]/).pop();
+  // 二进制（图片/视频/音频）没有 s.content，直接从服务端取原始字节
+  if (!s.content) { downloadFsFile(s.filePath); return; }
   const blob = new Blob([s.content], { type: 'text/plain' });
   const a = Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(blob), download: s.filePath.split(/[/\\]/).pop()
+    href: URL.createObjectURL(blob), download: name
   });
   document.body.appendChild(a); a.click();
   document.body.removeChild(a); URL.revokeObjectURL(a.href);
@@ -6512,6 +6575,7 @@ function closeFsBrowserTab() {
   if (s?.cmEditor) { s.cmEditor.destroy(); s.cmEditor = null; }
   const codeHost = document.getElementById(FSVIEW_ID + '-code');
   if (codeHost?.__cm6) { codeHost.__cm6.destroy(); codeHost.__cm6 = null; }
+  _stopMedia(document.getElementById(FSVIEW_ID + '-media'));
   delete gDirTabState[FSVIEW_ID];
   document.getElementById('ctab-'  + FSVIEW_ID)?.remove();
   document.getElementById('cpane-' + FSVIEW_ID)?.remove();
