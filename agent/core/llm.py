@@ -129,6 +129,11 @@ class LLMBackend(ABC):
     # Normalized finish reason of the most recent call ("length" = truncated).
     last_finish_reason: Optional[str] = None
 
+    # Per-token logprobs of the most recent *main* call (complete 才填，轻量调用
+    # 不填)：[(token_bytes, logprob), ...]；服务端不支持/未请求时为 None。
+    # 快照约定同 last_finish_reason：调用方必须在下一次任何调用前读走。
+    last_token_logprobs: Optional[list] = None
+
     # Whether this backend can continue from an assistant-message prefix
     # (used to resume truncated output without re-generating the whole thing).
     supports_continuation: bool = False
@@ -339,6 +344,10 @@ class OpenAIBackend(LLMBackend):
             )
         else:
             self.temperature = temperature
+        # 信心指数（S2）：主调用请求 per-token logprobs，供 loop 计算熵指标。
+        # vLLM / llama.cpp / 官方 OpenAI 都支持；被服务端 400 拒绝时
+        # _try_create_with_param_strip 会置 False，本 run 不再发送。
+        self._logprobs_enabled = _env_flag("LLM_LOGPROBS", default=True)
         # Context window: probe server first, fall back to env var / hardcoded default.
         self.context_window = self._probe_context_window()
         # Track SDK-injected parameters that the provider rejects (e.g. 'include').
@@ -628,6 +637,11 @@ class OpenAIBackend(LLMBackend):
             if bad == "temperature" and self.temperature is not None:
                 self.temperature = None
 
+            if bad == "logprobs":
+                # 缓存到实例：logprobs 是显式 kwargs，不缓存的话每次调用都要
+                # 白付一趟 400 往返。
+                self._logprobs_enabled = False
+
             if bad in kwargs:
                 kwargs.pop(bad)
             else:
@@ -710,13 +724,19 @@ class OpenAIBackend(LLMBackend):
         use_json_format: bool,
         thinking_budget: Optional[int] = None,
         continue_final: bool = False,
+        want_logprobs: bool = False,
     ) -> str:
         """Internal helper: raw API call with explicit format and token controls.
 
         thinking_budget: override self.thinking_budget for this call (None = use instance default).
         continue_final: when True, ask the server to continue the final assistant
             message instead of starting a new turn (vLLM continue_final_message).
+        want_logprobs: when True (and server supports), request per-token logprobs
+            and record them on ``last_token_logprobs``（主 agent 调用专用；轻量
+            调用不请求，避免白付响应体）.
         """
+        # 无论本次是否请求，先清掉上一轮的快照——绝不能让旧数据冒充新一轮。
+        self.last_token_logprobs = None
         budget = self.thinking_budget if thinking_budget is None else thinking_budget
         normalized = self._normalize_messages(messages)
         full_messages = [{"role": "system", "content": system}] + normalized
@@ -736,6 +756,9 @@ class OpenAIBackend(LLMBackend):
             kwargs["max_tokens"] = max_tokens
         if use_json_format and self._use_response_format:
             kwargs["response_format"] = {"type": "json_object"}
+        _want_lp = want_logprobs and self._logprobs_enabled
+        if _want_lp:
+            kwargs["logprobs"] = True
 
         if not self._is_official_openai:
             enable = budget > 0
@@ -753,6 +776,10 @@ class OpenAIBackend(LLMBackend):
         self.last_finish_reason = _normalize_finish_reason(
             getattr(resp.choices[0], "finish_reason", None)
         )
+        if _want_lp:
+            self.last_token_logprobs = self._extract_token_logprobs(
+                getattr(resp.choices[0], "logprobs", None)
+            )
         msg = resp.choices[0].message
         content = getattr(msg, "content", None)
         if content is None:
@@ -791,6 +818,7 @@ class OpenAIBackend(LLMBackend):
                 stream_resp = self._create_with_retry(stream_kwargs, is_stream=True)
                 parts = []
                 stream_fr = None
+                stream_lps: list = []
                 for chunk in stream_resp:
                     if not chunk.choices:
                         continue
@@ -799,10 +827,18 @@ class OpenAIBackend(LLMBackend):
                         c = getattr(delta, "content", None)
                         if c is not None:
                             parts.append(c)
+                    if _want_lp:
+                        _ents = self._extract_token_logprobs(
+                            getattr(chunk.choices[0], "logprobs", None)
+                        )
+                        if _ents:
+                            stream_lps.extend(_ents)
                     fr = getattr(chunk.choices[0], "finish_reason", None)
                     if fr:
                         stream_fr = fr
                 self.last_finish_reason = _normalize_finish_reason(stream_fr)
+                if _want_lp:
+                    self.last_token_logprobs = stream_lps or None
                 content = "".join(parts)
                 if content:
                     return content
@@ -813,6 +849,34 @@ class OpenAIBackend(LLMBackend):
         except Exception:
             return str(content)
 
+    @staticmethod
+    def _extract_token_logprobs(logprobs_obj) -> Optional[list]:
+        """把响应里的 logprobs 对象规整成 [(token_bytes, logprob), ...]。
+
+        优先取 ``bytes`` 字段：CJK 字符常被切成多个字节级 token，``token``
+        字符串字段在这种切分下是乱码，只有 bytes 能精确对回原文（confidence
+        模块在 UTF-8 字节层做 thought 段对位）。任何异常返回 None——logprobs
+        是观测信号，绝不能反过来影响主调用。
+        """
+        try:
+            entries = getattr(logprobs_obj, "content", None)
+            if not entries:
+                return None
+            out = []
+            for e in entries:
+                lp = getattr(e, "logprob", None)
+                if lp is None:
+                    continue
+                b = getattr(e, "bytes", None)
+                if b:
+                    tok = bytes(b)
+                else:
+                    tok = str(getattr(e, "token", "") or "").encode("utf-8")
+                out.append((tok, float(lp)))
+            return out or None
+        except Exception:
+            return None
+
     def complete(self, messages: list[dict], system: str) -> str:
         """Main agent loop call: JSON-formatted, full max_tokens, thinking per instance default."""
         return self._call_api(
@@ -820,6 +884,7 @@ class OpenAIBackend(LLMBackend):
             max_tokens=self.max_tokens,
             use_json_format=True,
             thinking_budget=self.thinking_budget,
+            want_logprobs=True,
         )
 
     def complete_text(self, messages: list[dict], system: str, max_tokens: int = 200) -> str:

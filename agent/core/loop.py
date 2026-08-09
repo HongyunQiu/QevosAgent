@@ -28,6 +28,7 @@ from .compression import (
 from . import graph as _graph
 from . import timing as _timing
 from .artifact_index import register_artifact
+from .confidence import compute_confidence
 from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice, ensure_progress_log
 from agent.i18n import t
 
@@ -1117,6 +1118,9 @@ def run(
                 # mini 诊断会调 complete_text（复用 _call_api），会覆盖 last_finish_reason，
                 # 所以必须在这一刻就快照到局部变量。"length" = 输出被 token 上限截断。
                 finish_reason = getattr(llm, "last_finish_reason", None)
+                # logprobs 同款快照约定：下方续写的 complete_continue 也走 _call_api，
+                # 会把 last_token_logprobs 清掉，必须在这一刻读走。
+                _token_logprobs = getattr(llm, "last_token_logprobs", None)
 
                 # 截断续写：若输出被 token 上限截断，复用已生成前缀、只补尾巴，
                 # 避免整段重生成（长文的主要耗时）。续写不可用/失败时，raw_response
@@ -1229,6 +1233,21 @@ def run(
                 continue
 
             _record_llm_time(state, _llm_started, _retry_acc)
+
+            # ── 信心指数（S2：logprobs 熵）──────────────────────────────────
+            # 影子模式：只记录进 meta 随 checkpoint 落盘（dashboard 画曲线），
+            # 不参与任何干预决策。解析失败的轮次也照记——那正是最值得观察的样本。
+            try:
+                if _token_logprobs:
+                    _conf = compute_confidence(raw_response, _token_logprobs)
+                    if _conf:
+                        _conf["iter"] = state.iteration
+                        _hist = state.meta.setdefault("confidence_history", [])
+                        _hist.append(_conf)
+                        if len(_hist) > 500:
+                            del _hist[: len(_hist) - 500]
+            except Exception:
+                pass  # 观测信号，绝不影响主循环
 
             if os.environ.get("DEBUG_LLM_IO", "0") == "1":
                 DARK_RED = "\033[31m"
