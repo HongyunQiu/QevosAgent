@@ -20,7 +20,9 @@ agent 调用 done
        │                       保存结果，系统发起 ask_user，等待用户决策
        │                            │
        │                            ├── 用户说"继续" ──► 恢复 loop（清空上一轮验收状态）
-       │                            └── 用户说"完成" ──► 退出，终态保留 partial
+       │                            ├── 用户说"完成" ──► 退出，终态保留 partial
+       │                            └── 无人应答时，dashboard 可自动代答"完成"，
+       │                                然后另起一个新 run 续作（见「自动续作」）
        │
        └── pass ─────────────► 继续往下
                                     │
@@ -298,6 +300,65 @@ _iter_warn_injected    timeout
 
 ---
 
+## 自动续作（weak_pass → 新 run）
+
+弱通过意味着"主体做完了，且 agent 自己知道差在哪"。默认它停下问人；开启自动续作后，
+dashboard 会替人答一次，并**另起一个新 run** 去啃剩下的缺口。
+
+**整套机制只存在于 `dashboard/server.js`，Python 侧一行未改。** 它借的是本文已经描述过的
+两个既有行为：`_set_run_outcome` 在 pause 之前就把 `partial`/`blocked` 写进了 `status.json`，
+而 weak_pass 的问题文本本来就告诉用户"回复「完成」即可结束"——`run_goal.py` 对这个词的处理
+是干净退出（走 `finish()`，正常写出 `execution_summary.md`）。dashboard 只是替人说了这句话。
+
+```
+poll 看到 status=paused + run_outcome∈{partial,blocked} + 进程仍存活
+     └─ 写 runs/<parent>/web_cmd.txt = "/inject 完成"      ← 父 run 按既有路径收尾
+agent 进程退出
+     └─ 读 meta.json 的 _user_goal，合成续作 goal，launchAgent()
+新 run 目录出现
+     └─ 在 runs/.followup.jsonl 里记 parent→child，代数由此累计
+```
+
+### 为什么是新 run 而不是原地续跑
+
+原地续跑（`agent.run(goal, state=state)`）保留全部 `short_term`——而弱通过卡住的往往正是
+那条推理路径，继承它等于继承僵局。另有一个硬故障：续跑不重置 `state.iteration`，若本次
+weak_pass 来自"预算耗尽→收尾窗口→done_partial"，续跑一进主循环就再次 `iteration >= max`，
+而 `_wrapup_window_used` 又被 `_RESUME_RESET_KEYS` 清掉 → 重开收尾窗口 → 两次迭代内再交
+一份报告 → 又一次 weak_pass，无限循环。
+
+新 run 拿到的是干净上下文和完整预算，代价是要自己把上一轮的成果读回来——而这恰好是
+磁盘上现成的：`execution_summary.md`（结论 + Remaining Gaps）与压缩机制留下的
+`handoff_*.md` 都已经是蒸馏过的形态。
+
+### 续作 goal
+
+原始 user goal 打头（run 列表的摘要取自它，被前言顶掉就看不出这个 run 在干什么），随后是
+一段固定前言：指名读 `execution_summary.md` / `handoff_*.md`，**明令不要读
+`short_term.jsonl`**（70 KB–1 MB，且正是要卸掉的那份思维定式），要求动手前先调用一次
+`think` 回答三问（真正的卡点是什么／不沿用旧方案还有哪条路／打算走哪条），最后授权换路。
+
+think 是写在开局任务里的要求，不是工具门控。中途注入的软提示会被跳过（收尾窗口就是因此
+改用硬拦截），但开局任务的遵循度是另一回事——那等同于"这个 agent 是否执行任务要求"。
+
+### 边界与约束
+
+| 项 | 行为 |
+|----|------|
+| 开关 | `AUTO_FOLLOWUP=0` 关闭；`AUTO_FOLLOWUP_MAX_GEN` 控制代数，默认 1 |
+| 代数用尽 | 记一条 `skipped`，**保持暂停**交回人工——即本特性之前的原有行为 |
+| nostop | 天然排除：nostop 下 weak_pass 根本不 pause |
+| 普通 ask_user | 不触发：判据是 `paused` + `run_outcome` 同时成立，而 `run_outcome` 在续跑时会被 `_RESUME_RESET_KEYS` 清掉，不存在陈旧残留 |
+| 死掉的 run | 不触发：要求进程仍存活，否则重启 dashboard 会把磁盘上最新的那个旧 paused run 拉起来 |
+| 继承 | skills（含中途 `read_skill` 拉进来的）、`--agents-profile`、`--advisor-profile` |
+| 账本 | `runs/.followup.jsonl`，`GET /api/followup-history` 可读 |
+
+账本记的是 nudged / launched / linked / skipped / dropped。**自动续作是否真的有用是个经验
+问题**——续作那一代最终是 `completed` 还是又一次 weak_pass，顺着 `linked` 的 `child` 去读它的
+`run_outcome` 就能统计。没有数据之前不要给它加更多机制。
+
+---
+
 ## 状态记录
 
 验收结果写入 `state.meta["completion_review"]`：
@@ -334,4 +395,5 @@ _iter_warn_injected    timeout
 | `tool_submit_completion_report` | `agent/tools/standard.py` | 异步工具节之前 |
 | run 终态落盘 | `agent/runtime/persistence.py` | `_status_payload` / `_write_execution_summary` |
 | 终态兜底 + nostop 键清理 | `run_goal.py` | `finally` 块 / `_NOSTOP_RESET_KEYS` |
-| 回归测试 | `test/tests_acceptance_gate.py` | — |
+| 自动续作（侦测/代答/拉起/账本） | `dashboard/server.js` | `followup*` 一节 |
+| 回归测试 | `test/tests_acceptance_gate.py`、`dashboard/followup.test.js` | — |

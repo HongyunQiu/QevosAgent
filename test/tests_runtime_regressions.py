@@ -615,5 +615,61 @@ class SameFailureClassLoopDetectionTests(unittest.TestCase):
         self.assertEqual(fired, [])
 
 
+class AckOnlyToolFeedbackTests(unittest.TestCase):
+    """ACK-only 工具必须给回执，以及连续记账要被当成空转拦下。
+
+    背景：_build_feedback 对 scratchpad_* / raw_append 曾返回 None（省上下文）。
+    后果是那一轮只追加了 assistant、没有任何 user 消息 —— 部分服务端直接 400；
+    补上占位消息后模型又只看到一句"请继续"，不知道自己刚才干了什么，于是一遍遍
+    重发同一个 scratchpad_set（每次把内容里的时间戳 +1）。真实 run
+    20260809-160233 连续 42 次，而两个既有检测器都抓不住：签名含 args 所以每次
+    唯一，同类失败检测又只统计失败——这些调用全部成功。
+    """
+
+    @staticmethod
+    def _drive(items):
+        state = AgentState(goal="ack feedback")
+        none_count = 0
+        fired = []
+        for i, tool in enumerate(items):
+            action = Action(
+                type=ActionType.TOOL_CALL, thought=f"s{i}", tool=tool,
+                # 内容每次都不同，确保按 args 做签名的老检测器不会插手
+                args={"content": f"任务: 继续20260809-{210000 + i * 1000}+3+3"},
+            )
+            feedback = _build_feedback(
+                action, ToolResult(success=True, output="已写入"), state=state
+            )
+            if feedback is None:
+                none_count += 1
+            if feedback and "记账空转" in feedback:
+                fired.append(i)
+        return none_count, fired, state
+
+    def test_ack_only_tool_always_returns_feedback(self):
+        none_count, _, _ = self._drive(["scratchpad_set"] * 5)
+        self.assertEqual(
+            none_count, 0,
+            "ACK-only 工具返回 None 会让消息列表以 assistant 结尾，并让模型失去反馈",
+        )
+
+    def test_consecutive_bookkeeping_trips_the_breaker(self):
+        _, fired, state = self._drive(["scratchpad_set"] * 8)
+        self.assertEqual(fired[0], 3, "第 4 次连续记账就该告警")
+        self.assertTrue(state.meta.get("_loop_advisor_pending"))
+
+    def test_bookkeeping_interleaved_with_real_work_is_fine(self):
+        _, fired, state = self._drive(["scratchpad_set", "read_file"] * 5)
+        self.assertEqual(fired, [])
+        self.assertIsNone(state.meta.get("_loop_advisor_pending"))
+
+    def test_streak_resets_after_real_work(self):
+        _, fired, _ = self._drive(
+            ["scratchpad_set", "scratchpad_set", "shell",
+             "scratchpad_append", "scratchpad_append"]
+        )
+        self.assertEqual(fired, [], "中间干了实事，连续计数必须清零")
+
+
 if __name__ == "__main__":
     unittest.main()

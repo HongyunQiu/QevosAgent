@@ -435,6 +435,13 @@ const APP_DATA_DIR    = path.resolve(process.env.APP_DATA_DIR    || path.join(AG
 const APPS_DIST_DIR   = path.resolve(process.env.APPS_DIST_DIR   || path.join(AGENT_DIR, 'apps-dist'));
 const CRONS_HISTORY   = path.join(CRONS_DIR, '.history.jsonl');
 const CRONS_PENDING   = path.join(CRONS_DIR, '.pending.json');
+// Auto-followup on weak pass: ledger of every generation this dashboard started.
+// Lives next to the runs it links, so it travels with runs/ when copied.
+const FOLLOWUP_LEDGER = path.join(RUNS_DIR, '.followup.jsonl');
+// One extra generation by default. Raising this compounds token spend per weak
+// pass, so it is a deliberate knob, not a tuning parameter.
+const FOLLOWUP_MAX_GEN = Math.max(0, parseInt(process.env.AUTO_FOLLOWUP_MAX_GEN || '1', 10) || 0);
+const FOLLOWUP_ENABLED = process.env.AUTO_FOLLOWUP !== '0' && FOLLOWUP_MAX_GEN > 0;
 const MEMORY_CONCEPT  = path.resolve(process.env.AGENT_CONCEPT   || path.join(AGENT_DIR, 'memory_macro.md'));
 const MEMORY_EPISODIC = path.resolve(process.env.AGENT_EPISODIC  || path.join(AGENT_DIR, 'memory_episodic.jsonl'));
 // .env file managed by the in-dashboard settings panel. In Electron, main.js sets
@@ -1001,6 +1008,7 @@ function poll() {
       isLaunching      = false;
       state.launching  = false;
     }
+    followupLinkChild(latest);
   }
 
   if (state.activeRunId) {
@@ -1125,6 +1133,15 @@ function poll() {
     dirty = true;
   }
 
+  // Weak pass just parked the run on an ask_user — take it over. Must run after
+  // agentAlive is up to date: the nudge is only meaningful while the process is
+  // still there to read web_cmd.txt.
+  followupMaybeNudge();
+  // The close handler is the usual trigger, but it only exists for processes we
+  // spawned ourselves. Polling too means a followup still fires when the parent
+  // belonged to a previous server instance.
+  followupProcessPending();
+
   if (dirty) broadcast();
 }
 
@@ -1199,6 +1216,8 @@ function launchAgent(goal, nostop = false, skills = [], agentsProfile = '', advi
 
   isLaunching     = true;
   state.launching = true;
+  // Claimed by followupLinkChild() once this launch's run dir shows up.
+  followupLaunchParams = { agentsProfile, advisorProfile, at: Date.now() };
   broadcast();
 
   const nostopLabel    = nostop ? ' --nostop' : '';
@@ -1268,6 +1287,10 @@ function launchAgent(goal, nostop = false, skills = [], agentsProfile = '', advi
     isLaunching = false;
     agentProc   = null;
     poll(); // detects agentPid/launching changed → sets dirty → broadcasts
+    // A weak pass we nudged into finishing → start its followup generation.
+    // Runs before the cron drain: the followup is a direct consequence of the
+    // run that just ended, a cron trigger is unrelated work that can wait.
+    setImmediate(followupProcessPending);
     // Drain any cron triggers that piled up while we were busy.
     setImmediate(cronsProcessPending);
   });
@@ -1838,6 +1861,281 @@ cronsLoadPending();
 cronsRegisterAll();
 // In case the server restarted with pending entries and the agent is already idle.
 setImmediate(cronsProcessPending);
+
+// ── Auto-followup on weak pass ─────────────────────────────────────────────
+//
+// A weak pass (run_outcome partial/blocked) means the agent finished the bulk of
+// the task and knows what it did not finish. Today that always stops to ask the
+// user. This starts ONE fresh run instead — deliberately a NEW run, not a resume:
+// the run got stuck inside its own framing, and inheriting its transcript is what
+// we are trying to avoid. Everything the next generation needs is already on disk
+// in distilled form (execution_summary.md, handoff_*.md).
+//
+// The whole mechanism lives here — the agent side is untouched:
+//
+//   poll() sees status=paused + run_outcome∈{partial,blocked}
+//        └─ write "/inject 完成" to the run's web_cmd.txt
+//           run_goal.py already treats 完成 as "stop here" and exits cleanly
+//           (its own weak-pass prompt tells the user to reply exactly that),
+//           so the parent finalizes normally and writes execution_summary.md.
+//   agent process closes
+//        └─ compose the followup goal, launchAgent()
+//   new run dir appears
+//        └─ link it to its parent in the ledger (that is how depth is counted)
+//
+// Not persisted anywhere the agent can see: the goal text names the parent run,
+// which is all the traceability a human needs, and the ledger holds the rest.
+
+// { parent, depth } waiting for the agent process to exit so we can launch.
+let followupPending = null;
+// Profiles of the launch we are waiting on, stashed until its run dir appears.
+// meta.json records skills but not --agents-profile / --advisor-profile, and a
+// followup that silently drops the user's chosen conventions file would be the
+// same class of bug runActiveSkills() exists to fix. So the dashboard remembers.
+let followupLaunchParams = null;
+// run id → { agentsProfile, advisorProfile } for runs started with either.
+const followupProfiles = new Map();
+// Parents already nudged or explicitly skipped — poll() consults this every tick,
+// so it stays in memory rather than re-reading the ledger.
+const followupHandled = new Set();
+// { parent, depth, at } launched, waiting for its run dir to appear so we can link it.
+let followupExpect  = null;
+// child run id → generation number (1 = first automatic followup).
+const followupDepths = new Map();
+// A launch that dies before writing runs/<id>/ never gets linked. Both waits above
+// are therefore time-bounded: a stuck followupExpect would block every later weak
+// pass, and a stuck followupLaunchParams would attribute stale profiles to whatever
+// run dir shows up next (a CLI-started run, say).
+const FOLLOWUP_EXPECT_TTL_MS = 2 * 60 * 1000;
+
+function followupExpireStale() {
+  const now = Date.now();
+  if (followupExpect && now - followupExpect.at > FOLLOWUP_EXPECT_TTL_MS) {
+    followupAppendLedger({ event: 'dropped', parent: followupExpect.parent, depth: followupExpect.depth, reason: 'child run dir never appeared' });
+    followupExpect = null;
+  }
+  if (followupLaunchParams && now - followupLaunchParams.at > FOLLOWUP_EXPECT_TTL_MS) {
+    followupLaunchParams = null;
+  }
+}
+
+function followupAppendLedger(entry) {
+  const rec = { ...entry, ts: entry.ts || Date.now() };
+  try {
+    fs.mkdirSync(RUNS_DIR, { recursive: true });
+    fs.appendFileSync(FOLLOWUP_LEDGER, JSON.stringify(rec) + '\n', 'utf8');
+  } catch { /* ledger is observability, never block the feature on it */ }
+  return rec;
+}
+
+function followupReadLedger(limit = 0) {
+  try {
+    const lines = fs.readFileSync(FOLLOWUP_LEDGER, 'utf8').split(/\r?\n/).filter(Boolean);
+    const tail = limit > 0 ? lines.slice(-limit) : lines;
+    return tail.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
+
+/**
+ * Rebuild in-memory state from the ledger at startup.
+ *
+ * Also recovers a followup that was nudged but never launched — the realistic
+ * case is the user restarting the dashboard while a run sat paused. Bounded to
+ * 10 minutes so a ledger entry from last week never resurrects as a surprise
+ * agent run on the next startup.
+ */
+function followupLoadLedger() {
+  const launched = new Set();
+  let recoverable = null;
+  for (const rec of followupReadLedger()) {
+    if (rec.event === 'linked' && rec.child) followupDepths.set(rec.child, rec.depth || 1);
+    if (rec.event === 'launch-params' && rec.run) {
+      followupProfiles.set(rec.run, {
+        agentsProfile:  rec.agentsProfile  || '',
+        advisorProfile: rec.advisorProfile || '',
+      });
+    }
+    if (rec.event === 'nudged' || rec.event === 'skipped') followupHandled.add(rec.parent);
+    if (rec.event === 'launched' || rec.event === 'dropped') {
+      if (rec.event === 'launched') launched.add(rec.parent);
+      if (recoverable && recoverable.parent === rec.parent) recoverable = null;
+    }
+    if (rec.event === 'nudged' && rec.parent && !launched.has(rec.parent)) {
+      recoverable = { parent: rec.parent, depth: rec.depth || 1, at: rec.ts };
+    }
+  }
+  if (recoverable && Date.now() - recoverable.at < 10 * 60 * 1000) {
+    followupPending = recoverable;
+  } else if (recoverable) {
+    followupAppendLedger({ event: 'dropped', parent: recoverable.parent, reason: 'stale after restart' });
+  }
+}
+
+/** Generation of a run: 0 for a run a human started, N for the Nth auto-followup. */
+function followupDepthOf(runId) {
+  return followupDepths.get(runId) || 0;
+}
+
+/** Record a terminal decision for this parent so poll() stops reconsidering it. */
+function followupMarkHandled(runId, entry) {
+  followupHandled.add(runId);
+  followupAppendLedger(entry);
+}
+
+const FOLLOWUP_MARK = '[自动续作]';
+
+/**
+ * The goal for the next generation.
+ *
+ * Deliberately short. It points at the two distilled files and names the one file
+ * that must not be read — short_term.jsonl runs 70 KB–1 MB and is exactly the
+ * frozen reasoning we are trying to shed. The think step is asked for as part of
+ * the initial task rather than enforced by a gate: models follow the opening
+ * brief far more reliably than mid-run nudges.
+ */
+function followupComposeGoal(parentId, userGoal) {
+  return [
+    userGoal,
+    '',
+    `${FOLLOWUP_MARK} 上一轮 runs/${parentId} 是弱通过（部分完成）。先读 runs/${parentId}/execution_summary.md`,
+    `了解结论和遗留缺口，需要更多细节就读同目录的 handoff_*.md，不要读 short_term.jsonl。`,
+    '',
+    '动手之前先调用一次 think，回答三个问题：',
+    '1. 上一轮真正的卡点是什么——不是它说的"还差什么"，而是为什么没做出来。',
+    '2. 如果完全不沿用上一轮的技术方案，还有哪条路能达成同一个目标？至少给出一条。',
+    '3. 你打算走哪条、为什么。如果结论是沿用旧方案，说明凭什么这次能走通。',
+    '',
+    '然后：先用 1~2 步核实已有产物是否可用，别重做；再解决剩下的缺口。',
+    '你不必沿用上一轮的方案，换更直接的路是允许的。',
+  ].join('\n');
+}
+
+/** Strip a previous generation's followup block so goals don't nest if MAX_GEN > 1. */
+function followupStripMark(goal) {
+  const i = (goal || '').indexOf(FOLLOWUP_MARK);
+  return (i < 0 ? (goal || '') : goal.slice(0, i)).trim();
+}
+
+/**
+ * Step 1 — a paused weak pass is detected; tell the parent to finish.
+ * Called from poll(). Records the intent BEFORE writing the command file so a
+ * fast poll cycle can never fire the same nudge twice.
+ */
+function followupMaybeNudge() {
+  if (!FOLLOWUP_ENABLED) return;
+  followupExpireStale();
+  if (followupPending || followupExpect) return;
+  const rid = state.activeRunId;
+  const s   = state.status;
+  if (!rid || !s) return;
+  // Only take over a run that is actually alive to read web_cmd.txt. Without
+  // this, starting the dashboard while an old paused run happens to be the
+  // newest one on disk would resurrect it as a surprise agent run.
+  if (!state.agentAlive) return;
+  // This exact pair is only ever produced by a weak pass: run_outcome is cleared
+  // on resume (_RESUME_RESET_KEYS), so a later ask_user cannot inherit a stale
+  // partial. nostop never pauses on weak pass, so it is excluded for free.
+  if (s.status !== 'paused') return;
+  if (s.run_outcome !== 'partial' && s.run_outcome !== 'blocked') return;
+  if (followupHandled.has(rid)) return;
+
+  const depth = followupDepthOf(rid) + 1;
+  if (depth > FOLLOWUP_MAX_GEN) {
+    followupMarkHandled(rid, { event: 'skipped', parent: rid, depth, reason: 'max generations reached' });
+    broadcastConsole('system', `↻ 弱通过已达自动续作代数上限（${FOLLOWUP_MAX_GEN}），交回人工：${rid}`);
+    return;
+  }
+
+  followupPending = { parent: rid, depth, at: Date.now() };
+  followupMarkHandled(rid, { event: 'nudged', parent: rid, depth, outcome: s.run_outcome });
+  try {
+    fs.writeFileSync(path.join(RUNS_DIR, rid, 'web_cmd.txt'), '/inject 完成\n', 'utf8');
+  } catch (e) {
+    followupPending = null;
+    followupAppendLedger({ event: 'dropped', parent: rid, depth, reason: `web_cmd write failed: ${e}` });
+    return;
+  }
+  broadcastConsole('system', `↻ 检测到弱通过（${s.run_outcome}），将自动开启第 ${depth} 代续作：${rid}`);
+}
+
+/**
+ * Step 2 — the parent has exited; start the next generation.
+ * Called from the process close handler and once at startup.
+ */
+function followupProcessPending() {
+  if (!followupPending) return;
+  // agentAlive also covers an orphan process left by a previous server instance.
+  if (isAgentRunning() || isLaunching || state.agentAlive) return;
+  // The parent needs a moment to read web_cmd.txt and shut down; never launch in
+  // the same tick as the nudge.
+  if (Date.now() - (followupPending.at || 0) < 1500) return;
+
+  const { parent, depth } = followupPending;
+  const dir  = path.join(RUNS_DIR, parent);
+  const meta = readJSON(path.join(dir, 'meta.json')) || {};
+  const st   = readJSON(path.join(dir, 'status.json')) || {};
+
+  const drop = reason => {
+    followupPending = null;
+    followupAppendLedger({ event: 'dropped', parent, depth, reason });
+    broadcastConsole('system', `↻ 自动续作已取消（${reason}）：${parent}`);
+  };
+
+  // Re-check on the final status: the user may have answered before we did, or
+  // the run may have been killed and never reached a weak-pass conclusion.
+  if (st.run_outcome !== 'partial' && st.run_outcome !== 'blocked') {
+    return drop(`parent run_outcome is ${st.run_outcome || 'unset'}`);
+  }
+  const userGoal = followupStripMark(meta._user_goal || meta._task_desc || st.goal || '');
+  if (!userGoal) return drop('parent has no recoverable goal');
+
+  const inherited = runActiveSkills(parent);
+  const skills    = inherited ? inherited.skills : [];
+  const profiles  = followupProfiles.get(parent) || {};
+  const result    = launchAgent(
+    followupComposeGoal(parent, userGoal),
+    false,
+    skills,
+    profiles.agentsProfile  || '',
+    profiles.advisorProfile || '',
+  );
+
+  if (!result.ok) {
+    // Lost a race with another launcher — keep pending and retry on next idle.
+    followupAppendLedger({ event: 'retry', parent, depth, error: result.error });
+    return;
+  }
+  followupPending = null;
+  followupExpect  = { parent, depth, at: Date.now() };
+  followupAppendLedger({ event: 'launched', parent, depth, pid: result.pid, skills });
+  broadcastConsole('system', `▶ 自动续作已启动（第 ${depth} 代，继承 ${parent}）`);
+}
+
+/**
+ * Step 3 — the new run dir appeared; record parent→child so depth can be counted.
+ * Called from poll() when activeRunId changes.
+ */
+function followupLinkChild(childId) {
+  if (!childId) return;
+  // Any launch, not just a followup: remember the profiles this run was started
+  // with, so a later followup can inherit them.
+  if (followupLaunchParams) {
+    const { agentsProfile, advisorProfile } = followupLaunchParams;
+    followupLaunchParams = null;
+    if (agentsProfile || advisorProfile) {
+      followupProfiles.set(childId, { agentsProfile, advisorProfile });
+      followupAppendLedger({ event: 'launch-params', run: childId, agentsProfile, advisorProfile });
+    }
+  }
+  if (!followupExpect || childId === followupExpect.parent) return;
+  const { parent, depth } = followupExpect;
+  followupExpect = null;
+  followupDepths.set(childId, depth);
+  followupAppendLedger({ event: 'linked', parent, child: childId, depth });
+}
+
+followupLoadLedger();
+setImmediate(followupProcessPending);
 
 // ── Load a historical run ──────────────────────────────────────────────────
 
@@ -3098,6 +3396,21 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/api/crons') {
     try { json(200, { crons: cronsList(), pending: cronPending, cronAvailable: !!cronLib }); }
     catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── GET /api/followup-history?limit=N  ────────────────────────────────────
+  // Whether auto-followup is worth keeping is an empirical question, so the
+  // ledger is readable: which weak passes were retried, and what the retry
+  // generation ended up as (read run_outcome of `child` to find out).
+  if (req.method === 'GET' && req.url.startsWith('/api/followup-history')) {
+    const m = req.url.match(/limit=(\d+)/);
+    json(200, {
+      enabled: FOLLOWUP_ENABLED,
+      maxGen:  FOLLOWUP_MAX_GEN,
+      pending: followupPending,
+      history: followupReadLedger(m ? parseInt(m[1], 10) : 100),
+    });
     return;
   }
 

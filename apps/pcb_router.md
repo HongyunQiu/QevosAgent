@@ -1,7 +1,7 @@
 ---
 name: PCB 编辑器
 icon: 🔲
-description: PCB 布局布线编辑器 — 交互布局(拖动/旋转/换面) + GRID 迷宫自动布线 + 占用网格/飞线分析
+description: PCB 布局布线编辑器 — 交互布局(拖动/旋转/换面) + GRID 迷宫自动布线 + 占用网格/飞线分析 + 全局 LOSS 函数表(权重化评价函数)
 runtime: web
 sidecar: worker.py
 sidecar_linger: 300

@@ -2326,6 +2326,27 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                         f"把一步拆成更小的可验证步骤、或换一个工具达成同样目的。"
                     )
 
+            # ── B''：记账空转检测 ───────────────────────────────────────────
+            # ACK-only 工具（scratchpad_* / raw_append）只记账、不推进任务。连着
+            # 做好几次记账而中间不干实事，就是空转。这一类同样躲得过 A/B：内容
+            # 每次都不同（实测是把同一句话里的时间戳 +1），签名必然唯一；也躲得过
+            # B'：它们全部执行**成功**。所以判据必须与参数、与成败都无关——直接
+            # 数「连续记账多少次」。
+            _ack_streak = (
+                int(state.meta.get("_ack_only_streak", 0)) + 1
+                if action.tool in _ACK_ONLY_TOOLS else 0
+            )
+            state.meta["_ack_only_streak"] = _ack_streak
+            _ack_cap = int(os.environ.get("LOOP_ACK_ONLY_STREAK", "4"))
+            if _ack_streak >= _ack_cap and not loop_triggered:
+                loop_triggered = True
+                repeat_warning = (
+                    f"\n\n⛔ 循环检测（记账空转）：你已连续 {_ack_streak} 次只调用记账类工具"
+                    f"（{action.tool} 之类），中间没有做任何推进任务的实事。"
+                    f"草稿本只是备忘，写它本身不产生任何进展。"
+                    f"\n请立刻回到任务本身：执行下一个实际步骤，或者调用 ask_user 说明你卡在哪里。"
+                )
+
             # ── C：循环升级（折叠吸引子 + advisor 介入；仍循环则求助用户） ────────
             # 任何一次 loop_triggered 都立即标记 _loop_advisor_pending，
             # 主循环负责：先折叠吸引子，再决定是 advisor 介入还是暂停求助用户。
@@ -2353,9 +2374,23 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
     # ─────────────────────────────────────────────────────────────────────────
 
     if result.success:
-        # 纯 ACK 工具：成功时不写入 short_term，避免无意义消息占用上下文
+        # 纯 ACK 工具：只回一行极短回执。
+        #
+        # 这里原本返回 None（"避免无意义消息占用上下文"）。那个省法是错的：
+        # 返回 None 意味着那一轮**只追加了 assistant、没有任何 user 消息**，于是
+        #   1) 消息列表以 assistant 结尾 → 部分服务端直接 400（见 _ensure_user_turn_last）；
+        #   2) 补上占位消息之后，模型看到的只有一句"请继续"，完全不知道自己刚才
+        #      那次调用发生了什么 —— 实测它会一遍遍重发同一个 scratchpad_set
+        #      （每次只把内容里的时间戳 +1），连续 42 次，而且两个循环检测器都
+        #      抓不住：签名含 args 所以每次都唯一，同类失败检测又只统计失败。
+        # 一行回执约十来个 token，换掉一个无限循环，这个交易毫无悬念。
+        # repeat_warning 必须拼上：记账空转的告警正是在这条分支上产生的，
+        # 漏掉的话检测器照常置位、模型却一个字都看不到。
         if action.tool in _ACK_ONLY_TOOLS:
-            return None
+            return (
+                f"{t('marker.tool_prefix', name=action.tool)} {t('marker.tool_success')}"
+                + repeat_warning
+            )
 
         # 富内容（多模态）：把文字摘要和图片块一起注入上下文
         # 若后端已标记不支持视觉，降级为纯文字摘要
