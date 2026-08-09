@@ -10,6 +10,7 @@ from agent.core.executor import execute
 from agent.core.loop import (
     _build_feedback,
     _extract_claimed_artifact_paths,
+    _failure_class,
     _parse_acceptance_evidence,
 )
 from agent.core.types_def import Action, ActionType, AgentState, ToolResult, ToolSpec
@@ -541,6 +542,77 @@ class RunPersistenceTests(unittest.TestCase):
             self.assertIn("goal", issues)
             self.assertTrue((Path(tmpdir) / "execution_summary.md").exists())
             self.assertTrue((Path(tmpdir) / "reflection.md").exists())
+
+
+class SameFailureClassLoopDetectionTests(unittest.TestCase):
+    """同类失败循环检测。
+
+    背景：现有检测器按 md5(tool+args+result) 做签名，模型只要把参数改一个字签名
+    就变。真实 run 20260809-135124 里 33 次调用的签名**全部唯一**，而其中第
+    27/29/31/32 次栽在同一个 SyntaxError 上（中间夹着成功，连续计数也归零），
+    检测器全程沉默，agent 就那样一直磨下去。
+    """
+
+    @staticmethod
+    def _drive(items):
+        """回放一串 (tool, success, error)，返回触发同类失败告警的下标。
+
+        每次 args 都不同，确保老的签名检测器不会插手——测的就是新那条路。
+        """
+        state = AgentState(goal="loop detection")
+        fired = []
+        for i, (tool, ok, err) in enumerate(items):
+            action = Action(
+                type=ActionType.TOOL_CALL, thought=f"step{i}", tool=tool, args={"n": i}
+            )
+            result = ToolResult(success=ok, output="ok" if ok else None, error=err)
+            feedback = _build_feedback(action, result, state=state)
+            if feedback and "同类失败" in feedback:
+                fired.append(i)
+        return fired
+
+    def test_failure_class_fingerprint_ignores_volatile_parts(self):
+        a = _failure_class('File "/tmp/tmpabc123.py", line 9\nSyntaxError: unterminated string')
+        b = _failure_class('File "/tmp/tmpzzz999.py", line 30\nSyntaxError: invalid syntax')
+        self.assertEqual(a, b, "同一异常类的不同措辞/路径/行号必须归并为同一指纹")
+        self.assertNotEqual(a, _failure_class("KeyError: 'x'"))
+
+    def test_fires_on_oscillating_same_class_failures(self):
+        # 失败-成功-失败-成功-失败：连续计数永远够不到阈值，只有滑动窗口能抓
+        fired = self._drive([
+            ("run_python", False, "SyntaxError: a"),
+            ("run_python", True, None),
+            ("run_python", False, "SyntaxError: b"),
+            ("run_python", True, None),
+            ("run_python", False, "SyntaxError: c"),
+        ])
+        self.assertEqual(fired, [4])
+
+    def test_silent_when_failures_are_different_classes(self):
+        # 每次错误类型都不同 = 模型在推进，不该报警
+        fired = self._drive([
+            ("run_python", False, f"{name}: boom")
+            for name in ("IndexError", "TypeError", "KeyError",
+                         "ValueError", "AttributeError", "OSError")
+        ])
+        self.assertEqual(fired, [])
+
+    def test_silent_on_all_success_and_on_sparse_failures(self):
+        self.assertEqual(self._drive([("read_file", True, None)] * 12), [])
+        # 同类失败但被 7 次成功隔开，落在窗口外
+        sparse = ([("run_python", False, "SyntaxError: x")]
+                  + [("read_file", True, None)] * 7
+                  + [("run_python", False, "SyntaxError: y")])
+        self.assertEqual(self._drive(sparse), [])
+
+    def test_tool_name_is_part_of_the_fingerprint(self):
+        # 同一类错误但分散在不同工具上，不构成"同一件事反复失败"
+        fired = self._drive([
+            ("run_python", False, "SyntaxError: a"),
+            ("shell", False, "SyntaxError: b"),
+            ("edit_file", False, "SyntaxError: c"),
+        ])
+        self.assertEqual(fired, [])
 
 
 if __name__ == "__main__":

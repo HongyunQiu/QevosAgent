@@ -40,6 +40,33 @@ def _append_short_term(state: AgentState, record: dict) -> None:
         persistence.append_short_term(record)
 
 
+def _failure_class(text) -> str:
+    """把一条工具错误压成「故障类别」指纹，去掉每次都变的部分。
+
+    用途见 _build_feedback 里的同类失败检测：现有的循环检测按
+    md5(tool+args+result) 做签名，模型只要把参数改一个字，签名就变了。实测一个
+    run 里 33 次调用的签名**全部唯一**，而其中 4 次是同一个 SyntaxError——
+    语义上早就在原地打转，检测器却一次都没响。
+
+    这里刻意只保留异常类名（SyntaxError / KeyError…），不保留具体消息：
+    - 够粗：同一类错误的不同措辞（"unterminated string" vs "invalid syntax"）
+      能归并到一起，这正是"没学到东西"的信号
+    - 够细：SyntaxError 和 FileNotFoundError 不会被混为一谈，模型换了个错误
+      就说明在推进，计数自然重来
+    """
+    s = str(text or "")
+    names = re.findall(r"\b([A-Z][A-Za-z0-9_]*(?:Error|Exception))\b", s)
+    if names:
+        # 去重后取前 3 个，避免 traceback 里链式异常导致指纹发散
+        base = ",".join(sorted(set(names))[:3])
+    else:
+        first = next((ln for ln in s.strip().splitlines() if ln.strip()), "")
+        base = first[:120] or "empty"
+    base = re.sub(r"0x[0-9a-fA-F]+", "0xX", base)
+    base = re.sub(r"\d+", "N", base)
+    return base.strip().lower()
+
+
 def _ensure_user_turn_last(state: AgentState) -> bool:
     """保证 short_term 不以 assistant 结尾，必要时补一条最短的 user 回执。
 
@@ -2266,6 +2293,38 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
                     f"该查询已无法提供新信息，请立刻换用不同工具或调整策略继续推进任务。"
                     f"\n以下参数禁止再次原样使用：\n```\n{args_preview}\n```"
                 )
+
+            # ── B'：同类失败检测 ────────────────────────────────────────────
+            # A/B 两段都以 md5(tool+args+result) 为签名，模型把参数改一个字签名
+            # 就变，于是"同一个工具反复栽在同一类错误上"这种语义循环完全抓不到。
+            # 实测一个 run：33 次调用签名全部唯一，其中第 27/29/31/32 次是同一个
+            # SyntaxError（中间还夹着成功，连续计数也归零），检测器全程沉默。
+            #
+            # 只统计**失败**：成功的调用哪怕参数相近也是在推进，不该计数。
+            # 用滑动窗口而非连续计数：真实的卡死是"失败-成功-失败-成功-失败"的
+            # 振荡形态，连续计数永远够不到阈值。
+            fail_hist = state.meta.setdefault("_fail_class_history", [])
+            fail_hist.append(
+                "" if result.success
+                else f"{action.tool}|{_failure_class(result.error or result.to_str())}"
+            )
+            del fail_hist[:-40]   # 有界，防止 meta 膨胀
+            _fc_cur = fail_hist[-1]
+            if _fc_cur and not loop_triggered and not _is_polling:
+                _fc_win = int(os.environ.get("LOOP_FAIL_CLASS_WINDOW", "8"))
+                _fc_thresh = int(os.environ.get("LOOP_FAIL_CLASS_THRESH", "3"))
+                _fc_n = sum(1 for h in fail_hist[-_fc_win:] if h == _fc_cur)
+                if _fc_n >= _fc_thresh:
+                    loop_triggered = True
+                    _fc_kind = _fc_cur.split("|", 1)[-1]
+                    repeat_warning = (
+                        f"\n\n⛔ 循环检测（同类失败）：最近 {min(_fc_win, len(fail_hist))} 次工具调用里，"
+                        f"`{action.tool}` 已有 {_fc_n} 次栽在同一类错误上（{_fc_kind}）。"
+                        f"每次只改了参数的措辞，错误类型却一模一样——说明你没有定位到真正的原因，"
+                        f"继续微调参数不会有结果。"
+                        f"\n请改变做法：把复杂内容先用 write_file 落盘再执行、"
+                        f"把一步拆成更小的可验证步骤、或换一个工具达成同样目的。"
+                    )
 
             # ── C：循环升级（折叠吸引子 + advisor 介入；仍循环则求助用户） ────────
             # 任何一次 loop_triggered 都立即标记 _loop_advisor_pending，
