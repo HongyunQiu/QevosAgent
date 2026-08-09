@@ -843,15 +843,59 @@ class OpenAIBackend(LLMBackend):
 
         Thinking is forced off: continuation across a reasoning boundary is
         ill-defined, and continue_final_message resumes raw text only.
+
+        Returns "" when the backend turns out not to support continuation — the
+        caller treats an empty piece as "stop continuing".
+
+        ── 为什么要在这里验证返回值 ──────────────────────────────────────────
+        ``continue_final_message`` / ``add_generation_prompt`` 是 **vLLM 专有**的
+        extra_body 参数。llama.cpp 完全忽略它们：它只看到消息列表尾部有一条
+        assistant 消息，于是照常补一个生成提示、**另起一轮**，返回的是一整条新
+        响应而不是增量。实测同一份 prefix「一、二、三、四、五、」：
+            vLLM      → 「六、七、…二十」          ← 真续写
+            llama.cpp → 「一、二、三、四、五、六、…」 ← 前缀被完整复述
+        而调用方做的是 ``raw_response += piece``，于是每轮把"已累积的全部内容"
+        又拼一遍，形成 acc_{n+1} = 2*acc_n + 1 的**指数**放大：4 轮 = 31×。
+        实测事故里 8192 token 被放大成 253,904 token / 658KB。
+
+        原来靠 ``supports_continuation = not _is_official_openai`` 来判断——那是
+        用"端点是不是官方 OpenAI"去猜"支不支持 vLLM 的续写协议"，llama.cpp 两头
+        不沾却被判为支持。能力必须实测，不能靠端点身份猜。
         """
         msgs = list(messages) + [{"role": "assistant", "content": assistant_prefix}]
-        return self._call_api(
+        piece = self._call_api(
             msgs, system,
             max_tokens=max_tokens if max_tokens is not None else self.max_tokens,
             use_json_format=False,
             thinking_budget=0,
             continue_final=True,
         )
+        if not isinstance(piece, str) or not piece.strip():
+            return ""
+
+        # 真续写只含新增内容，绝不会把 prefix 的开头再吐一遍。
+        # 判据用"是否从头重启"而不是"包含"：重生成必然以 prefix 的开头起笔，
+        # 而真续写是从截断处接着写，开头对不上。先剥掉推理标签——llama.cpp 的
+        # 重生成会带一个 <think></think> 前缀，不剥就永远匹配不上。
+        head = assistant_prefix.strip()
+        piece_clean = _strip_thinking_tags(piece).strip()
+        _fp = head[:40]
+        _restarted = len(_fp) >= 8 and piece_clean.startswith(_fp)
+        # 兜底：prefix 足够长时，开头整段出现在 piece 里的任何位置也算重生成
+        # （模型先写了一句开场白再从头重写的情形）。
+        _echoed = len(head) >= 60 and head[:60] in piece
+        if _restarted or _echoed:
+            self.supports_continuation = False
+            try:
+                sys.stderr.write(
+                    "[llm] 该后端不支持续写（返回值复述了 prefix，属整段重生成而非增量）；"
+                    "已禁用续写，改由 max_tokens 翻倍兜底。\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+            return ""
+        return piece
 
 
 # ── Anthropic 后端实现 ─────────────────────────────────────────────────────────
@@ -1330,7 +1374,11 @@ def _extract_json(text: str) -> tuple:
         if idx == -1:
             break
         try:
-            obj, _ = dec.raw_decode(stripped[idx:])
+            # raw_decode(s, idx) 从 idx 处解析，不切片。原来写的是
+            # ``raw_decode(stripped[idx:])``——每个候选位置都复制一遍剩余字符串，
+            # 整体退化成 O(n²)：实测一条 658KB 的退化响应，光这一步就要 60 秒
+            # CPU（GPU 全程空转，看起来像卡死）。改用位置参数后是 O(n)。
+            obj, _ = dec.raw_decode(stripped, idx)
             if isinstance(obj, dict) and ("thought" in obj or "action" in obj):
                 return obj, None
             if _brace_fallback is None:
@@ -1351,13 +1399,19 @@ def _extract_json(text: str) -> tuple:
     # 4) json_repair — handles malformed JSON (e.g. missing opening quote on a value).
     #    Placed BEFORE returning the brace-scan fallback so that a mis-parsed inner
     #    sub-object does not shadow a repairable outer response object.
-    try:
-        from json_repair import repair_json  # type: ignore
-        repaired = repair_json(stripped, return_objects=True)
-        if isinstance(repaired, dict):
-            return repaired, None
-    except Exception:
-        pass
+    #
+    #    体量闸：json_repair 在超大输入上极慢（实测 658KB 要 60 秒），而那种体量
+    #    的"响应"本身就是模型退化的产物，修出来也没有价值。超限直接跳过，让上层
+    #    走格式错误分支去换策略，而不是先烧一分钟 CPU 再得到同样的结论。
+    _repair_cap = int(os.environ.get("JSON_REPAIR_MAX_CHARS", "100000"))
+    if len(stripped) <= _repair_cap:
+        try:
+            from json_repair import repair_json  # type: ignore
+            repaired = repair_json(stripped, return_objects=True)
+            if isinstance(repaired, dict):
+                return repaired, None
+        except Exception:
+            pass
 
     # 4.5) Balanced completion that parsed but lacks thought/action — still better
     #      than returning a stray inner sub-object. Accept as a last structured try.

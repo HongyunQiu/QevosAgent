@@ -1103,8 +1103,21 @@ def run(
                     and isinstance(raw_response, str) and raw_response.strip()
                 ):
                     _cont_max = int(os.environ.get("LLM_CONTINUATION_MAX", "4"))
+                    # 绝对体量闸。轮数不是有效旋钮：后端若把"续写"做成整段重生成，
+                    # 每轮拼进来的是已累积的全部内容，量按 2^n 翻倍——4 轮就是 31 倍
+                    # （实测 8192 → 253,904 token / 658KB）。所以必须按**字符数**兜底，
+                    # 而不是按轮数。正常续写永远碰不到这个上限：单条工具调用 JSON
+                    # 再长也远不到 200KB。
+                    _cont_len_cap = int(os.environ.get("LLM_RESPONSE_MAX_CHARS", "200000"))
                     _cont_rounds = 0
                     for _r in range(_cont_max):
+                        if len(raw_response) >= _cont_len_cap:
+                            if hooks.on_error:
+                                hooks.on_error(
+                                    f"[续写] 已累积 {len(raw_response)} 字符，超过上限 "
+                                    f"{_cont_len_cap}，停止续写（疑似模型退化或后端不支持续写）"
+                                )
+                            break
                         try:
                             piece = llm.complete_continue(messages, system, raw_response)
                         except Exception as e:
@@ -1113,6 +1126,8 @@ def run(
                             break
                         finish_reason = getattr(llm, "last_finish_reason", None)
                         if not piece:
+                            # 后端不支持续写时 complete_continue 会返回 ""（并自行置
+                            # supports_continuation=False），这里一并收口。
                             break
                         raw_response += piece
                         _cont_rounds += 1
