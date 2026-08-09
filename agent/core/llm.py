@@ -7,6 +7,7 @@ LLM 接口层
 import json
 import os
 import re
+import sys
 from abc import ABC, abstractmethod
 from urllib.parse import urlparse
 from typing import Optional, Iterable, Callable
@@ -174,6 +175,18 @@ def _normalize_finish_reason(reason) -> Optional[str]:
     return r
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Read a boolean env var; unset/blank → *default*.
+
+    Accepts the usual on/off spellings so ``FOO=0`` and ``FOO=false`` both mean
+    off.  Anything else non-blank counts as on.
+    """
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "off", "no")
+
+
 # ── OpenAI 后端实现 ────────────────────────────────────────────────────────────
 
 class OpenAIBackend(LLMBackend):
@@ -284,7 +297,17 @@ class OpenAIBackend(LLMBackend):
         self.model = model
         self.base_url = base_url
         self._is_official_openai = self._detect_official_openai_endpoint(base_url)
-        self._use_response_format = self._is_official_openai
+        # 结构化输出（response_format=json_object）→ 服务端把输出约束到「合法 JSON」
+        # 这条语法上，非法 token 在采样前被置 -inf，模型物理上吐不出散文/围栏/未转义
+        # 引号。这是唯一能压住模型自身格式先验的手段：提示词、温度、循环检测都只是
+        # 重塑概率分布，语法约束直接截断分布的支撑集。
+        #
+        # 曾经这里写的是 `= self._is_official_openai`，即「只有官方 OpenAI 才发」。
+        # 那是用一个**代理特征**去猜「支不支持结构化输出」，而这两件事毫无关系：
+        # vLLM 和 llama.cpp 都支持，却都被这行拦在门外。于是本地模型全程裸奔，
+        # 一旦换上格式先验强的模型（如 DeepSeek 系）就会整轮整轮地吐纯散文。
+        # 现在默认开；被服务端拒绝时 _try_create_with_param_strip 会自动降级。
+        self._use_response_format = _env_flag("OPENAI_JSON_MODE", default=True)
         # Assistant-prefix continuation relies on vLLM's continue_final_message +
         # add_generation_prompt extra params, which the official OpenAI chat API
         # does not support. Enable only for local/compatible (non-official) servers.
@@ -561,6 +584,31 @@ class OpenAIBackend(LLMBackend):
             return self.client.chat.completions.create(**kwargs)
         except Exception as e:
             es = str(e)
+
+            # ── response_format 专用降级 ─────────────────────────────────────
+            # 结构化输出默认开启，所以「不支持的服务端」必须能安全退回软模式。
+            # 不能依赖下面那套 "unknown/unsupported parameter: X" 的话术匹配：
+            # 各家拒绝 response_format 的措辞五花八门（"response_format is not
+            # supported for this model" / "json_object not supported" / ...），
+            # 枚举不完。改为只要 400 类错误里提到了 response_format 就降级——
+            # 参数名本身几乎总会出现在报错里，这个判据与措辞无关。
+            if (
+                "response_format" in es
+                and "400" in es
+                and "response_format" in kwargs
+            ):
+                kwargs.pop("response_format", None)
+                self._use_response_format = False
+                try:
+                    sys.stderr.write(
+                        "[llm] 服务端拒绝 response_format，已降级为提示词约束（本 run 不再重试）："
+                        f"{es[:200]}\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                return self.client.chat.completions.create(**kwargs)
+
             is_param_error = (
                 "unsupported parameter" in es.lower()
                 or "unknown parameter" in es.lower()
@@ -708,7 +756,26 @@ class OpenAIBackend(LLMBackend):
         msg = resp.choices[0].message
         content = getattr(msg, "content", None)
         if content is None:
-            content = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+            # 有的服务端把**整条**响应（含 JSON 载荷）塞进 reasoning_content，
+            # 这时回落是对的。但推理模型的常态是 content 装答案、reasoning_content
+            # 只装思考——此时回落等于把「思考过程」当成答案交给解析器，解析必失败，
+            # 而且这段散文还会被原样写进对话历史，反过来教模型「答案就该长这样」，
+            # 形成自我强化的死循环（曾经一个 run 里 92 轮有 74 轮栽在这上面）。
+            # 判据：只有当它看起来真的带着 JSON 载荷时才认，否则宁可交空串。
+            _reasoning = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None)
+            if isinstance(_reasoning, str) and "{" in _reasoning:
+                content = _reasoning
+            else:
+                if _reasoning:
+                    try:
+                        sys.stderr.write(
+                            "[llm] 本轮只返回了 reasoning，没有 content——按空响应处理，"
+                            "不把思考当答案。\n"
+                        )
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+                content = None if _reasoning is None else ""
         if isinstance(content, str):
             return content
         # Fallback: if content is still None/empty, try streaming mode.

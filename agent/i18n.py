@@ -50,6 +50,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "loop.done":               "✨ 完成！",
         "loop.error":              "⚠️  错误: {msg}",
         "loop.llm_retry":          "⏳ 模型繁忙，等待中… (尝试 {attempt}，等待 {wait}s · {reason})",
+        "loop.continue_filler":    "[系统] 请继续。",
         "loop.note":               "📓 草稿本笔记 [{tool}]: {note}",
         "loop.rebuild":            "🔄 上下文重建  ·  封锁工具: {tool}  ·  重建后消息数: {count}",
         "loop.rebuild_reason":     "   原因: 反复忽略循环警告，已清除污染上下文并注入新起点",
@@ -775,6 +776,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "loop.done":               "✨ Done!",
         "loop.error":              "⚠️  Error: {msg}",
         "loop.llm_retry":          "⏳ Model busy, waiting… (attempt {attempt}, wait {wait}s · {reason})",
+        "loop.continue_filler":    "[System] Please continue.",
         "loop.note":               "📓 Scratchpad note [{tool}]: {note}",
         "loop.rebuild":            "🔄 Context rebuild  ·  Blocked: {tool}  ·  Messages after: {count}",
         "loop.rebuild_reason":     "   Reason: Repeated loop warnings ignored; poisoned context cleared and restarted",
@@ -1176,9 +1178,9 @@ Before calling action='done', you MUST complete the following two steps:
             "Your last output was plain text with no JSON structure.\n"
             "Regardless of whether the task is complete, you must output in JSON format — plain text output is not allowed.\n"
             "If the task is complete, use:\n"
-            '{{"thought": "...", "action": "done", "final_answer": "..."}}\n'
+            '{"thought": "...", "action": "done", "final_answer": "..."}\n'
             "If you need to call a tool, use:\n"
-            '{{"thought": "...", "action": "tool_call", "tool": "tool_name", "args": {{...}}}}'
+            '{"thought": "...", "action": "tool_call", "tool": "<tool name>", "args": {...}}'
         ),
         "parse.backslash_error": (
             "JSON format error: string contains an unescaped backslash.\n"
@@ -1221,24 +1223,24 @@ Before calling action='done', you MUST complete the following two steps:
             "Your last output was plain text (it contained JSON fragments but no thought/action fields).\n"
             "Regardless of whether the task is complete, you must output in JSON format — plain text output is not allowed.\n"
             "If the task is complete, use:\n"
-            '{{"thought": "...", "action": "done", "final_answer": "..."}}\n'
+            '{"thought": "...", "action": "done", "final_answer": "..."}\n'
             "If you need to call a tool, use:\n"
-            '{{"thought": "...", "action": "tool_call", "tool": "tool_name", "args": {{...}}}}'
+            '{"thought": "...", "action": "tool_call", "tool": "<tool name>", "args": {...}}'
         ),
         "parse.not_object": "JSON top-level must be an object, but got: {typename}={val}. Raw output: {raw}",
         "parse.missing_tool_split": (
             "Note: the raw output contained a \"tool\" field, but it was lost after parsing — "
-            "this usually means 'thought' was closed prematurely (i.e. thought itself formed a standalone {{}} "
+            "this usually means 'thought' was closed prematurely (i.e. thought itself formed a standalone {} "
             "causing tool/args and other fields to fall outside).\n"
-            "Please put all fields inside a single top-level {{}}:\n"
-            '{{"thought": "...", "action": "tool_call", "tool": "tool_name", "args": {{...}}}}'
+            "Please put all fields inside a single top-level {}:\n"
+            '{"thought": "...", "action": "tool_call", "tool": "<tool name>", "args": {...}}'
         ),
         "parse.missing_tool_question": (
             "Detected: you asked the user a question in plain text outside the JSON.\n"
             "Correct approach: use the ask_user tool, with the question in args.question:\n"
-            '{{"thought": "...", "action": "tool_call", "tool": "ask_user", "args": {{"question": "your question"}}}}'
+            '{"thought": "...", "action": "tool_call", "tool": "ask_user", "args": {"question": "your question"}}'
         ),
-        "parse.missing_tool_default": '{{"action":"tool_call","tool":"tool_name","args":{{...}}}}',
+        "parse.missing_tool_default": '{"action":"tool_call","tool":"<tool name>","args":{...}}',
         "parse.missing_tool_msg": (
             "action=tool_call but the parsed result is missing the 'tool' field.\n"
             "{hint}\n"

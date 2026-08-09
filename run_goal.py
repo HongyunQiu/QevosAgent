@@ -119,6 +119,15 @@ def _slot_config(slot: str) -> dict:
         "model": (os.environ.get(prefix + "OPENAI_MODEL") or "").strip(),
         # 采样温度按槽（=按模型）各自设置，不同模型的最佳温度不同；留空 = 用默认 0.8
         "temp": (os.environ.get(prefix + "OPENAI_TEMPERATURE") or "").strip(),
+        # 结构化输出（response_format=json_object）按槽设置：能不能上语法约束是
+        # **服务端**属性（vLLM/llama.cpp 都支持，某些代理不支持），留空 = 默认开。
+        # 被服务端拒绝时 LLM 层会自动降级，所以默认开是安全的。
+        "json_mode": (os.environ.get(prefix + "OPENAI_JSON_MODE") or "").strip(),
+        # 思考预算按槽设置：该不该开思考是**模型**属性，且两个服务端对
+        # 「语法约束 vs 思考」的交互处理相反——llama.cpp 在 </think> 之后才施加
+        # 语法（思考完整保留），vLLM 从第 0 个 token 就施加（思考被静默掐掉）。
+        # 所以这个旋钮绝不能全局共用一个值。留空 = 用 OPENAI_THINKING_BUDGET 默认 0。
+        "thinking": (os.environ.get(prefix + "OPENAI_THINKING_BUDGET") or "").strip(),
     }
 
 
@@ -266,6 +275,14 @@ def probe_openai_configuration(list_models=None):
         os.environ["OPENAI_TEMPERATURE"] = active["temp"]
     else:
         os.environ.pop("OPENAI_TEMPERATURE", None)
+    # 结构化输出与思考预算同理：不写回就会串槽。思考预算串槽尤其致命——
+    # 给 DeepSeek 开的思考串到 Qwen 上会被语法约束静默掐掉，全程无任何报错。
+    for _key, _slot_field in (("OPENAI_JSON_MODE", "json_mode"),
+                              ("OPENAI_THINKING_BUDGET", "thinking")):
+        if active[_slot_field]:
+            os.environ[_key] = active[_slot_field]
+        else:
+            os.environ.pop(_key, None)
 
     if active_model in model_ids:
         return {

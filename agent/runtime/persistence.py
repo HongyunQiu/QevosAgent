@@ -80,7 +80,13 @@ _COMPLETION_PREFIXES = (
 )
 
 _FAILURE_MARKERS = ("执行失败", "execution failed", "[TOOL ERROR]")
-_JSON_ERR_MARKERS = ("JSON 解析失败", "JSON parse error")
+# 这里必须匹配 loop.py 真正注入给模型的那条系统消息。曾经只有「JSON 解析失败」
+# 两条，而 loop 注入的是「输出格式错误」，于是一个 92 轮里 74 轮格式失败的 run
+# 被 issues.json 记成 json_parse_errors=0、issues=[]，完美通过。诊断瞎了比不诊断更糟。
+_JSON_ERR_MARKERS = (
+    "JSON 解析失败", "JSON parse error",
+    "输出格式错误", "plain text with no JSON structure",
+)
 
 def _make_completion_summary(text: str, max_len: int = 40) -> str:
     """取 final_answer 第一句并剥离冗余完成前缀，避免列表里每条都以"已完成"开头。"""
@@ -208,7 +214,10 @@ class RunPersistence:
             if not isinstance(content, str):
                 continue
 
-            if '"tool"' in content:
+            # 只扫 assistant：工具调用只可能出自模型。扫全部消息会把系统注入的
+            # 格式纠错模板里的占位符也当成真调用记进来（曾经 used_tools 里凭空
+            # 多出一个从不存在的 "tool_name"，就是这么来的）。
+            if message.get("role") == "assistant" and '"tool"' in content:
                 import re
 
                 match = re.search(r'"tool"\s*:\s*"([^"]+)"', content)

@@ -40,6 +40,27 @@ def _append_short_term(state: AgentState, record: dict) -> None:
         persistence.append_short_term(record)
 
 
+def _ensure_user_turn_last(state: AgentState) -> bool:
+    """保证 short_term 不以 assistant 结尾，必要时补一条最短的 user 回执。
+
+    很多服务端硬性拒绝「以 assistant 结尾」的消息列表——llama.cpp 直接回
+    400 ``Cannot have 2 or more assistant messages at the end of the list.``。
+    而本 loop 里有真实路径会留下这种尾巴：ACK-only 工具（scratchpad_* / raw_append）
+    执行成功后 ``_build_feedback`` 返回 None，那一轮就只追加了 assistant、没追加
+    任何 user 消息。下一轮再追加一条 assistant，尾部就有了两条，整条请求被拒。
+
+    这里不去逐个堵 continue 路径，而是在**每次调用 LLM 之前**统一兜一次：
+    只有真的以 assistant 结尾时才补，正常流程零开销、零噪声。
+
+    Returns True when a filler turn was injected.
+    """
+    real = [m for m in state.short_term if m.get("role") in ("user", "assistant")]
+    if not real or real[-1].get("role") != "assistant":
+        return False
+    _append_short_term(state, {"role": "user", "content": t("loop.continue_filler")})
+    return True
+
+
 def _log_token_stats(state: AgentState, record: dict) -> None:
     """Write a metadata record to short_term.jsonl only (not added to LLM context)."""
     persistence = _get_persistence(state)
@@ -975,6 +996,12 @@ def run(
                 concept_memory=state.meta.get("concept_memory", ""),
                 skills_catalog=state.meta.get("_skills_catalog", ""),
             )
+            # 消息列表以 assistant 结尾会被服务端 400 拒掉（见函数注释）。必须在
+            # build_context_messages 之前补，补进 state 而非 messages —— 否则续跑
+            # 时从 short_term 重建的上下文会原样复现这个尾巴。
+            if _ensure_user_turn_last(state) and hooks.on_error:
+                hooks.on_error("[自我修复] 上下文以 assistant 结尾，已补一条占位 user 消息")
+
             messages = build_context_messages(
                 state,
                 scratchpad=state.meta.get("scratchpad", ""),
