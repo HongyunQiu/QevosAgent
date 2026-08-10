@@ -306,10 +306,11 @@ body.large-font .stat-val.muted { font-size: 12px; }
 /* 信心指数（S2：logprobs 熵，影子模式观测）*/
 .conf-cell { grid-column: 1 / -1; }
 .conf-hint { text-transform: none; letter-spacing: 0; opacity: 0.7; }
-/* 固定高度=走势图高度：status 模式下图被隐藏时格子不塌缩，两种模式等高 */
-.conf-row  { display: flex; align-items: center; gap: 10px; height: 26px; }
+/* 固定高度=第一行 stat-val 的行高(15px)：整格与第一行等高，
+ * status 模式下图被隐藏时也不塌缩 */
+.conf-row  { display: flex; align-items: center; gap: 10px; height: 15px; }
 .conf-row .stat-val { min-width: 52px; }
-.conf-spark { flex: 1; height: 26px; min-width: 0; display: block; }
+.conf-spark { flex: 1; height: 15px; min-width: 0; display: block; }
 .conf-spark polyline { fill: none; stroke: var(--blue); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .conf-spark .conf-fill { fill: var(--blue); opacity: 0.12; stroke: none; }
 .stat-val.conf-ok   { color: var(--green); }
