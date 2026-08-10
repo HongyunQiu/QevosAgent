@@ -1739,19 +1739,11 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
         <div class="stat-val blue"   id="sIter">—</div>
       </div>
       <div class="stat-cell">
-        <div class="stat-lbl">Events</div>
+        <div class="stat-lbl">Events / Tools</div>
         <div class="stat-val green"  id="sEvents">0</div>
       </div>
-      <div class="stat-cell">
-        <div class="stat-lbl">Status</div>
-        <div class="stat-val muted"  id="sStatus">—</div>
-      </div>
-      <div class="stat-cell">
-        <div class="stat-lbl">Tools Used</div>
-        <div class="stat-val orange" id="sTools">0</div>
-      </div>
-      <div class="stat-cell conf-cell" id="sConfCell" hidden>
-        <div class="stat-lbl">Confidence <span class="conf-hint">ppl · lower = surer</span></div>
+      <div class="stat-cell conf-cell" id="sConfCell">
+        <div class="stat-lbl" id="sConfLbl">Status</div>
         <div class="conf-row">
           <div class="stat-val" id="sConf">—</div>
           <svg class="conf-spark" id="sConfSpark" viewBox="0 0 120 26" preserveAspectRatio="none"></svg>
@@ -2981,10 +2973,10 @@ function renderSidebar(data, rid) {
   document.getElementById('sIter').textContent = maxIter != null
     ? `${st.iteration ?? '—'} / ${maxIter}`
     : (st.iteration ?? '—');
-  document.getElementById('sEvents').textContent = evs.length;
-  document.getElementById('sStatus').textContent = st.status || (data.launching ? 'launching' : '—');
-  document.getElementById('sTools').textContent  = evs.filter(e => e.type === 'tool_call').length;
-  renderConfidence(data.meta?.confidence_history);
+  const _toolCount = evs.filter(e => e.type === 'tool_call').length;
+  document.getElementById('sEvents').textContent = `${evs.length} / ${_toolCount}`;
+  renderConfidence(data.meta?.confidence_history,
+                   st.status || (data.launching ? 'launching' : '—'));
 
   // RUN_DIR
   const _runId = st.run_id || data.activeRunId || '—';
@@ -3015,22 +3007,35 @@ function renderSidebar(data, rid) {
   renderRunsList(data.runs || (gState && gState.runs) || [], rid);
 }
 
-/* 信心指数（S2：logprobs 熵，影子模式）。
- * 数值 = 最新一轮 thought 段困惑度（PPL，越低越自信）；
- * 走势 = 每轮 surprisal(-mean_lp) 反转后的折线——线往下掉 = 模型在变迷茫。
- * 颜色按本 run 内相对水位（最新值 / 历史中位数）定，不用绝对阈值：
- * 每个模型有自己的基线，绝对值不可比。 */
-function renderConfidence(hist) {
+/* 信心指数（S2：logprobs 熵，影子模式）与状态的合并格。
+ * running 时：数值 = 最新一轮 thought 段困惑度（PPL，越低越自信）；
+ *   走势 = 每轮 surprisal(-mean_lp) 反转后的折线——线往下掉 = 模型在变迷茫。
+ *   颜色按本 run 内相对水位（最新值 / 历史中位数）定，不用绝对阈值：
+ *   每个模型有自己的基线，绝对值不可比。
+ * 非 running（或尚无 logprobs 数据）时：退回文字状态显示——信心指数
+ * 本身就是 running 态的细分状态，两者共用一格以省侧栏高度。 */
+function renderConfidence(hist, statusText) {
   const cell  = document.getElementById('sConfCell');
   const valEl = document.getElementById('sConf');
   const spark = document.getElementById('sConfSpark');
+  const lbl   = document.getElementById('sConfLbl');
   if (!cell || !valEl || !spark) return;
-  if (!Array.isArray(hist) || hist.length === 0) { cell.hidden = true; return; }
-  cell.hidden = false;
+  const hasData = Array.isArray(hist) && hist.length > 0;
+  if (statusText !== 'running' || !hasData) {
+    if (lbl) lbl.textContent = 'Status';
+    valEl.className = 'stat-val muted';
+    valEl.textContent = statusText || '—';
+    cell.title = '';
+    spark.innerHTML = '';
+    spark.style.display = 'none';
+    return;
+  }
+  if (lbl) lbl.innerHTML = 'Confidence <span class="conf-hint">ppl · lower = surer</span>';
+  spark.style.display = '';
 
   const last = hist[hist.length - 1];
   valEl.textContent = (last.ppl != null && isFinite(last.ppl)) ? last.ppl.toFixed(2) : '—';
-  valEl.classList.remove('conf-ok', 'conf-warn', 'conf-bad');
+  valEl.className = 'stat-val';
   if (hist.length >= 5 && last.ppl != null) {
     const sorted = hist.slice(0, -1).map(h => h.ppl).filter(p => p != null && isFinite(p)).sort((a, b) => a - b);
     if (sorted.length) {
