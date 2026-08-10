@@ -2933,7 +2933,9 @@ function renderTopBar(data, rid) {
   const s = (data.status && data.status.status) || 'unknown';
   pill.className = 'run-pill' + (data.agentAlive ? ' live' : '');
   dot.className  = 'status-dot ' + s;
-  const killable = !!(data.agentAlive && data.agentPid);
+  // agentPid is only known for processes this server instance spawned; a
+  // re-attached run (server restarted) is still killable via the PID file.
+  const killable = !!data.agentAlive;
   kill.className = killable ? 'kill-btn visible' : 'kill-btn';
   pill.dataset.killable = killable ? '1' : '0';
   if (gKillHoldTimer) pill.classList.add('holding');   // preserve hold highlight across 500ms re-renders

@@ -1302,13 +1302,31 @@ function launchAgent(goal, nostop = false, skills = [], agentsProfile = '', advi
 
 /** Kill the running agent process (SIGTERM, then SIGKILL after 3 s). */
 function killAgent() {
-  if (!isAgentRunning()) return { ok: false, error: 'No agent process running.' };
-  broadcastConsole('system', `⏹ Killing agent process (PID ${agentProc.pid})…`);
-  agentProc.kill('SIGTERM');
-  setTimeout(() => {
-    if (agentProc && !agentProc.killed) agentProc.kill('SIGKILL');
-  }, 3000);
-  return { ok: true };
+  if (isAgentRunning()) {
+    broadcastConsole('system', `⏹ Killing agent process (PID ${agentProc.pid})…`);
+    agentProc.kill('SIGTERM');
+    setTimeout(() => {
+      if (agentProc && !agentProc.killed) agentProc.kill('SIGKILL');
+    }, 3000);
+    return { ok: true };
+  }
+  // Re-attached run: the agent process belongs to a previous server instance
+  // (dashboard restarted while the agent kept running), so there is no
+  // agentProc handle. Fall back to the PID recorded in runs/<id>/agent.pid.
+  const rid = state.activeRunId;
+  const pid = rid ? readPidFile(path.join(RUNS_DIR, rid)) : null;
+  if (!pid || !isPidAlive(pid)) return { ok: false, error: 'No agent process running.' };
+  broadcastConsole('system', `⏹ Killing re-attached agent process (PID ${pid})…`);
+  if (process.platform === 'win32') {
+    // /T kills the whole tree — the agent may have tool subprocesses
+    spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+  } else {
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+    setTimeout(() => {
+      if (isPidAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    }, 3000);
+  }
+  return { ok: true, pid };
 }
 
 // ── Cron tasks ─────────────────────────────────────────────────────────────
