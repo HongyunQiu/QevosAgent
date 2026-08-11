@@ -21,7 +21,7 @@ const http         = require('http');
 const fs           = require('fs');
 const path         = require('path');
 const os           = require('os');
-const { spawn }    = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const WebSocket    = require('ws');
 const EventEmitter = require('events');
 const { zipDirToStream } = require('./zip');
@@ -575,6 +575,40 @@ function isPidAlive(pid) {
 }
 
 /**
+ * Check that a PID from an agent.pid file still belongs to the Python agent
+ * and not a recycled PID. Windows reuses PIDs aggressively: after the agent
+ * dies its stale agent.pid can end up pointing at an unrelated process
+ * (observed: svchost.exe), which made the dashboard report a ghost "live" run
+ * and made kill target the wrong process. agent.pid is written by run_goal.py
+ * itself, so the PID must be a python interpreter.
+ */
+function pidIsAgentProcess(pid) {
+  if (!isPidAlive(pid)) return false;
+  try {
+    if (process.platform === 'win32') {
+      const out = execFileSync('tasklist',
+        ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
+        { encoding: 'utf8', timeout: 5000, windowsHide: true });
+      return /python/i.test(out);
+    }
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'args='],
+      { encoding: 'utf8', timeout: 5000 });
+    return /python|run_goal/i.test(out);
+  } catch { return false; }
+}
+
+// Identity checks shell out to tasklist/ps (~100 ms), too heavy for every poll
+// tick — cache the verdict per PID and re-verify every few seconds.
+let _pidIdent = { pid: 0, ok: false, ts: 0 };
+function pidIsAgentProcessCached(pid) {
+  const now = Date.now();
+  if (_pidIdent.pid !== pid || now - _pidIdent.ts > 5000) {
+    _pidIdent = { pid, ok: pidIsAgentProcess(pid), ts: now };
+  }
+  return _pidIdent.ok;
+}
+
+/**
  * Read the agent.pid file for the given run directory.
  * Returns the PID as a number, or null if missing/invalid.
  */
@@ -1121,7 +1155,9 @@ function poll() {
     const runDir = path.join(RUNS_DIR, state.activeRunId);
     const pidFromFile = readPidFile(runDir);
     if (pidFromFile) {
-      newAlive = isPidAlive(pidFromFile);
+      // Identity check, not just liveness — a recycled PID (Windows reuses
+      // them aggressively) must not present as a live agent.
+      newAlive = pidIsAgentProcessCached(pidFromFile);
       // If process died but PID file still exists, delete it to avoid re-checking
       if (!newAlive) {
         try { fs.unlinkSync(path.join(runDir, 'agent.pid')); } catch {}
@@ -1315,7 +1351,13 @@ function killAgent() {
   // agentProc handle. Fall back to the PID recorded in runs/<id>/agent.pid.
   const rid = state.activeRunId;
   const pid = rid ? readPidFile(path.join(RUNS_DIR, rid)) : null;
-  if (!pid || !isPidAlive(pid)) return { ok: false, error: 'No agent process running.' };
+  if (!pid) return { ok: false, error: 'No agent process running.' };
+  // Fresh identity check before killing: never taskkill a PID that is no
+  // longer the python agent (stale agent.pid + recycled PID = wrong target).
+  if (!pidIsAgentProcess(pid)) {
+    try { fs.unlinkSync(path.join(RUNS_DIR, rid, 'agent.pid')); } catch {}
+    return { ok: false, error: 'No agent process running (stale agent.pid cleaned).' };
+  }
   broadcastConsole('system', `⏹ Killing re-attached agent process (PID ${pid})…`);
   if (process.platform === 'win32') {
     // /T kills the whole tree — the agent may have tool subprocesses
