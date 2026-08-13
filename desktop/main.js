@@ -556,13 +556,47 @@ function navigateToDashboard() {
 function setupNativeMenu() {
   if (process.platform === 'darwin') {
     // macOS requires an application menu for Cmd+Q and system conventions.
+    //
+    // The Edit menu is NOT optional decoration: on macOS the standard editing
+    // shortcuts (Cmd+C/V/X/A/Z) are delivered by the application menu, not by
+    // the web contents. Without these roles in the menu the keystrokes reach
+    // nothing and copy/paste silently does nothing anywhere in the window.
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       {
         label: 'QevosAgent',
         submenu: [
-          { role: 'about',     label: t('menu.about') },
+          { role: 'about',       label: t('menu.about') },
           { type: 'separator' },
-          { role: 'quit',      label: t('menu.quit') },
+          { role: 'services',    label: t('menu.services') },
+          { type: 'separator' },
+          { role: 'hide',        label: t('menu.hide') },
+          { role: 'hideOthers',  label: t('menu.hide_others') },
+          { role: 'unhide',      label: t('menu.unhide') },
+          { type: 'separator' },
+          { role: 'quit',        label: t('menu.quit') },
+        ],
+      },
+      {
+        label: t('menu.edit'),
+        submenu: [
+          { role: 'undo',            label: t('menu.undo') },
+          { role: 'redo',            label: t('menu.redo') },
+          { type: 'separator' },
+          { role: 'cut',             label: t('menu.cut') },
+          { role: 'copy',            label: t('menu.copy') },
+          { role: 'paste',           label: t('menu.paste') },
+          { role: 'pasteAndMatchStyle', label: t('menu.paste_match') },
+          { role: 'selectAll',       label: t('menu.select_all') },
+        ],
+      },
+      {
+        label: t('menu.window'),
+        role: 'windowMenu',
+        submenu: [
+          { role: 'minimize', label: t('menu.minimize') },
+          { role: 'zoom',     label: t('menu.zoom') },
+          { type: 'separator' },
+          { role: 'front',    label: t('menu.front') },
         ],
       },
     ]));
