@@ -1727,6 +1727,15 @@ def _get_async_manager(state: AgentState):
             if rd:
                 jobs_dir = Path(rd) / "jobs"
         mgr = AsyncJobManager(jobs_dir=jobs_dir)
+        # 认领上一个进程遗留在同一 run 目录下、且**仍在运行**的后台任务。
+        # manager 本身随进程消失，被它启动的进程不会；不认领的话它们就成了
+        # 谁也看不见、谁也管不了的孤儿。认领来的任务只能观察，终止前要验身份。
+        try:
+            claimed = mgr.load_registry()
+            if claimed:
+                print(f"[jobs] 已认领上一进程遗留的 {claimed} 个后台任务（仅可观察，终止需验证进程身份）")
+        except Exception:
+            pass
         state.meta["_async_manager"] = mgr
     return mgr
 
@@ -1792,7 +1801,10 @@ def tool_job_cancel(state: AgentState, job_id: str) -> ToolResult:
 
 
 def tool_jobs_list(state: AgentState) -> ToolResult:
-    """列出所有后台任务及其当前状态（同时清理 5 分钟前结束的旧任务）。"""
+    """列出所有后台任务及其当前状态（顺便归档 5 分钟前结束的旧任务）。
+
+    归档只释放内存里的输出缓冲，记录与磁盘全文都保留，job_wait 事后照样能查。
+    """
     mgr = _get_async_manager(state)
     jobs = mgr.list_jobs()
     mgr.cleanup()

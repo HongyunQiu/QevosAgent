@@ -1004,6 +1004,22 @@ def main():
             _team_api_instance.stop()
         interrupt_handler.stop()
 
+        # ── 后台任务清场 ────────────────────────────────────────────────────
+        # agent 退出后再没有任何人照看这些进程：它们会继续跑、继续往这个已经
+        # 结束的 run 目录里写、继续占端口和显存。AsyncJobManager 早就备好了
+        # cancel_all_running，只是从来没有人调用它。
+        # 设 KILL_JOBS_ON_EXIT=0 可保留（例如 agent 被要求「后台起一个服务」），
+        # 那时任务台账留在 {run_dir}/jobs/index.json，PID 有据可查。
+        if state is not None and os.environ.get("KILL_JOBS_ON_EXIT", "1") != "0":
+            _job_mgr = state.meta.get("_async_manager")
+            if _job_mgr is not None:
+                try:
+                    _killed = _job_mgr.cancel_all_running()
+                    if _killed:
+                        print(f"\n[run_goal] 后台任务清场：已终止 {_killed} 个仍在运行的任务")
+                except Exception as _je:
+                    print(f"\n[run_goal] 后台任务清场失败（已忽略）: {_je}")
+
         # Write the final status BEFORE removing the PID file so the dashboard
         # never sees "process dead + status=running" in the same poll cycle.
         if state is not None:
