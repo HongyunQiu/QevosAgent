@@ -4,8 +4,48 @@
 不关心工具的具体逻辑——那是各工具自己的事。
 """
 
+import difflib
+import re
+
 from .types_def import Action, AgentState, ToolResult
 from ..i18n import t
+
+# action 字段的合法取值。模型常把它们当成工具名调用——尤其是 done。
+_ACTION_TYPES = {"done", "tool_call", "error"}
+
+# 工具描述里声明子动作的写法，例如 web_interact 的：
+#   "  - screenshot：截图并直接注入视觉上下文…"
+# 全角/半角冒号都算。
+_SUBACTION_RE = r"^\s*[-*]\s*{name}\s*[：:]"
+
+
+def _unknown_tool_hint(tool_name: str, state: AgentState) -> str:
+    """
+    「工具不存在」有三种成因，每种都有唯一正确的写法。直接说出来，
+    而不是只丢一串可用工具让模型再猜一轮——每猜一轮就是一次完整的
+    LLM 往返。
+
+    命中不了就返回空串，退回原来的报错。
+    """
+    # ① 把 action 类型当成了工具名（done 是最常见的一个）
+    if tool_name in _ACTION_TYPES:
+        return t("exec.hint_action", name=tool_name) + " "
+
+    # ② 把某个工具的子动作当成了顶层工具名（screenshot / click / navigate …）
+    pattern = re.compile(_SUBACTION_RE.format(name=re.escape(tool_name)), re.MULTILINE)
+    owners = [
+        name for name, spec in state.tools.items()
+        if getattr(spec, "description", None) and pattern.search(spec.description)
+    ]
+    if len(owners) == 1:
+        return t("exec.hint_subact", name=tool_name, tool=owners[0]) + " "
+
+    # ③ 拼错了
+    close = difflib.get_close_matches(tool_name, list(state.tools.keys()), n=3, cutoff=0.7)
+    if close:
+        return t("exec.hint_close", candidates=" / ".join(close)) + " "
+
+    return ""
 
 
 def execute(action: Action, state: AgentState) -> ToolResult:
@@ -22,7 +62,12 @@ def execute(action: Action, state: AgentState) -> ToolResult:
         return ToolResult(
             success=False,
             output=None,
-            error=t("exec.not_found", name=tool_name, available=available)
+            error=t(
+                "exec.not_found",
+                name=tool_name,
+                hint=_unknown_tool_hint(tool_name, state),
+                available=available,
+            )
         )
 
     try:

@@ -548,7 +548,11 @@ _STRINGS: dict[str, dict[str, str]] = {
         "marker.user_info": "[用户补充信息]\n{content}",
 
         # ── agent/core/executor.py — LLM-facing error messages ────────────────
-        "exec.not_found":  "工具 '{name}' 不存在。当前可用工具: {available}",
+        "exec.not_found":  "工具 '{name}' 不存在。{hint}当前可用工具: {available}",
+        # 三种「不存在」其实各有确定的正确写法，直接给出来，省掉模型再猜一轮。
+        "exec.hint_action":  "'{name}' 是 action 类型不是工具，正确写法：{{\"action\": \"{name}\", ...}}（done 时用 final_answer 字段给出最终答复）。",
+        "exec.hint_subact":  "'{name}' 是 {tool} 的一个 action，正确写法：{{\"action\": \"tool_call\", \"tool\": \"{tool}\", \"args\": {{\"action\": \"{name}\", ...}}}}。",
+        "exec.hint_close":   "你是否想调用 {candidates}？",
         "exec.arg_error":  "工具参数错误: {e}{hint}",
         "exec.exec_error": "工具执行异常: {etype}: {e}",
 
@@ -1289,7 +1293,12 @@ Before calling action='done', you MUST complete the following two steps:
         "marker.user_info": "[User input]\n{content}",
 
         # ── agent/core/executor.py — LLM-facing error messages ────────────────
-        "exec.not_found":  "Tool '{name}' does not exist. Available tools: {available}",
+        "exec.not_found":  "Tool '{name}' does not exist. {hint}Available tools: {available}",
+        # Each flavour of "does not exist" has one correct form — state it, so
+        # the model does not burn another turn guessing.
+        "exec.hint_action":  "'{name}' is an action type, not a tool. Correct form: {{\"action\": \"{name}\", ...}} (for done, put the reply in final_answer).",
+        "exec.hint_subact":  "'{name}' is an action of {tool}. Correct form: {{\"action\": \"tool_call\", \"tool\": \"{tool}\", \"args\": {{\"action\": \"{name}\", ...}}}}.",
+        "exec.hint_close":   "Did you mean {candidates}?",
         "exec.arg_error":  "Tool argument error: {e}{hint}",
         "exec.exec_error": "Tool execution error: {etype}: {e}",
 
