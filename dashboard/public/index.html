@@ -2534,6 +2534,17 @@ function handleMsg(msg) {
     }
   } else if (msg.type === 'open-view') {
     const url = window.location.origin + msg.path;
+    // Inside the Android app, hand the panel to the native browsing WebView.
+    // window.open there hits a WebView with supportMultipleWindows=false, which
+    // navigates this page away in place — the dashboard disappears and only Back
+    // brings it home. The bridge takes a path, not a URL; the app rebuilds the
+    // origin from the server the user configured.
+    if (window.QevosNative && typeof window.QevosNative.openView === 'function') {
+      try {
+        window.QevosNative.openView(msg.path, msg.title || msg.displayId || '', msg.displayId || '');
+        return;
+      } catch (e) { /* fall through to the browser path */ }
+    }
     const w = window.open(url, '_blank');
     // Popups from a WebSocket callback have no user activation, so the browser
     // may block window.open. Fall back to a persistent, clickable prompt — the

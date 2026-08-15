@@ -30,6 +30,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -260,6 +261,40 @@ class MainActivity : AppCompatActivity() {
                 override fun onPageFinished(view: WebView, url: String) {
                     browserAgent.onPageFinished()
                 }
+                // Mirrors the desktop's allowNavigation split: a web_show panel
+                // is pinned to its content, the automation view roams freely.
+                //
+                // Where this departs from the desktop is the handoff. Electron
+                // sends the link to the system browser, which merely switches
+                // windows. Doing the same here launches another app, which puts
+                // QevosAgent in the background — and a backgrounded app gets
+                // frozen, which kills the executor connection mid-run. (Found
+                // exactly that way: the test that proved the lock worked also
+                // knocked the phone off the socket five seconds later.)
+                //
+                // So: hand off only when this phone is NOT the executor. While
+                // it is, refuse the navigation and say so, rather than trading
+                // a live automation session for a link.
+                override fun shouldOverrideUrlLoading(
+                    view: WebView, request: WebResourceRequest
+                ): Boolean {
+                    if (!browserAgent.isNavigationLocked()) return false
+                    val target = request.url ?: return false
+                    if (browserAgent.isEnabled()) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "本机正作为浏览器执行体，已拦截外链跳转（避免切换 app 断开连接）",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        return true
+                    }
+                    return try {
+                        startActivity(Intent(Intent.ACTION_VIEW, target))
+                        true
+                    } catch (_: Exception) {
+                        false   // no browser to hand it to → let it load here
+                    }
+                }
                 override fun onReceivedSslError(
                     view: WebView, handler: SslErrorHandler, error: SslError
                 ) {
@@ -275,7 +310,35 @@ class MainActivity : AppCompatActivity() {
             onNeedShow = { showBrowser(true) },
         )
 
+        // Registered on the DASHBOARD WebView (that is where the page runs), not
+        // on the browsing one. Available regardless of the executor toggle —
+        // showing web_show output is a viewing feature, not an automation one.
+        binding.webView.addJavascriptInterface(QevosBridge(), "QevosNative")
+
         if (prefs.getBoolean(KEY_BROWSER_AGENT, false)) startBrowserAgent()
+    }
+
+    /**
+     * Bridge the dashboard page uses to hand a `web_show` panel to the browsing
+     * WebView, instead of `window.open` — which in a WebView with the default
+     * supportMultipleWindows=false navigates the dashboard away in place.
+     *
+     * It deliberately takes a PATH, never a URL: the origin is rebuilt here from
+     * the server the user configured. addJavascriptInterface exposes this object
+     * to every script in that WebView, so the page must not be able to point the
+     * browsing view at an arbitrary host through it.
+     */
+    inner class QevosBridge {
+        @android.webkit.JavascriptInterface
+        fun openView(path: String, title: String, displayId: String) {
+            if (!path.startsWith("/")) return          // paths only, never a URL
+            val host = prefs.getString(KEY_HOST, null) ?: return
+            val port = prefs.getString(KEY_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
+            val url = "http://$host:$port$path"
+            runOnUiThread {
+                browserAgent.showDisplay(url, displayId.ifBlank { "default" })
+            }
+        }
     }
 
     private fun startBrowserAgent() {

@@ -117,6 +117,36 @@ class BrowserAgent(
     var state: State = State.OFF
         private set
 
+    /**
+     * Which display the browsing view is currently showing, and whether it is
+     * pinned to that content.
+     *
+     * The browsing WebView is a single slot serving both jobs the desktop keeps
+     * in one map: showing what `web_show` produced, and being the surface
+     * `web_interact` drives. Electron distinguishes them with allowNavigation —
+     * content views are pinned to their URL, the automation view roams — and
+     * the same split applies here, or a web_show panel would start following
+     * links the moment the agent touched it.
+     */
+    private var displayId: String = "default"
+    private var navLocked = false
+
+    fun currentDisplayId(): String = displayId
+    fun isNavigationLocked(): Boolean = navLocked
+
+    /**
+     * Show a `web_show` panel. Called for an open-view broadcast, which arrives
+     * whether or not this phone is acting as the executor — displaying agent
+     * output is a viewing feature, not an automation one.
+     */
+    fun showDisplay(url: String, displayId: String) {
+        this.displayId = displayId
+        navLocked = true
+        cssScale = 0.0
+        onNeedShow()
+        webView.loadUrl(url)
+    }
+
     /** Scale applied to the last screenshot (screenshot px = view px × this). */
     private var shotScale = 1.0
     /** CSS pixels per view pixel, re-read on each page load. 0 = unknown. */
@@ -256,6 +286,7 @@ class BrowserAgent(
                     "browser-agent/action" -> { if (!stale()) handleAction(
                         msg.optString("reqId"),
                         msg.optString("action"),
+                        msg.optString("displayId"),
                         msg.optJSONObject("payload") ?: JSONObject()
                     ) }
                     "browser-agent/revoked" -> ui.post {
@@ -311,10 +342,20 @@ class BrowserAgent(
         try { ws?.send(msg.toString()) } catch (e: Exception) { Log.w(TAG, "send result failed: ${e.message}") }
     }
 
-    private fun handleAction(reqId: String, action: String, payload: JSONObject) {
+    private fun handleAction(reqId: String, action: String, reqDisplayId: String, payload: JSONObject) {
         ui.post {
+            // new_tab is the one action that (re)assigns the slot's identity.
+            if (action == "new_tab" && reqDisplayId.isNotBlank()) displayId = reqDisplayId
+            val mismatch = if (action == "new_tab") null else displayMismatchNote(reqDisplayId)
+            val finish: (JSONObject?, String?) -> Unit = { result, error ->
+                if (result != null && mismatch != null) {
+                    val prev = result.optString("note", "")
+                    result.put("note", if (prev.isBlank()) mismatch else "$prev  $mismatch")
+                }
+                sendResult(reqId, result, error)
+            }
             try {
-                execute(action, payload) { result, error -> sendResult(reqId, result, error) }
+                execute(action, payload, finish)
             } catch (e: Exception) {
                 Log.w(TAG, "action $action failed", e)
                 sendResult(reqId, null, "${e.javaClass.simpleName}: ${e.message}")
@@ -327,6 +368,18 @@ class BrowserAgent(
             put("ok", true)
             for ((k, v) in pairs) if (v != null) put(k, v)
         }
+
+    /**
+     * The phone has ONE browsing view, so `display_id` cannot select between
+     * several the way it does on the desktop. Rather than ignore it — which
+     * would let an agent operate a panel it thinks is a different one — say so
+     * in the result when the request names a display we are not showing.
+     */
+    private fun displayMismatchNote(requested: String): String? =
+        if (requested.isNotBlank() && requested != displayId)
+            "手机只有一个浏览视图，当前显示的是 display_id=$displayId，而本次请求的是 $requested——" +
+            "操作已作用于当前视图。需要切换请先 new_tab。"
+        else null
 
     /** Runs on the UI thread. `done(result, error)` — exactly one is non-null. */
     private fun execute(
@@ -342,6 +395,9 @@ class BrowserAgent(
         when (action) {
             "new_tab", "navigate" -> {
                 val url = p.optString("url").ifBlank { "about:blank" }
+                // Taking the view for automation releases the web_show pin.
+                navLocked = false
+                cssScale = 0.0
                 onNeedShow()
                 waitForLoad { timedOut ->
                     done(ok("url" to url, "note" to if (timedOut) "加载超时，返回当前状态" else null), null)

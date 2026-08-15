@@ -65,6 +65,32 @@ gradlew.bat assembleDebug    # Windows
 **同时只有一台设备能当执行体。** 第二台开启会顶掉第一台，被顶掉的那台会弹窗告知
 并自动关掉开关——广播给所有手机会让每条命令执行 N 次。
 
+### 与 web_show 的关系：同一个浏览视图
+
+手机上 `web_show` 的面板和 `web_interact` 操作的目标是**同一个浏览 WebView**，
+和桌面 Electron 的模型一致（那边两者共用 `gViews` 里的同一个 WebContentsView）。
+
+面板不再走 `window.open`——安卓 WebView 默认 `supportMultipleWindows=false`，
+那样会把看板就地导航掉。改为 dashboard 页面通过 `window.QevosNative.openView()`
+交给原生层。桥**只接受路径**，origin 由原生侧用已配置的服务器拼出来，页面无法
+借它把浏览视图指向任意主机。
+
+沿用 Electron 的 `allowNavigation` 二分：
+
+| | 导航 | 谁设置 |
+|---|---|---|
+| `web_show` 面板 | **锁定**，点链接不跳走 | 收到 open-view 时 |
+| 自动化视图 | 放开，正常跟随 | `new_tab` / `navigate` 时解锁 |
+
+锁定态下点外链的处理**与桌面端不同**：Electron 交给系统浏览器只是切个窗口，
+安卓上启动另一个 app 会让 QevosAgent 退到后台**被系统冻结、执行体断线**。所以
+本机正担任执行体时直接拦截并 toast 提示；不担任执行体时才交给系统浏览器。
+
+**`display_id` 只有一个槽位。** 手机不像桌面能开 N 个视图，任何 action 都作用于
+当前这一个。请求的 `display_id` 与当前显示的不一致时，返回值的 `note` 会明说
+（不报错，但不会让 agent 以为操作的是另一个面板）。`new_tab` 是唯一会重新认领
+槽位身份的 action。
+
 ### 与桌面端的行为差异
 
 | | 说明 |
