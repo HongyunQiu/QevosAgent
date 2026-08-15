@@ -17,10 +17,13 @@
         android:theme="@style/Theme.QevosAgent"
         android:usesCleartextTraffic="true">
 
+        <!-- configChanges: smallestScreenSize|screenLayout matter on foldables.
+             Without them, unfolding tears down and rebuilds the Activity, which
+             drops the executor's WebSocket and its browsing WebView mid-run. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

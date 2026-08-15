@@ -361,28 +361,67 @@ function browserAgentInfo() {
 
 function registerBrowserAgent(ws, msg) {
   const who = msg.name || msg.deviceId || '未知设备';
-  if (browserAgent && browserAgent.ws !== ws) {
-    try {
-      browserAgent.ws.send(JSON.stringify({
-        type: 'browser-agent/revoked', reason: `被「${who}」接管`,
-      }));
-    } catch {}
-    broadcastConsole('system',
-      `🌐 浏览器执行体切换：${browserAgent.name || browserAgent.deviceId} → ${who}`);
-  } else if (!browserAgent) {
-    broadcastConsole('system', `🌐 浏览器执行体已接入：${who}`);
-  }
+  const deviceId = String(msg.deviceId || '');
+  const prev = browserAgent;
+
+  // Claim the slot FIRST, so the close event from the old socket below sees a
+  // browserAgent that is no longer itself and bows out instead of unregistering
+  // the connection we just accepted.
   browserAgent = {
-    ws,
-    deviceId: String(msg.deviceId || ''),
+    ws, deviceId,
     name: String(msg.name || ''),
     w: Number(msg.w) || 0,
     h: Number(msg.h) || 0,
     since: Date.now(),
+    awaitingPong: false,
   };
+
+  if (prev && prev.ws !== ws) {
+    // A NEW socket from the SAME device is a reconnect, not a takeover. Saying
+    // "you were displaced" to a phone that is merely reconnecting makes it drop
+    // its own role — and on a foldable, where the Activity is torn down and
+    // rebuilt on every fold, the device ends up revoking itself while a zombie
+    // socket keeps the slot. Only a genuinely different device displaces.
+    const sameDevice = deviceId !== '' && deviceId === prev.deviceId;
+    try {
+      if (sameDevice) prev.ws.close(1000, 'superseded by a newer socket from the same device');
+      else prev.ws.send(JSON.stringify({ type: 'browser-agent/revoked', reason: `被「${who}」接管` }));
+    } catch {}
+    broadcastConsole('system', sameDevice
+      ? `🌐 浏览器执行体重连：${who}`
+      : `🌐 浏览器执行体切换：${prev.name || prev.deviceId} → ${who}`);
+  } else if (!prev) {
+    broadcastConsole('system', `🌐 浏览器执行体已接入：${who}`);
+  }
+
   try { ws.send(JSON.stringify({ type: 'browser-agent/registered' })); } catch {}
   broadcast();
 }
+
+// Liveness for the executor socket.
+//
+// A phone frozen by the OS — aggressive OEM power management does this the
+// moment the screen sleeps — stops reading and writing WITHOUT ever sending a
+// TCP FIN. The socket therefore stays readyState===OPEN here, every action gets
+// dispatched into the void, and each one only fails on its own 15 s timeout.
+// From the agent's side that reads as a hang. Ping, and drop the slot the
+// moment a round goes unanswered, so actions fall back (or fail) immediately.
+const EXECUTOR_PING_MS = 8000;
+setInterval(() => {
+  const a = browserAgent;
+  if (!a) return;
+  if (a.ws.readyState !== WebSocket.OPEN) {
+    unregisterBrowserAgent(a.ws, 'socket 已不可用');
+    return;
+  }
+  if (a.awaitingPong) {
+    try { a.ws.terminate(); } catch {}
+    unregisterBrowserAgent(a.ws, `心跳 ${EXECUTOR_PING_MS / 1000}s 无应答（手机可能已被系统冻结）`);
+    return;
+  }
+  a.awaitingPong = true;
+  try { a.ws.ping(); } catch {}
+}, EXECUTOR_PING_MS).unref?.();
 
 function unregisterBrowserAgent(ws, reason) {
   if (!browserAgent || browserAgent.ws !== ws) return;
@@ -4311,6 +4350,11 @@ wss.on('connection', (ws, req) => {
       if (msg.type === 'browser-agent/unregister') { unregisterBrowserAgent(ws, '主动退出'); return; }
       if (msg.type === 'browser-agent/result')     { resolveBrowserResult(msg); return; }
     } catch {}
+  });
+
+  // Answers our liveness ping — see the heartbeat above.
+  ws.on('pong', () => {
+    if (browserAgent && browserAgent.ws === ws) browserAgent.awaitingPong = false;
   });
 
   ws.on('close', () => { clients.delete(ws); unregisterBrowserAgent(ws, '连接关闭'); });

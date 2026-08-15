@@ -101,6 +101,19 @@ class BrowserAgent(
     private var port = ""
     private var retries = 0
 
+    /**
+     * Bumped on every connect / disable / destroy. Each listener captures the
+     * value it was born with and ignores everything once it goes stale.
+     *
+     * Without this, a socket we walked away from keeps its callbacks: OkHttp's
+     * cancel() is asynchronous, and a late onFailure would call
+     * scheduleReconnect() on behalf of a connection nobody owns any more. The
+     * result was two live sockets from one phone taking the executor slot from
+     * each other, with the visible one concluding it had been "displaced" — by
+     * itself.
+     */
+    private var epoch = 0
+
     var state: State = State.OFF
         private set
 
@@ -114,6 +127,17 @@ class BrowserAgent(
     private var navTimeout: Runnable? = null
     /** Set while waiting for the server to acknowledge our registration. */
     private var ackTimeout: Runnable? = null
+
+    init {
+        // cssScale is derived from the view's width, so any resize invalidates
+        // it: unfolding a foldable, the IME opening, a split-screen change.
+        // Until the Activity stopped being rebuilt on fold, recreation happened
+        // to reset this for us; now nothing does, and a stale ratio silently
+        // offsets every coordinate we hand to JS.
+        webView.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
+            if ((r - l) != (oldR - oldL) || (b - t) != (oldB - oldT)) cssScale = 0.0
+        }
+    }
 
     private val deviceName: String =
         (Build.MANUFACTURER + " " + Build.MODEL).trim().ifBlank { "Android" }
@@ -136,6 +160,7 @@ class BrowserAgent(
     fun disable() {
         if (!enabled) return
         enabled = false
+        epoch++          // retire the current listener before tearing its socket down
         try { ws?.send(JSONObject().put("type", "browser-agent/unregister").toString()) } catch (_: Exception) {}
         try { ws?.close(1000, "user disabled") } catch (_: Exception) {}
         ws = null
@@ -145,6 +170,7 @@ class BrowserAgent(
 
     fun destroy() {
         enabled = false
+        epoch++          // an Activity rebuild must not leave live callbacks behind
         try { ws?.cancel() } catch (_: Exception) {}
         ws = null
         clearNavWait()
@@ -168,15 +194,24 @@ class BrowserAgent(
 
     private fun connect() {
         if (!enabled) return
+        // Retire whatever came before: any in-flight socket and its callbacks
+        // stop counting from here.
+        val myEpoch = ++epoch
+        try { ws?.cancel() } catch (_: Exception) {}
         setState(State.CONNECTING)
         val url = "ws://$host:$port/?role=browser-agent"
-        Log.i(TAG, "connecting → $url")
+        Log.i(TAG, "connecting → $url (epoch $myEpoch)")
         val req = Request.Builder().url(url).build()
         ws = client.newWebSocket(req, object : WebSocketListener() {
+            /** True once this listener's socket has been superseded. */
+            private fun stale(): Boolean = myEpoch != epoch
+
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (stale()) { try { webSocket.cancel() } catch (_: Exception) {}; return }
                 retries = 0
                 Log.i(TAG, "ws open (HTTP ${response.code}) — sending register")
                 ui.post {
+                    if (stale()) return@post
                     // Report the browsing view's real size so the desktop side
                     // can show what it's driving.
                     webSocket.send(JSONObject().apply {
@@ -209,33 +244,46 @@ class BrowserAgent(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (stale()) return
                 val msg = try { JSONObject(text) } catch (_: Exception) { return }
                 when (msg.optString("type")) {
                     "browser-agent/registered" -> ui.post {
+                        if (stale()) return@post
                         Log.i(TAG, "register acknowledged — now the executor")
                         clearAckWait()
                         setState(State.ACTIVE)
                     }
-                    "browser-agent/action" -> handleAction(
+                    "browser-agent/action" -> { if (!stale()) handleAction(
                         msg.optString("reqId"),
                         msg.optString("action"),
                         msg.optJSONObject("payload") ?: JSONObject()
-                    )
+                    ) }
                     "browser-agent/revoked" -> ui.post {
+                        if (stale()) return@post
                         Log.w(TAG, "executor slot revoked: ${msg.optString("reason")}")
+                        // Give up the socket too, not just the flag. Leaving it
+                        // open kept a connection around that the UI no longer
+                        // believed in — and that could still be handed actions.
                         enabled = false
+                        epoch++
+                        try { webSocket.close(1000, "revoked") } catch (_: Exception) {}
+                        ws = null
+                        clearAckWait()
                         setState(State.REVOKED)
                     }
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (stale()) return
                 Log.w(TAG, "ws failure: ${t.javaClass.simpleName} ${t.message}")
-                ui.post { setState(State.ERROR); scheduleReconnect() }
+                ui.post { if (!stale()) { setState(State.ERROR); scheduleReconnect() } }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                ui.post { if (enabled) { setState(State.ERROR); scheduleReconnect() } }
+                if (stale()) return
+                Log.i(TAG, "ws closed ($code $reason)")
+                ui.post { if (!stale() && enabled) { setState(State.ERROR); scheduleReconnect() } }
             }
         })
     }
