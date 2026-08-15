@@ -353,6 +353,10 @@ class MainActivity : AppCompatActivity() {
         // for: the user opted in and would otherwise keep believing this phone
         // is still the executor.
         if (st == BrowserAgent.State.REVOKED) {
+            // This is the ONLY place the toggle turns itself off, so log it:
+            // finding the switch off with no memory of why is otherwise
+            // impossible to trace after the fact.
+            android.util.Log.w("QevosBrowserAgent", "REVOKED → 执行体开关已自动关闭")
             prefs.edit().putBoolean(KEY_BROWSER_AGENT, false).apply()
             AlertDialog.Builder(this)
                 .setTitle("浏览器执行体已被接管")
