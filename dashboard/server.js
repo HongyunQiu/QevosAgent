@@ -349,6 +349,18 @@ let browserAgent = null;          // { ws, deviceId, name, w, h, since }
 const browserPending = new Map(); // reqId → { resolve, reject, timer }
 let browserReqSeq = 0;
 
+// Strict mode. Without it, a phone that drops mid-task hands the rest of the
+// run to whatever browser happens to have a debug port open on this machine —
+// the agent keeps reporting success and nothing says the work moved to another
+// screen. With BROWSER_EXECUTOR_STRICT=1 an UNEXPECTED loss fails the action
+// instead of falling back.
+//
+// Deliberately switching the toggle off on the phone is not a loss: that is the
+// user saying "go back to normal", so it clears the flag rather than wedging
+// every later action.
+const EXECUTOR_STRICT = process.env.BROWSER_EXECUTOR_STRICT === '1';
+let browserAgentLost = null;      // { name, reason, at } — set only on an unexpected drop
+
 // Kept under the 20 s HTTP timeout in tool_web_interact so the agent gets a
 // descriptive "device timed out" instead of a bare socket hangup.
 const MOBILE_ACTION_TIMEOUT_MS = 15000;
@@ -394,6 +406,7 @@ function registerBrowserAgent(ws, msg) {
     broadcastConsole('system', `🌐 浏览器执行体已接入：${who}`);
   }
 
+  browserAgentLost = null;   // a live executor clears any armed strict-mode block
   try { ws.send(JSON.stringify({ type: 'browser-agent/registered' })); } catch {}
   broadcast();
 }
@@ -423,10 +436,12 @@ setInterval(() => {
   try { a.ws.ping(); } catch {}
 }, EXECUTOR_PING_MS).unref?.();
 
-function unregisterBrowserAgent(ws, reason) {
+function unregisterBrowserAgent(ws, reason, deliberate = false) {
   if (!browserAgent || browserAgent.ws !== ws) return;
-  broadcastConsole('system',
-    `🌐 浏览器执行体已断开：${browserAgent.name || browserAgent.deviceId}（${reason}）`);
+  const who = browserAgent.name || browserAgent.deviceId;
+  broadcastConsole('system', `🌐 浏览器执行体已断开：${who}（${reason}）`);
+  // Only an unexpected drop arms strict mode; a user-driven opt-out does not.
+  browserAgentLost = deliberate ? null : { name: who, reason, at: Date.now() };
   browserAgent = null;
   // Fail every in-flight request now instead of letting each burn its full
   // timeout — the agent gets "device gone" immediately, not a 15 s mystery.
@@ -4011,6 +4026,10 @@ const server = http.createServer(async (req, res) => {
 
   // ── POST /api/browser-action ─────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/api/browser-action') {
+    // Recorded before dispatch so a FAILED action names its executor too —
+    // "who was driving when this broke" is exactly the question an error
+    // raises, and it is the one a bare message cannot answer.
+    let via = null;
     try {
       const body = JSON.parse(await readBody(req));
       const { display_id = 'default', action, payload = {} } = body;
@@ -4021,18 +4040,33 @@ const server = http.createServer(async (req, res) => {
       // is a deliberate user action on the device, so "the phone wins while
       // it's plugged in" is the least surprising rule — and it's visible,
       // since register/unregister both emit a console line.
+      // Every reply carries `via`, naming the executor that actually ran the
+      // action. Without it a silent hand-off — phone drops, the next action
+      // lands in whatever browser is open here — is indistinguishable from
+      // success on the phone, for the model and for the user alike.
       if (browserAgent) {
+        via = `mobile:${browserAgent.name || browserAgent.deviceId || 'unknown'}`;
         const result = await mobileBrowserAction(display_id, action, payload);
-        json(200, result);
+        json(200, { ...result, via });
+      } else if (EXECUTOR_STRICT && browserAgentLost) {
+        json(503, { via: 'none', error:
+          `浏览器执行体「${browserAgentLost.name}」已断开（${browserAgentLost.reason}），` +
+          `BROWSER_EXECUTOR_STRICT=1 下不回落到本机浏览器。` +
+          `请恢复手机连接，或在手机菜单里主动关闭「浏览器执行体」以允许回落。` });
       } else if (process.env.ELECTRON) {
+        via = 'electron';
         serverEvents.emit('browser-action', { displayId: display_id, action, payload },
-          result => { if (result.error) json(500, result); else json(200, result); }
+          result => {
+            if (result.error) json(500, { ...result, via });
+            else json(200, { ...result, via });
+          }
         );
       } else {
+        via = 'cdp';
         const result = await cdpBrowserAction(display_id, action, payload);
-        json(200, result);
+        json(200, { ...result, via });
       }
-    } catch (e) { json(500, { error: String(e.message || e) }); }
+    } catch (e) { json(500, { error: String(e.message || e), via }); }
     return;
   }
 
@@ -4347,7 +4381,7 @@ wss.on('connection', (ws, req) => {
       // Opting in claims the single executor slot; opting out or dropping the
       // socket releases it. Results come back keyed by the reqId we sent.
       if (msg.type === 'browser-agent/register')   { registerBrowserAgent(ws, msg); return; }
-      if (msg.type === 'browser-agent/unregister') { unregisterBrowserAgent(ws, '主动退出'); return; }
+      if (msg.type === 'browser-agent/unregister') { unregisterBrowserAgent(ws, '主动退出', true); return; }
       if (msg.type === 'browser-agent/result')     { resolveBrowserResult(msg); return; }
     } catch {}
   });

@@ -662,12 +662,15 @@ class BrowserAgent(
                         done(encodeShot(bmp, w, h), null)
                     } else {
                         bmp.recycle()
-                        done(null, "PixelCopy 失败（code=$result）——浏览视图可能不在屏幕上")
+                        done(null, screenNotRenderingHint("PixelCopy code=$result"))
                     }
                 }, ui)
             } catch (e: Exception) {
                 bmp.recycle()
-                done(null, "PixelCopy 异常: ${e.message}")
+                // "Window doesn't have a backing surface" is what a sleeping or
+                // locked phone raises. The raw text tells an operator nothing —
+                // and this is the single most common way screenshots fail here.
+                done(null, screenNotRenderingHint(e.message ?: e.toString()))
             }
             return
         }
@@ -679,6 +682,16 @@ class BrowserAgent(
         webView.setLayerType(prevLayer, null)
         done(encodeShot(bmp, w, h), null)
     }
+
+    /**
+     * Every screenshot failure so far has had one cause: nothing was being
+     * rendered. Say that, and say what to do about it, instead of forwarding a
+     * platform string the reader cannot act on.
+     */
+    private fun screenNotRenderingHint(detail: String): String =
+        "截图失败：手机屏幕未点亮、已锁屏，或 QevosAgent 不在前台——这几种情况下 " +
+        "WebView 不渲染，抓不到任何画面（触摸和 eval 仍然有效，所以只有截图会失败）。" +
+        "请解锁手机并让 app 保持前台。[$detail]"
 
     /** Downscale, PNG-encode, and record the scale used for coordinate remap. */
     private fun encodeShot(bmp: Bitmap, w: Int, h: Int): JSONObject {

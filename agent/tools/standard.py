@@ -2752,7 +2752,11 @@ def tool_web_interact(
     # loop.py 会把它注入 short_term，LLM 下一轮直接看到图像，无需额外 load_image。
     if action == "screenshot" and inject and result.get("data"):
         from ..core.llm import image_block as _image_block
-        summary = f"截图完成（display_id={display_id}）"
+        # 带上 via：截图这条路径把原始返回值换成了摘要字符串，不显式写出来的话，
+        # 执行体中途换人（手机掉线 → 回落到本机浏览器）在这里是完全看不见的。
+        via = result.get("via")
+        summary = f"截图完成（display_id={display_id}"
+        summary += f"，执行体={via}）" if via else "）"
         cursor = result.get("cursor")
         if cursor:
             summary += f"  光标标识码：#{cursor['code']} 位于 ({cursor['x']}, {cursor['y']})"
@@ -4115,6 +4119,9 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "  - mouse_move 只画坐标标记，不产生 hover——需要悬停效果请用 eval 派发 mouseover\n"
                 "  - button 参数无效（触摸屏没有左右键）\n"
                 "  - 坐标一律用最近一次 screenshot 的像素坐标，手机侧会自动换算，不要自己缩放\n"
+                "【执行体标识】每次返回都带 via 字段，取值 mobile:<机型> / electron / cdp。\n"
+                "  手机掉线后会回落到本机浏览器，via 是唯一能看出「换人了」的地方——\n"
+                "  依赖前序 new_tab 上下文时务必核对 via 是否与上一步一致。\n"
                 "【页面控制】\n"
                 "  - new_tab：打开新标签页，payload: {url?, title?}\n"
                 "  - navigate：跳转 URL 并等待加载完成，payload: {url}\n"
