@@ -16,9 +16,38 @@ const assert = require('node:assert/strict');
 const fs     = require('fs');
 const os     = require('os');
 const path   = require('path');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 const SERVER = path.join(__dirname, 'server.js');
+
+/**
+ * A stand-in for the agent process behind agent.pid.
+ *
+ * It has to be a REAL python process, not merely a live pid. server.js verifies
+ * the *identity* behind agent.pid — tasklist/ps must show python — so that a
+ * recycled Windows pid cannot masquerade as a live agent. This test used to pass
+ * its own pid (node.exe), which silently stopped satisfying agentAlive when that
+ * check landed: every positive case then timed out, and every negative case
+ * started passing for the wrong reason.
+ */
+function resolvePython() {
+  const vendored = path.join(__dirname, '..', 'desktop', 'vendor', 'python',
+    process.platform === 'win32' ? 'python.exe' : 'python');
+  if (fs.existsSync(vendored)) return vendored;
+  for (const cand of ['python3', 'python']) {
+    try { execFileSync(cand, ['--version'], { stdio: 'ignore' }); return cand; } catch {}
+  }
+  return null;
+}
+
+/** Spawn the stand-in and tie its lifetime to the test. Returns its pid. */
+function fakeAgentPid(t) {
+  const py = resolvePython();
+  if (!py) return null;
+  const proc = spawn(py, ['-c', 'import time; time.sleep(300)'], { stdio: 'ignore' });
+  t.after(() => { try { proc.kill(); } catch {} });
+  return proc.pid;
+}
 
 function mkTmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'qevos-followup-'));
@@ -102,14 +131,16 @@ async function boot(tmp, extraEnv = {}) {
 }
 
 test('weak pass is nudged to finish, then a followup run is launched', async t => {
+  const pid = fakeAgentPid(t);
+  if (!pid) return t.skip('no python available for the agent stand-in');
   const tmp = mkTmp();
   const runsDir = path.join(tmp, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
 
-  // A live run parked on a weak pass. Our own pid stands in for the agent's:
-  // it is genuinely alive, so the dashboard sees agentAlive.
+  // A live run parked on a weak pass, with a real python process standing in
+  // for the agent so the dashboard's identity check sees agentAlive.
   const dir = writeRun(runsDir, '20260101-000000', {
-    status: 'paused', run_outcome: 'partial', gaps: ['C 格式未实现'], alivePid: process.pid,
+    status: 'paused', run_outcome: 'partial', gaps: ['C 格式未实现'], alivePid: pid,
   });
 
   const stub = writeLaunchStub(tmp);
@@ -158,11 +189,13 @@ test('weak pass is nudged to finish, then a followup run is launched', async t =
 });
 
 test('a weak pass is only ever nudged once', async t => {
+  const pid = fakeAgentPid(t);
+  if (!pid) return t.skip('no python available for the agent stand-in');
   const tmp = mkTmp();
   const runsDir = path.join(tmp, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
   const dir = writeRun(runsDir, '20260101-000000', {
-    status: 'paused', run_outcome: 'partial', alivePid: process.pid,
+    status: 'paused', run_outcome: 'partial', alivePid: pid,
   });
 
   const server = await boot(tmp);
@@ -175,12 +208,14 @@ test('a weak pass is only ever nudged once', async t => {
 });
 
 test('an ordinary ask_user pause is left alone', async t => {
+  const pid = fakeAgentPid(t);
+  if (!pid) return t.skip('no python available for the agent stand-in');
   const tmp = mkTmp();
   const runsDir = path.join(tmp, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
   // paused, but no weak-pass outcome — this is the agent asking a question.
   const dir = writeRun(runsDir, '20260101-000000', {
-    status: 'paused', run_outcome: null, alivePid: process.pid,
+    status: 'paused', run_outcome: null, alivePid: pid,
   });
 
   const server = await boot(tmp);
@@ -192,11 +227,13 @@ test('an ordinary ask_user pause is left alone', async t => {
 });
 
 test('a completed run is left alone', async t => {
+  const pid = fakeAgentPid(t);
+  if (!pid) return t.skip('no python available for the agent stand-in');
   const tmp = mkTmp();
   const runsDir = path.join(tmp, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
   const dir = writeRun(runsDir, '20260101-000000', {
-    status: 'done', run_outcome: 'completed', alivePid: process.pid,
+    status: 'done', run_outcome: 'completed', alivePid: pid,
   });
 
   const server = await boot(tmp);
@@ -207,11 +244,13 @@ test('a completed run is left alone', async t => {
 });
 
 test('AUTO_FOLLOWUP=0 disables the whole mechanism', async t => {
+  const pid = fakeAgentPid(t);
+  if (!pid) return t.skip('no python available for the agent stand-in');
   const tmp = mkTmp();
   const runsDir = path.join(tmp, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
   const dir = writeRun(runsDir, '20260101-000000', {
-    status: 'paused', run_outcome: 'partial', alivePid: process.pid,
+    status: 'paused', run_outcome: 'partial', alivePid: pid,
   });
 
   const server = await boot(tmp, { AUTO_FOLLOWUP: '0' });
@@ -223,6 +262,8 @@ test('AUTO_FOLLOWUP=0 disables the whole mechanism', async t => {
 });
 
 test('a run that already used its generation is handed back to the user', async t => {
+  const pid = fakeAgentPid(t);
+  if (!pid) return t.skip('no python available for the agent stand-in');
   const tmp = mkTmp();
   const runsDir = path.join(tmp, 'runs');
   fs.mkdirSync(runsDir, { recursive: true });
@@ -231,7 +272,7 @@ test('a run that already used its generation is handed back to the user', async 
   fs.writeFileSync(path.join(runsDir, '.followup.jsonl'),
     JSON.stringify({ event: 'linked', parent: '20251231-000000', child: '20260101-000000', depth: 1 }) + '\n');
   const dir = writeRun(runsDir, '20260101-000000', {
-    status: 'paused', run_outcome: 'partial', alivePid: process.pid,
+    status: 'paused', run_outcome: 'partial', alivePid: pid,
   });
 
   const server = await boot(tmp);
