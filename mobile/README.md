@@ -66,16 +66,32 @@ gradlew.bat assembleDebug    # Windows
 | `key_type` | 走 `execCommand('insertText')`，会触发真实 input 事件（React 受控组件可用）；需要先有聚焦元素 |
 | `scroll` | 滚动坐标处最内层可滚动元素，无惯性；`deltaX/deltaY` 仍是 CSS 像素，与桌面端一致 |
 | 坐标 | 一律用**最近一次 screenshot 的像素坐标**，手机侧自动换算，不要自己缩放 |
-| 截图 | 长边超过 1600px 会等比缩小；硬件层内容（WebGL、`<video>`）可能截出空白 |
+| 截图 | 走 `PixelCopy` 抓窗口合成面，会自动把浏览视图切到前台；长边超过 1600px 等比缩小 |
+
+### 真机验证结论（Galaxy Z Fold SM-F9710 / Android 15）
+
+全部 action 已在真机跑通：点击命中精确到 CSS 像素（目标 238,180 → 页面实收
+237,180）、橙色标记与实际落点重合、`你好 hello 123` 中文输入成功、内层可滚动
+元素滚动命中、`get_html` 正常。
+
+踩到的三个坑，都会影响使用方式：
+
+1. **手机必须解锁。** 锁屏遮住 Activity 时 WebView 不渲染，截图是**纯白**的
+   （触摸和 `eval` 仍然工作，所以只有截图会出错——很容易误判成代码 bug）。
+2. **灭屏会断线。** 三星 Freecess 在屏幕 doze 后冻结进程，socket 直接被
+   `Software caused connection abort`，且进程冻住后连重连都发不出去。长时间
+   自动化期间需要让屏幕常亮（开发调试可用 `adb shell svc power stayon true`）。
+3. **`key_type` 之后软键盘会顶掉视口。** `adjustResize` 让 WebView 变矮，之前
+   截图算出的坐标全部失效。输入之后要么 `eval` 里 `blur()`，要么重新截图再定位。
 
 ### 已知限制
 
 - **不做前台服务。** app 退到后台时通道会断。这是有意的：后台的 Activity 本来就
   无法可靠截图和接收触摸，保住 socket 只会得到一个连着的死执行体。
-- 浏览视图在后台（用户正看着看板）时的截图行为**需要真机验证**——WebView 在
-  INVISIBLE 状态下 Chromium 是否仍然产出软件绘制帧，各 ROM 可能不一致。
-  `new_tab` / `navigate` 会自动切到浏览视图，所以常规流程不受影响。
 - 网页会渲染成**移动版布局**，选择器和坐标与桌面版不同。
+- 视口宽度按 `document.documentElement.clientWidth` 换算，不是
+  `window.innerWidth`——后者是视觉视口，实测两者差 5%（499 vs 475），
+  用错会让标记和 `elementFromPoint` 在长页面底部偏出目标元素。
 
 ## 项目说明
 

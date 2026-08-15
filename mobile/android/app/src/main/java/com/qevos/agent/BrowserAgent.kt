@@ -1,7 +1,9 @@
 package com.qevos.agent
 
+import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -11,6 +13,7 @@ import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.PixelCopy
 import android.webkit.WebView
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -60,6 +63,8 @@ import java.util.concurrent.TimeUnit
  *    dead executor. The channel's lifetime is deliberately the Activity's.
  */
 class BrowserAgent(
+    /** Needed for its Window — PixelCopy captures from the window surface. */
+    private val activity: Activity,
     private val webView: WebView,
     /** Called on the UI thread whenever the connection state changes. */
     private val onState: (State) -> Unit,
@@ -67,7 +72,7 @@ class BrowserAgent(
     private val onNeedShow: () -> Unit,
 ) {
 
-    enum class State { OFF, CONNECTING, ACTIVE, REVOKED, ERROR }
+    enum class State { OFF, CONNECTING, ACTIVE, REVOKED, ERROR, UNSUPPORTED }
 
     companion object {
         private const val TAG = "QevosBrowserAgent"
@@ -79,6 +84,9 @@ class BrowserAgent(
         private const val NAV_TIMEOUT_MS = 12000L
         private const val RECONNECT_BASE_MS = 1500L
         private const val RECONNECT_MAX_MS = 20000L
+        /** How long to wait for the server's register ack before declaring the
+         *  far end too old to speak this protocol. */
+        private const val ACK_TIMEOUT_MS = 6000L
     }
 
     private val ui = Handler(Looper.getMainLooper())
@@ -104,6 +112,8 @@ class BrowserAgent(
     /** Set while a navigate/new_tab is waiting for onPageFinished. */
     private var pendingNav: (() -> Unit)? = null
     private var navTimeout: Runnable? = null
+    /** Set while waiting for the server to acknowledge our registration. */
+    private var ackTimeout: Runnable? = null
 
     private val deviceName: String =
         (Build.MANUFACTURER + " " + Build.MODEL).trim().ifBlank { "Android" }
@@ -116,9 +126,10 @@ class BrowserAgent(
     fun enable(host: String, port: String) {
         this.host = host
         this.port = port
-        if (enabled) return
+        if (enabled) { Log.i(TAG, "enable() ignored — already enabled"); return }
         enabled = true
         retries = 0
+        Log.i(TAG, "enable() → $host:$port")
         connect()
     }
 
@@ -128,6 +139,7 @@ class BrowserAgent(
         try { ws?.send(JSONObject().put("type", "browser-agent/unregister").toString()) } catch (_: Exception) {}
         try { ws?.close(1000, "user disabled") } catch (_: Exception) {}
         ws = null
+        clearAckWait()
         setState(State.OFF)
     }
 
@@ -136,6 +148,12 @@ class BrowserAgent(
         try { ws?.cancel() } catch (_: Exception) {}
         ws = null
         clearNavWait()
+        clearAckWait()
+    }
+
+    private fun clearAckWait() {
+        ackTimeout?.let { ui.removeCallbacks(it) }
+        ackTimeout = null
     }
 
     /** Wired to the browsing WebView's WebViewClient. */
@@ -152,10 +170,12 @@ class BrowserAgent(
         if (!enabled) return
         setState(State.CONNECTING)
         val url = "ws://$host:$port/?role=browser-agent"
+        Log.i(TAG, "connecting → $url")
         val req = Request.Builder().url(url).build()
         ws = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 retries = 0
+                Log.i(TAG, "ws open (HTTP ${response.code}) — sending register")
                 ui.post {
                     // Report the browsing view's real size so the desktop side
                     // can show what it's driving.
@@ -166,13 +186,36 @@ class BrowserAgent(
                         put("w", webView.width)
                         put("h", webView.height)
                     }.toString())
-                    setState(State.ACTIVE)
+                    // Deliberately NOT ACTIVE yet. An open socket only proves
+                    // something is listening on that port — a dashboard too old
+                    // to know this protocol accepts the connection and silently
+                    // ignores the register, and the menu would then claim we are
+                    // the executor while the server has never heard of us.
+                    // ACTIVE is set only by the server's explicit ack below.
+                    setState(State.CONNECTING)
+                    // If no ack lands, the far end is not a dashboard that
+                    // speaks this protocol (most likely one running server.js
+                    // from before this feature). Say that instead of sitting on
+                    // "connecting…" forever.
+                    ackTimeout?.let { ui.removeCallbacks(it) }
+                    val t = Runnable {
+                        ackTimeout = null
+                        Log.w(TAG, "no register ack — server too old?")
+                        setState(State.UNSUPPORTED)
+                    }
+                    ackTimeout = t
+                    ui.postDelayed(t, ACK_TIMEOUT_MS)
                 }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val msg = try { JSONObject(text) } catch (_: Exception) { return }
                 when (msg.optString("type")) {
+                    "browser-agent/registered" -> ui.post {
+                        Log.i(TAG, "register acknowledged — now the executor")
+                        clearAckWait()
+                        setState(State.ACTIVE)
+                    }
                     "browser-agent/action" -> handleAction(
                         msg.optString("reqId"),
                         msg.optString("action"),
@@ -271,7 +314,10 @@ class BrowserAgent(
                 ), null)
             }
 
-            "screenshot" -> done(captureScreenshot(), null)
+            // Force the browsing view on screen first: the capture reads the
+            // window's rendered surface, so anything hidden behind the
+            // dashboard would photograph the dashboard instead.
+            "screenshot" -> { onNeedShow(); ui.postDelayed({ captureScreenshot(done) }, 120L) }
 
             "click" -> js(
                 "document.querySelector(${jsStr(p.optString("selector"))})?.click()"
@@ -411,7 +457,11 @@ class BrowserAgent(
      */
     private fun withCssScale(body: (Double) -> Unit) {
         if (cssScale > 0) { body(cssScale); return }
-        webView.evaluateJavascript("window.innerWidth") { raw ->
+        // documentElement.clientWidth, NOT window.innerWidth. innerWidth is the
+        // VISUAL viewport and on a real device it read 499 where the layout
+        // viewport was 475.4 — a 5% scale error, which near the bottom of a
+        // tall page drifts far enough to mark (or hit) the wrong element.
+        webView.evaluateJavascript("document.documentElement.clientWidth") { raw ->
             val inner = raw?.trim('"')?.toDoubleOrNull() ?: 0.0
             cssScale = if (inner > 0 && webView.width > 0) inner / webView.width else 1.0
             body(cssScale)
@@ -528,18 +578,62 @@ class BrowserAgent(
     }
 
     /**
-     * Capture the browsing WebView. There is no `capturePage()` equivalent on
-     * Android; View.draw() into a software Canvas is the portable route, and it
-     * requires the view to be laid out — which is why the view is INVISIBLE and
-     * never GONE. Content living in a hardware layer (WebGL, <video>) can come
-     * back blank through this path.
+     * Capture the browsing WebView.
+     *
+     * PixelCopy reads the window's actual composited surface. That is the right
+     * primitive for a WebView, whose page is drawn through the hardware
+     * compositor rather than into the view's own canvas — so it also picks up
+     * WebGL and <video>, which a software draw never can.
+     *
+     * A `View.draw(Canvas)` version of this came first and returned a fully
+     * blank bitmap on device. That run may have had the screen locked, so treat
+     * draw() as "not shown to work here" rather than "proven broken" — but the
+     * conclusion is the same either way: use PixelCopy.
+     *
+     * Both routes need the region genuinely rendered on screen — hence the
+     * forced show before we get here. A locked phone renders nothing, so a
+     * screenshot taken behind the keyguard is blank no matter which API is used.
+     *
+     * API 24–25 predate PixelCopy; there we fall back to a software-layer draw.
      */
-    private fun captureScreenshot(): JSONObject {
+    private fun captureScreenshot(done: (JSONObject?, String?) -> Unit) {
         val w = webView.width
         val h = webView.height
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        webView.draw(Canvas(bmp))
+        if (w == 0 || h == 0) { done(null, "浏览 WebView 宽高为 0，无法截图"); return }
 
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val window = activity.window
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && window != null) {
+            val loc = IntArray(2)
+            webView.getLocationInWindow(loc)
+            val src = Rect(loc[0], loc[1], loc[0] + w, loc[1] + h)
+            try {
+                PixelCopy.request(window, src, bmp, { result ->
+                    if (result == PixelCopy.SUCCESS) {
+                        done(encodeShot(bmp, w, h), null)
+                    } else {
+                        bmp.recycle()
+                        done(null, "PixelCopy 失败（code=$result）——浏览视图可能不在屏幕上")
+                    }
+                }, ui)
+            } catch (e: Exception) {
+                bmp.recycle()
+                done(null, "PixelCopy 异常: ${e.message}")
+            }
+            return
+        }
+
+        // Pre-O fallback: a software layer makes draw() produce real content.
+        val prevLayer = webView.layerType
+        webView.setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
+        webView.draw(Canvas(bmp))
+        webView.setLayerType(prevLayer, null)
+        done(encodeShot(bmp, w, h), null)
+    }
+
+    /** Downscale, PNG-encode, and record the scale used for coordinate remap. */
+    private fun encodeShot(bmp: Bitmap, w: Int, h: Int): JSONObject {
         val longest = maxOf(w, h)
         shotScale = if (longest > MAX_SHOT_PX) MAX_SHOT_PX.toDouble() / longest else 1.0
         val out = if (shotScale < 1.0) {

@@ -269,6 +269,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         browserAgent = BrowserAgent(
+            activity = this,
             webView = binding.browserView,
             onState = { st -> onBrowserAgentState(st) },
             onNeedShow = { showBrowser(true) },
@@ -302,6 +303,9 @@ class MainActivity : AppCompatActivity() {
         !browserAgent.isEnabled() -> "🌐  浏览器执行体：关"
         browserAgent.state == BrowserAgent.State.ACTIVE -> "🌐  浏览器执行体：已接入"
         browserAgent.state == BrowserAgent.State.CONNECTING -> "🌐  浏览器执行体：连接中…"
+        // Connected, but the far end never acknowledged the registration —
+        // almost always a dashboard predating this feature.
+        browserAgent.state == BrowserAgent.State.UNSUPPORTED -> "🌐  浏览器执行体：服务端版本过旧"
         else -> "🌐  浏览器执行体：断线重连中…"
     }
 
