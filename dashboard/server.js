@@ -396,7 +396,11 @@ function registerBrowserAgent(ws, msg) {
     // socket keeps the slot. Only a genuinely different device displaces.
     const sameDevice = deviceId !== '' && deviceId === prev.deviceId;
     try {
-      if (sameDevice) prev.ws.close(1000, 'superseded by a newer socket from the same device');
+      // 4001 tells the app "a newer socket from you took over" so it does NOT
+      // reconnect. A plain 1000 reads as an ordinary close and it comes back,
+      // displacing the socket that just replaced it — the two then alternate
+      // forever, which is exactly what a foldable with two live Activities did.
+      if (sameDevice) prev.ws.close(4001, 'superseded by a newer socket from the same device');
       else prev.ws.send(JSON.stringify({ type: 'browser-agent/revoked', reason: `被「${who}」接管` }));
     } catch {}
     broadcastConsole('system', sameDevice

@@ -180,6 +180,56 @@ srv.stderr.on('data', d => process.stderr.write('[srv] ' + d));
   check('heartbeat drops a frozen executor', slotFreed, `after ${frozenDt}s`);
   check('…and fast enough to matter', slotFreed && (Date.now() - frozenAt) < 30000, `${frozenDt}s`);
 
+  // ── 8b. A healthy executor must SURVIVE the heartbeat ────────────────────
+  // The frozen-executor test above only proves we drop dead sockets. It cannot
+  // catch the opposite failure — killing live ones — because this client answers
+  // pings automatically. Assert survival explicitly, and assert the server
+  // answers the CLIENT's pings too: the real app pings on its own timer and
+  // tears the connection down if the pongs stop.
+  const wsH = new WebSocket(`ws://127.0.0.1:${PORT}/?role=browser-agent`);
+  await new Promise(r => wsH.once('open', r));
+  let pongs = 0, serverPings = 0;
+  wsH.on('pong', () => pongs++);
+  wsH.on('ping', () => serverPings++);
+  wsH.send(JSON.stringify({ type: 'browser-agent/register', deviceId: 'healthy', name: '健康手机' }));
+  const pinger = setInterval(() => wsH.ping(), 3000);
+  await new Promise(r => setTimeout(r, 21000));   // ≈2.5 heartbeat rounds
+  clearInterval(pinger);
+  const stillThere = await new Promise(res => {
+    const p = new WebSocket(`ws://127.0.0.1:${PORT}/`);
+    p.once('message', raw => { p.close(); res(JSON.parse(String(raw)).browserAgent); });
+    setTimeout(() => res(null), 4000);
+  });
+  check('a healthy executor survives repeated heartbeats',
+    !!stillThere && stillThere.deviceId === 'healthy', JSON.stringify(stillThere));
+  check('server answers the client\'s own pings', pongs >= 4, `pong ${pongs} / ping 6`);
+  check('server actually sends heartbeat pings', serverPings >= 2, `收到 ${serverPings} 个 ping`);
+
+  // ── 8c. The superseded socket is told so, and must not come back ─────────
+  // Same device, new socket: the old one gets close code 4001. A plain 1000
+  // would read as an ordinary drop and the app would reconnect, displacing the
+  // socket that just replaced it — the pair then alternate forever.
+  let closeCode = null;
+  wsH.on('close', c => { closeCode = c; });
+  const wsH2 = new WebSocket(`ws://127.0.0.1:${PORT}/?role=browser-agent`);
+  await new Promise(r => wsH2.once('open', r));
+  wsH2.send(JSON.stringify({ type: 'browser-agent/register', deviceId: 'healthy', name: '健康手机' }));
+  await new Promise(r => setTimeout(r, 800));
+  check('superseded socket is closed with 4001 (do-not-retry)', closeCode === 4001, String(closeCode));
+
+  // Hand the slot back before the checks below, which assume no executor.
+  try { wsH2.terminate(); } catch {}
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 300));
+    const s = await new Promise(res => {
+      const p = new WebSocket(`ws://127.0.0.1:${PORT}/`);
+      p.once('message', raw => { p.close(); res(JSON.parse(String(raw)).browserAgent); });
+      p.once('error', () => res(undefined));
+      setTimeout(() => res(undefined), 2000);
+    });
+    if (s === null) break;
+  }
+
   // ── 9. `via` names whoever actually ran the action ───────────────────────
   check('a FAILED action still names its executor', noAgent.body.via === 'cdp',
     String(noAgent.body.via));

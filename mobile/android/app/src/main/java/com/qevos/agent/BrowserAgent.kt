@@ -87,6 +87,26 @@ class BrowserAgent(
         /** How long to wait for the server's register ack before declaring the
          *  far end too old to speak this protocol. */
         private const val ACK_TIMEOUT_MS = 6000L
+
+        /**
+         * Close code the server uses when a newer socket from THIS SAME device
+         * takes the slot. It is not a failure and must not be retried: doing so
+         * makes the old socket displace the new one, whose own socket then gets
+         * closed, and the two take turns forever.
+         */
+        const val CLOSE_SUPERSEDED = 4001
+
+        /**
+         * The live instance, process-wide.
+         *
+         * epoch guards callbacks WITHIN one BrowserAgent; it cannot help when
+         * two instances exist at once — which happens whenever a second Activity
+         * is created without the first being destroyed (foldables can do this).
+         * Both then hold sockets, each re-registration boots the other, and the
+         * pair ping-pongs indefinitely. Observed as alternating epochs (29, 16,
+         * 29 …) in one process. So: enabling one retires any other.
+         */
+        private var active: BrowserAgent? = null
     }
 
     private val ui = Handler(Looper.getMainLooper())
@@ -181,6 +201,14 @@ class BrowserAgent(
         this.host = host
         this.port = port
         if (enabled) { Log.i(TAG, "enable() ignored — already enabled"); return }
+        // Retire any other instance before claiming the channel — see `active`.
+        active?.let {
+            if (it !== this) {
+                Log.w(TAG, "retiring a previous BrowserAgent instance still holding the channel")
+                it.destroy()
+            }
+        }
+        active = this
         enabled = true
         retries = 0
         Log.i(TAG, "enable() → $host:$port")
@@ -201,6 +229,7 @@ class BrowserAgent(
     fun destroy() {
         enabled = false
         epoch++          // an Activity rebuild must not leave live callbacks behind
+        if (active === this) active = null
         try { ws?.cancel() } catch (_: Exception) {}
         ws = null
         clearNavWait()
@@ -311,9 +340,25 @@ class BrowserAgent(
                 ui.post { if (!stale()) { setState(State.ERROR); scheduleReconnect() } }
             }
 
+            // Without this the peer's close frame is never answered, so the
+            // socket lingers half-closed until OkHttp's own ping times out 20 s
+            // later — long enough for the stale side to come back and displace
+            // whoever replaced it.
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                Log.i(TAG, "ws closing ($code $reason)")
+                try { webSocket.close(1000, null) } catch (_: Exception) {}
+            }
+
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (stale()) return
                 Log.i(TAG, "ws closed ($code $reason)")
+                // The server closes our old socket when a newer one from this
+                // same device registers. Reconnecting would boot that newer
+                // socket, whose replacement would boot us back — forever.
+                if (code == CLOSE_SUPERSEDED) {
+                    Log.i(TAG, "superseded by a newer socket — not reconnecting")
+                    return
+                }
                 ui.post { if (!stale() && enabled) { setState(State.ERROR); scheduleReconnect() } }
             }
         })
