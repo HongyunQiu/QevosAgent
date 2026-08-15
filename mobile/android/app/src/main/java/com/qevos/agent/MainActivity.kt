@@ -44,6 +44,9 @@ class MainActivity : AppCompatActivity() {
 
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    // Browser-executor channel + the dedicated browsing WebView it drives.
+    private lateinit var browserAgent: BrowserAgent
+    private var showingBrowser = false
     // True while the WebView is showing the error overlay (main-frame load failed).
     // We only auto-reload on network-restore when we know the page is broken —
     // otherwise we'd nuke the in-page WebSocket / pending send-message fetch.
@@ -59,6 +62,10 @@ class MainActivity : AppCompatActivity() {
         const val KEY_SERVER_ID = "server_id"
         const val DEFAULT_PORT = "8765"
         const val KEY_HANDLE_Y = "handle_y"
+        // Whether this phone offers itself as the agent's browser executor.
+        // Persisted so a deliberate opt-in survives a restart; the server
+        // announces every takeover on the console, so it is never silent.
+        const val KEY_BROWSER_AGENT = "browser_agent_on"
     }
 
     private val openSettings = registerForActivityResult(
@@ -77,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
         setupWebView()
+        setupBrowserView()
         setupEdgeHandle()
 
         binding.btnRetry.setOnClickListener { loadDashboard() }
@@ -103,6 +111,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         menuPollToken++          // stop any in-flight status-monitor poll loop
         unregisterNetworkCallback()
+        browserAgent.destroy()
         super.onDestroy()
     }
 
@@ -219,6 +228,95 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ── Browsing WebView (agent-driven) ─────────────────────────────────────
+    //
+    // Deliberately NOT sharing settings with the dashboard WebView above:
+    //
+    //  • Zoom is off. The agent works from a screenshot and then taps by
+    //    coordinate; a pinch-zoom between those two steps silently invalidates
+    //    every coordinate it is holding.
+    //  • Cache is on (the dashboard view disables it to avoid serving a stale
+    //    dashboard when the server is down — irrelevant for general browsing,
+    //    where it would just make every page slower).
+    //  • Navigation is allowed to go anywhere; the dashboard view is pinned to
+    //    its server. This mirrors the desktop split between content views and
+    //    the automation view.
+    private fun setupBrowserView() {
+        binding.browserView.apply {
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                setSupportZoom(false)
+                builtInZoomControls = false
+                displayZoomControls = false
+                loadWithOverviewMode = true
+                useWideViewPort = true
+                mediaPlaybackRequiresUserGesture = false
+                allowContentAccess = true
+                allowFileAccess = false
+            }
+            webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    browserAgent.onPageFinished()
+                }
+                override fun onReceivedSslError(
+                    view: WebView, handler: SslErrorHandler, error: SslError
+                ) {
+                    handler.proceed()
+                }
+            }
+        }
+
+        browserAgent = BrowserAgent(
+            webView = binding.browserView,
+            onState = { st -> onBrowserAgentState(st) },
+            onNeedShow = { showBrowser(true) },
+        )
+
+        if (prefs.getBoolean(KEY_BROWSER_AGENT, false)) startBrowserAgent()
+    }
+
+    private fun startBrowserAgent() {
+        val host = prefs.getString(KEY_HOST, null)
+        val port = prefs.getString(KEY_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
+        if (host.isNullOrBlank()) return
+        browserAgent.enable(host, port)
+    }
+
+    private fun onBrowserAgentState(st: BrowserAgent.State) {
+        // Losing the slot to another device is the one state worth interrupting
+        // for: the user opted in and would otherwise keep believing this phone
+        // is still the executor.
+        if (st == BrowserAgent.State.REVOKED) {
+            prefs.edit().putBoolean(KEY_BROWSER_AGENT, false).apply()
+            AlertDialog.Builder(this)
+                .setTitle("浏览器执行体已被接管")
+                .setMessage("另一台设备接管了浏览器执行体，本机已退出该角色。")
+                .setPositiveButton("知道了", null)
+                .show()
+        }
+    }
+
+    private fun browserAgentLabel(): String = when {
+        !browserAgent.isEnabled() -> "🌐  浏览器执行体：关"
+        browserAgent.state == BrowserAgent.State.ACTIVE -> "🌐  浏览器执行体：已接入"
+        browserAgent.state == BrowserAgent.State.CONNECTING -> "🌐  浏览器执行体：连接中…"
+        else -> "🌐  浏览器执行体：断线重连中…"
+    }
+
+    /**
+     * Swap which WebView is on top. Never GONE — see activity_main.xml.
+     * No bringToFront() anywhere: the XML order already puts browserView above
+     * the dashboard WebView and below the progress bar / error screen / edge
+     * handle. Reordering children at runtime would move the error screen and
+     * the handle behind the browsing view.
+     */
+    private fun showBrowser(show: Boolean) {
+        showingBrowser = show
+        binding.browserView.visibility = if (show) View.VISIBLE else View.INVISIBLE
+    }
+
     // ── Right-edge floating handle ──────────────────────────────────────────
     private fun setupEdgeHandle() {
         val handle = binding.edgeHandle
@@ -323,6 +421,12 @@ class MainActivity : AppCompatActivity() {
                     .putString(KEY_SERVER_ID, s.id)
                     .apply()
                 dialog.dismiss()
+                // The executor channel is bound to one server — re-point it at
+                // the new one, or it would keep serving the old instance.
+                if (browserAgent.isEnabled()) {
+                    browserAgent.disable()
+                    startBrowserAgent()
+                }
                 loadDashboard()
             }
             container.addView(row)
@@ -340,7 +444,19 @@ class MainActivity : AppCompatActivity() {
 
         container.addView(makeMenuItem("↻  刷新") {
             dialog.dismiss()
-            binding.webView.reload()
+            if (showingBrowser) binding.browserView.reload() else binding.webView.reload()
+        })
+        container.addView(makeMenuItem(
+            if (showingBrowser) "🖥  切回看板" else "🌐  切到浏览器视图"
+        ) {
+            dialog.dismiss()
+            showBrowser(!showingBrowser)
+        })
+        container.addView(makeMenuItem(browserAgentLabel()) {
+            dialog.dismiss()
+            val turningOn = !browserAgent.isEnabled()
+            prefs.edit().putBoolean(KEY_BROWSER_AGENT, turningOn).apply()
+            if (turningOn) startBrowserAgent() else browserAgent.disable()
         })
         container.addView(makeMenuItem("⚙  服务器设置") {
             dialog.dismiss()
@@ -706,6 +822,14 @@ class MainActivity : AppCompatActivity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        // While browsing, Back walks that view's history first, then returns to
+        // the dashboard rather than leaving the app — the browsing view is a
+        // mode inside the app, not a separate screen.
+        if (showingBrowser) {
+            if (binding.browserView.canGoBack()) binding.browserView.goBack()
+            else showBrowser(false)
+            return
+        }
         if (binding.webView.canGoBack()) {
             binding.webView.goBack()
         } else {

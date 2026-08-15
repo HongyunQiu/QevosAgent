@@ -10,6 +10,17 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Dedicated browsing WebView driven by the agent (方案 2 executor).
+         Kept INVISIBLE rather than GONE when the user is on the dashboard:
+         GONE skips layout, which zeroes the view's width/height and silently
+         breaks BOTH touch-coordinate injection and draw()-based screenshots.
+         It must stay measured and attached to work at all. -->
+    <WebView
+        android:id="@+id/browserView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="invisible" />
+
     <!-- Thin page-load progress bar pinned to the top -->
     <ProgressBar
         android:id="@+id/progressBar"

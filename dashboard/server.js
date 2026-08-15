@@ -332,6 +332,112 @@ async function cdpBrowserAction(displayId, action, payload) {
   }
 }
 
+// ── Mobile browser automation (Android app as the executor) ────────────────
+//
+// Third execution path for /api/browser-action, alongside Electron and CDP.
+// The Android app opens a dedicated browsing WebView and drives it natively;
+// commands ride the SAME WebSocket the dashboard already uses, so the phone
+// never listens on a port — this works through ZeroTier / NAT / mobile data
+// with no forwarding, and inherits the existing isIpAllowed() upgrade gate.
+//
+// Exactly ONE device may hold the executor slot. A second device that opts in
+// DISPLACES the first (and is told so, so its toggle flips back). Broadcasting
+// an action to every connected phone would execute it N times — the same
+// amplification trap multi-client dashboards keep falling into.
+
+let browserAgent = null;          // { ws, deviceId, name, w, h, since }
+const browserPending = new Map(); // reqId → { resolve, reject, timer }
+let browserReqSeq = 0;
+
+// Kept under the 20 s HTTP timeout in tool_web_interact so the agent gets a
+// descriptive "device timed out" instead of a bare socket hangup.
+const MOBILE_ACTION_TIMEOUT_MS = 15000;
+
+function browserAgentInfo() {
+  if (!browserAgent) return null;
+  const { deviceId, name, w, h, since } = browserAgent;
+  return { deviceId, name, w, h, since };
+}
+
+function registerBrowserAgent(ws, msg) {
+  const who = msg.name || msg.deviceId || '未知设备';
+  if (browserAgent && browserAgent.ws !== ws) {
+    try {
+      browserAgent.ws.send(JSON.stringify({
+        type: 'browser-agent/revoked', reason: `被「${who}」接管`,
+      }));
+    } catch {}
+    broadcastConsole('system',
+      `🌐 浏览器执行体切换：${browserAgent.name || browserAgent.deviceId} → ${who}`);
+  } else if (!browserAgent) {
+    broadcastConsole('system', `🌐 浏览器执行体已接入：${who}`);
+  }
+  browserAgent = {
+    ws,
+    deviceId: String(msg.deviceId || ''),
+    name: String(msg.name || ''),
+    w: Number(msg.w) || 0,
+    h: Number(msg.h) || 0,
+    since: Date.now(),
+  };
+  try { ws.send(JSON.stringify({ type: 'browser-agent/registered' })); } catch {}
+  broadcast();
+}
+
+function unregisterBrowserAgent(ws, reason) {
+  if (!browserAgent || browserAgent.ws !== ws) return;
+  broadcastConsole('system',
+    `🌐 浏览器执行体已断开：${browserAgent.name || browserAgent.deviceId}（${reason}）`);
+  browserAgent = null;
+  // Fail every in-flight request now instead of letting each burn its full
+  // timeout — the agent gets "device gone" immediately, not a 15 s mystery.
+  for (const [reqId, p] of browserPending) {
+    clearTimeout(p.timer);
+    p.reject(new Error('浏览器执行体已断开连接'));
+    browserPending.delete(reqId);
+  }
+  broadcast();
+}
+
+function resolveBrowserResult(msg) {
+  const p = browserPending.get(msg.reqId);
+  if (!p) return;   // late reply after timeout, or a duplicate — drop it
+  clearTimeout(p.timer);
+  browserPending.delete(msg.reqId);
+  if (msg.error) p.reject(new Error(String(msg.error)));
+  else p.resolve(msg.result || { ok: true });
+}
+
+function mobileBrowserAction(displayId, action, payload) {
+  return new Promise((resolve, reject) => {
+    // Reached only from the routing branch that already saw a registered
+    // executor, so a miss here means the socket died in between — say that,
+    // rather than telling the user to switch on something they already did.
+    if (!browserAgent || browserAgent.ws.readyState !== WebSocket.OPEN) {
+      return reject(new Error(
+        '浏览器执行体的连接已失效（手机可能退到后台或掉线），请确认手机上的 QevosAgent 在前台。'
+      ));
+    }
+    const reqId = `b${++browserReqSeq}`;
+    const timer = setTimeout(() => {
+      browserPending.delete(reqId);
+      reject(new Error(
+        `浏览器执行体响应超时（${MOBILE_ACTION_TIMEOUT_MS / 1000}s，action=${action}）`
+      ));
+    }, MOBILE_ACTION_TIMEOUT_MS);
+    browserPending.set(reqId, { resolve, reject, timer });
+    try {
+      browserAgent.ws.send(JSON.stringify({
+        type: 'browser-agent/action', reqId, displayId, action, payload: payload || {},
+      }));
+    } catch (e) {
+      clearTimeout(timer);
+      browserPending.delete(reqId);
+      reject(new Error(`发送到浏览器执行体失败: ${e.message}`));
+    }
+  });
+}
+
 // ── Network info (computed once at startup) ────────────────────────────────
 
 function getLanIps() {
@@ -1186,7 +1292,9 @@ function poll() {
 const clients = new Set();
 
 function broadcast() {
-  const msg = JSON.stringify({ type: 'state', ...state, terminals: termListPublic() });
+  const msg = JSON.stringify({
+    type: 'state', ...state, terminals: termListPublic(), browserAgent: browserAgentInfo(),
+  });
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   }
@@ -3869,7 +3977,15 @@ const server = http.createServer(async (req, res) => {
       const { display_id = 'default', action, payload = {} } = body;
       if (!action) return json(400, { error: 'action is required' });
 
-      if (process.env.ELECTRON) {
+      // Routing, most-specific first. A phone that has explicitly opted in
+      // takes precedence over the local Electron view / CDP browser: opting in
+      // is a deliberate user action on the device, so "the phone wins while
+      // it's plugged in" is the least surprising rule — and it's visible,
+      // since register/unregister both emit a console line.
+      if (browserAgent) {
+        const result = await mobileBrowserAction(display_id, action, payload);
+        json(200, result);
+      } else if (process.env.ELECTRON) {
         serverEvents.emit('browser-action', { displayId: display_id, action, payload },
           result => { if (result.error) json(500, result); else json(200, result); }
         );
@@ -4157,9 +4273,18 @@ server.on('upgrade', async (req, socket, head) => {
 
 termWss.on('connection', handleTerminalConnection);
 
-wss.on('connection', ws => {
-  clients.add(ws);
-  ws.send(JSON.stringify({ type: 'state', ...state, terminals: termListPublic() }));
+wss.on('connection', (ws, req) => {
+  // A dedicated browser-executor socket (the Android app) opts out of the
+  // state firehose: it only ever needs its own action/result traffic, and the
+  // full state payload — events array included — on every poll tick would be
+  // pure waste over mobile data / ZeroTier.
+  const isBrowserExecutor = /[?&]role=browser-agent(?:&|$)/.test(req.url || '');
+  if (!isBrowserExecutor) {
+    clients.add(ws);
+    ws.send(JSON.stringify({
+      type: 'state', ...state, terminals: termListPublic(), browserAgent: browserAgentInfo(),
+    }));
+  }
 
   ws.on('message', raw => {
     try {
@@ -4177,12 +4302,19 @@ wss.on('connection', ws => {
       if (msg.type === 'select_run') {
         const data = loadRun(msg.runId);
         if (data) ws.send(JSON.stringify({ type: 'historical', ...data }));
+        return;
       }
+      // ── Mobile browser executor (Android app) ──
+      // Opting in claims the single executor slot; opting out or dropping the
+      // socket releases it. Results come back keyed by the reqId we sent.
+      if (msg.type === 'browser-agent/register')   { registerBrowserAgent(ws, msg); return; }
+      if (msg.type === 'browser-agent/unregister') { unregisterBrowserAgent(ws, '主动退出'); return; }
+      if (msg.type === 'browser-agent/result')     { resolveBrowserResult(msg); return; }
     } catch {}
   });
 
-  ws.on('close', () => clients.delete(ws));
-  ws.on('error', () => clients.delete(ws));
+  ws.on('close', () => { clients.delete(ws); unregisterBrowserAgent(ws, '连接关闭'); });
+  ws.on('error', () => { clients.delete(ws); unregisterBrowserAgent(ws, '连接出错'); });
 });
 
 // ── Cleanup on server exit ─────────────────────────────────────────────────

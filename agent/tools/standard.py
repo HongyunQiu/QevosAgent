@@ -2707,8 +2707,11 @@ def tool_web_interact(
 ) -> ToolResult:
     """在浏览器视图中执行自动化操作。
 
-    Electron 模式：直接控制内嵌 WebContentsView，无需额外配置。
-    普通浏览器模式：通过 CDP 控制 Chrome/Edge，需以 --remote-debugging-port=9222 启动浏览器。
+    dashboard 侧按「最具体优先」路由，三条执行路径：
+      安卓模式：手机 app 已开启「浏览器执行体」时优先——命令经 dashboard 的
+                WebSocket 下发到手机，由 app 原生驱动其内置浏览 WebView。
+      Electron 模式：直接控制内嵌 WebContentsView，无需额外配置。
+      普通浏览器模式：通过 CDP 控制 Chrome/Edge，需以 --remote-debugging-port=9222 启动浏览器。
 
     inject 参数仅对 action="screenshot" 有效：
       True（默认）：截图结果直接作为图像块注入对话上下文，LLM 下一轮即可直接"看到"图像，
@@ -4107,6 +4110,11 @@ def get_standard_tools() -> dict[str, ToolSpec]:
                 "Electron 模式：直接控制内嵌标签页，无需额外配置。\n"
                 "普通浏览器模式：需以 --remote-debugging-port=9222 启动 Chrome/Edge，"
                 "否则工具会返回带有具体启动命令的错误提示。\n"
+                "安卓模式：手机 app 开启「浏览器执行体」后自动优先走手机，操作其内置浏览视图。\n"
+                "  与前两种模式的差异（结果里会带 note 字段说明）：\n"
+                "  - mouse_move 只画坐标标记，不产生 hover——需要悬停效果请用 eval 派发 mouseover\n"
+                "  - button 参数无效（触摸屏没有左右键）\n"
+                "  - 坐标一律用最近一次 screenshot 的像素坐标，手机侧会自动换算，不要自己缩放\n"
                 "【页面控制】\n"
                 "  - new_tab：打开新标签页，payload: {url?, title?}\n"
                 "  - navigate：跳转 URL 并等待加载完成，payload: {url}\n"

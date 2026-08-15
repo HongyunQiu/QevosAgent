@@ -45,5 +45,9 @@ dependencies {
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'androidx.activity:activity-ktx:1.8.2'
+    // WebSocket client for the browser-executor channel. Android ships no
+    // WebSocket client (java.net.http is absent), and hand-rolling RFC 6455
+    // framing for multi-hundred-KB screenshot payloads is not worth the risk.
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 }
 
