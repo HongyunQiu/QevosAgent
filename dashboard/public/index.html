@@ -3006,7 +3006,7 @@ function renderSidebar(data, rid) {
     ? `${st.iteration ?? '—'} / ${maxIter}`
     : (st.iteration ?? '—');
   const _toolCount = evs.filter(e => e.type === 'tool_call').length;
-  document.getElementById('sEvents').textContent = `${evs.length}/${_toolCount}`;
+  document.getElementById('sEvents').textContent = `${evs.length} / ${_toolCount}`;
   renderConfidence(data.meta?.confidence_history,
                    st.status || (data.launching ? 'launching' : '—'));
 
