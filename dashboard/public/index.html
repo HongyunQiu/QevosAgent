@@ -3076,10 +3076,15 @@ function renderConfidence(hist, statusText) {
     drawConfSpark(spark, hist);
     return;
   }
-  if (lbl) lbl.innerHTML = 'Confidence <span class="conf-hint">ppl · lower = surer</span>';
+  // 数值与曲线同向：显示 1/ppl = exp(mean_lp) = 平均每 token 概率（越高越自信），
+  // 而不是原来的 ppl（越低越自信）——同一格里两个"低"含义相反，第一眼必读反。
+  // 注意这不是"答案正确的概率"，所以副标题写清它是什么量，不写方向。
+  if (lbl) lbl.innerHTML = 'Confidence <span class="conf-hint">avg token prob</span>';
 
-  valEl.textContent = (last.ppl != null && isFinite(last.ppl)) ? last.ppl.toFixed(2) : '—';
+  valEl.textContent = (last.ppl != null && isFinite(last.ppl) && last.ppl > 0)
+    ? (100 / last.ppl).toFixed(1) + '%' : '—';
   valEl.className = 'stat-val';
+  // 配色仍按本 run 内 ppl 的相对水位算（每个模型基线不同，绝对值不可比）
   if (hist.length >= 5 && last.ppl != null) {
     const sorted = hist.slice(0, -1).map(h => h.ppl).filter(p => p != null && isFinite(p)).sort((a, b) => a - b);
     if (sorted.length) {
@@ -3088,7 +3093,8 @@ function renderConfidence(hist, statusText) {
       valEl.classList.add(ratio < 1.3 ? 'conf-ok' : ratio < 2 ? 'conf-warn' : 'conf-bad');
     }
   }
-  cell.title = `iter ${last.iter ?? '?'} · span=${last.span} · low-conf tokens ${((last.low_conf ?? 0) * 100).toFixed(0)}% · n=${last.n_tok}`;
+  const _pplTxt = (last.ppl != null && isFinite(last.ppl)) ? last.ppl.toFixed(2) : '?';
+  cell.title = `iter ${last.iter ?? '?'} · ppl ${_pplTxt} · span=${last.span} · low-conf tokens ${((last.low_conf ?? 0) * 100).toFixed(0)}% · n=${last.n_tok}`;
   drawConfSpark(spark, hist);
 }
 
@@ -3135,7 +3141,9 @@ function updateConfMarker() {
   const iters = g.shown.map(h => h.iter).filter(v => v != null);
   const lo = Math.min(...iters), hi = Math.max(...iters);
   const off = (gLogViewIter < lo - 2 || gLogViewIter > hi + 2) ? ' conf-mark-off' : '';
-  const tip = `log iteration ${gLogViewIter} → confidence iter ${g.shown[best].iter}`
+  const _p = g.shown[best].ppl;
+  const _c = (_p != null && isFinite(_p) && _p > 0) ? ` · ${(100 / _p).toFixed(1)}%` : '';
+  const tip = `log iteration ${gLogViewIter} → confidence iter ${g.shown[best].iter}${_c}`
             + (off ? ' (超出曲线窗口，贴边显示)' : '');
   spark.insertAdjacentHTML('beforeend',
     `<line class="conf-mark-line${off}" x1="${x}" y1="0" x2="${x}" y2="${g.H}"><title>${esc(tip)}</title></line>` +
