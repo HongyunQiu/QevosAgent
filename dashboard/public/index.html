@@ -313,6 +313,20 @@ body.large-font .stat-val.muted { font-size: 12px; }
 .conf-spark { flex: 1; height: 15px; min-width: 0; display: block; }
 .conf-spark polyline { fill: none; stroke: var(--blue); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .conf-spark .conf-fill { fill: var(--blue); opacity: 0.12; stroke: none; }
+/* 迭代指示点：跟随 events log 滚动位置，在曲线上标出当前正在看的那一轮。
+ * SVG 用 preserveAspectRatio="none" 横向拉伸，圆会被压扁——所以指示点用
+ * 零长度 + stroke-linecap:round + non-scaling-stroke 的线段画，尺寸恒定。 */
+.conf-spark .conf-mark-line {
+  stroke: var(--orange); stroke-width: 1; stroke-dasharray: 2 2;
+  vector-effect: non-scaling-stroke; opacity: 0.55;
+}
+.conf-spark .conf-mark-dot {
+  stroke: var(--orange); stroke-width: 4; stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+/* 日志所在轮次落在曲线窗口（最近 60 轮）之外时，指示点贴在边缘并淡化，
+ * 表示"实际位置在图外"，而不是假装正好落在这一点上 */
+.conf-spark .conf-mark-off { opacity: 0.28; }
 .stat-val.conf-ok   { color: var(--green); }
 .stat-val.conf-warn { color: var(--orange); }
 .stat-val.conf-bad  { color: var(--red); }
@@ -2305,6 +2319,9 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 // ── State ─────────────────────────────────────────────────────────────────
 let gState         = null;
 let gViewRunId     = null;
+// 信心指数曲线几何 + events log 当前视口轮次（两者驱动曲线上的迭代指示点）
+let gConfGeom      = null;
+let gLogViewIter   = null;
 let gRunSearch     = '';
 let gRunsEditMode  = false;
 let gTagFilter     = '';      // active keyword (lower-cased key); '' = none; UNTAGGED = untagged runs
@@ -3036,19 +3053,31 @@ function renderConfidence(hist, statusText) {
   const lbl   = document.getElementById('sConfLbl');
   if (!cell || !valEl || !spark) return;
   const hasData = Array.isArray(hist) && hist.length > 0;
-  if (statusText !== 'running' || !hasData) {
+  if (!hasData) {
     if (lbl) lbl.textContent = 'Status';
     valEl.className = 'stat-val muted';
     valEl.textContent = statusText || '—';
     cell.title = '';
     spark.innerHTML = '';
     spark.style.display = 'none';
+    gConfGeom = null;
     return;
   }
-  if (lbl) lbl.innerHTML = 'Confidence <span class="conf-hint">ppl · lower = surer</span>';
   spark.style.display = '';
 
   const last = hist[hist.length - 1];
+  // 已结束的 run 仍然画曲线（历史随 checkpoint 落盘），数值位退回显示状态：
+  // 滚日志对照迭代这件事主要发生在回看时，此时曲线比实时 ppl 更有用。
+  if (statusText !== 'running') {
+    if (lbl) lbl.innerHTML = 'Status <span class="conf-hint">· confidence trend</span>';
+    valEl.className = 'stat-val muted';
+    valEl.textContent = statusText || '—';
+    cell.title = '';
+    drawConfSpark(spark, hist);
+    return;
+  }
+  if (lbl) lbl.innerHTML = 'Confidence <span class="conf-hint">ppl · lower = surer</span>';
+
   valEl.textContent = (last.ppl != null && isFinite(last.ppl)) ? last.ppl.toFixed(2) : '—';
   valEl.className = 'stat-val';
   if (hist.length >= 5 && last.ppl != null) {
@@ -3060,18 +3089,82 @@ function renderConfidence(hist, statusText) {
     }
   }
   cell.title = `iter ${last.iter ?? '?'} · span=${last.span} · low-conf tokens ${((last.low_conf ?? 0) * 100).toFixed(0)}% · n=${last.n_tok}`;
+  drawConfSpark(spark, hist);
+}
 
-  // 走势图：最近 60 轮 surprisal，y 反转（下掉 = 迷茫）
-  const pts = hist.slice(-60).map(h => Math.max(0, -(h.mean_lp ?? 0)));
+/* 走势图：最近 60 轮 surprisal，y 反转（下掉 = 迷茫）。
+ * 几何信息存进 gConfGeom，供滚动指示点在不重画曲线的前提下定位。 */
+function drawConfSpark(spark, hist) {
+  const shown = hist.slice(-60);
+  const pts = shown.map(h => Math.max(0, -(h.mean_lp ?? 0)));
   const W = 120, H = 26, PAD = 2;
   const max = Math.max(...pts, 0.5);
   const step = pts.length > 1 ? (W - 2 * PAD) / (pts.length - 1) : 0;
-  const xy = pts.map((s, i) =>
-    `${(PAD + i * step).toFixed(1)},${(PAD + (H - 2 * PAD) * (s / max)).toFixed(1)}`);
+  const ys = pts.map(s => PAD + (H - 2 * PAD) * (s / max));
+  const xs = pts.map((_, i) => PAD + i * step);
+  const xy = pts.map((_, i) => `${xs[i].toFixed(1)},${ys[i].toFixed(1)}`);
   const fillPts = `${PAD},${H - PAD} ` + xy.join(' ') + ` ${(PAD + (pts.length - 1) * step).toFixed(1)},${H - PAD}`;
   spark.innerHTML = pts.length > 1
     ? `<polygon class="conf-fill" points="${fillPts}"></polygon><polyline points="${xy.join(' ')}"></polyline>`
     : '';
+  gConfGeom = pts.length > 1 ? { shown, xs, ys, H, PAD } : null;
+  updateConfMarker();
+}
+
+/* 在信心指数曲线上标出“events log 当前看到的那一轮”。
+ * 两把尺子并不完全重合：hist[i].iter 来自 agent 的 state.iteration，
+ * 而日志分隔线的 iter 是看板自己重建的计数（会丢弃畸形行）。
+ * 这里取最接近的一轮，并把两个 iter 都写进 tooltip 如实说明。 */
+function updateConfMarker() {
+  const spark = document.getElementById('sConfSpark');
+  if (!spark) return;
+  spark.querySelectorAll('.conf-mark-line, .conf-mark-dot').forEach(n => n.remove());
+  const g = gConfGeom;
+  if (!g || gLogViewIter == null) return;
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < g.shown.length; i++) {
+    const it = g.shown[i].iter;
+    if (it == null) continue;
+    const d = Math.abs(it - gLogViewIter);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  if (best < 0) return;
+  const x = g.xs[best].toFixed(1), y = g.ys[best].toFixed(1);
+  // 只在"真的落在图外"时淡化：窗口内部即便某几轮没记到 logprobs，
+  // 取最近邻也仍是合理近似，不该淡化。
+  const iters = g.shown.map(h => h.iter).filter(v => v != null);
+  const lo = Math.min(...iters), hi = Math.max(...iters);
+  const off = (gLogViewIter < lo - 2 || gLogViewIter > hi + 2) ? ' conf-mark-off' : '';
+  const tip = `log iteration ${gLogViewIter} → confidence iter ${g.shown[best].iter}`
+            + (off ? ' (超出曲线窗口，贴边显示)' : '');
+  spark.insertAdjacentHTML('beforeend',
+    `<line class="conf-mark-line${off}" x1="${x}" y1="0" x2="${x}" y2="${g.H}"><title>${esc(tip)}</title></line>` +
+    `<line class="conf-mark-dot${off}" x1="${x}" y1="${y}" x2="${x}" y2="${y}"><title>${esc(tip)}</title></line>`);
+}
+
+/* events log 当前视口对应的迭代轮次。探针取视口靠上 1/4 处（而不是正
+ * 中间）：阅读时眼睛自然落在上部，且刚滚过的分隔线应立即生效。 */
+function currentLogIter() {
+  const log = document.getElementById('eventsLog');
+  if (!log) return null;
+  const first = log.dataset.firstIter ? Number(log.dataset.firstIter) : null;
+  const seps = log.querySelectorAll('.iter-sep[data-iter]');
+  if (!seps.length) return first;
+  const r = log.getBoundingClientRect();
+  const probeY = r.top + r.height * 0.25;
+  let iter = first;
+  for (const s of seps) {
+    if (s.getBoundingClientRect().top <= probeY) iter = Number(s.dataset.iter);
+    else break;
+  }
+  return iter;
+}
+
+function syncConfMarkerToLog() {
+  const it = currentLogIter();
+  if (it === gLogViewIter) return;
+  gLogViewIter = it;
+  updateConfMarker();
 }
 
 function hlText(text, q) {
@@ -3445,6 +3538,7 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = [], aw
     _advisorRenderCursor = 0;
 
     let lastIter = -1;
+    let firstIter = null;
     for (const m of merged) {
       const ev = m.ev;
       if (ev.type === 'token_stats') continue;
@@ -3454,7 +3548,11 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = [], aw
           const ts = tokenStatsMap[iterNum - 1];
           const tokenHtml = renderTokenBar(ts);
           const _maxIterSuffix = meta._max_iterations != null ? ` of ${meta._max_iterations}` : '';
-          html += `<div class="iter-sep"><span class="iter-label">Iteration ${iterNum}${_maxIterSuffix}</span>${tokenHtml}</div>`;
+          html += `<div class="iter-sep" data-iter="${iterNum}"><span class="iter-label">Iteration ${iterNum}${_maxIterSuffix}</span>${tokenHtml}</div>`;
+        } else {
+          // 第一段没有分隔线（分隔线画在"进入下一轮"处），记下它的轮次，
+          // 否则滚到顶部时指示点无处可依。
+          firstIter = iterNum;
         }
         lastIter = iterNum;
       }
@@ -3477,7 +3575,12 @@ function renderEvents(events, meta = {}, systemPrompt = '', patchEvents = [], aw
       html += renderAskUserEntry(meta.awaiting_input, null, true);
     }
     log.innerHTML = html;
+    if (firstIter != null) log.dataset.firstIter = String(firstIter);
+    else delete log.dataset.firstIter;
     if (gAutoScroll) log.scrollTop = log.scrollHeight;
+    // 重建 DOM 后分隔线位置全变了，重新对一次指示点
+    gLogViewIter = null;
+    syncConfMarkerToLog();
   }
 
   // Always put eventsEmpty back so getElementById never returns null
@@ -7201,6 +7304,20 @@ function toggleTheme() {
       if (el) el.textContent = '☀';
     });
   }
+})();
+
+// events log 滚动 → 信心指数曲线上的迭代指示点跟随（rAF 节流）
+(function () {
+  const log = document.getElementById('eventsLog');
+  if (!log) return;
+  let queued = false;
+  const onScroll = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; syncConfMarkerToLog(); });
+  };
+  log.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onScroll);
 })();
 
 document.getElementById('wsPort').textContent = wsPortLabel();
