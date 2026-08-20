@@ -97,3 +97,6 @@ apps/mechanical_design.md
 apps/mcad_regen.md
 apps/fits_viewer.md
 apps/pcb_router.md
+
+# 本机内置 App（非 myQevosApp 部署产物，只在这台机器上用）
+apps/agent_toolkit.md
