@@ -370,6 +370,9 @@ _RESUMABLE_OUTCOMES = {RUN_OUTCOME_PARTIAL, RUN_OUTCOME_BLOCKED, RUN_OUTCOME_EXH
 _RESUME_RESET_KEYS = (
     "completion_report", "completion_review", "run_outcome",
     "_episodic_appended", "_concept_evaluated", "_pending_final",
+    # 宏观记忆的三个标记同样是"本次运行"的账：续跑时不清掉，_concept_saved
+    # 会让门 3 从此永远被跳过，续跑做出的新认知再也没有沉淀机会。
+    "_concept_saved", "_concept_dirty", "_concept_gate_skipped",
     "_obs_since_report", "_stale_report_rejections",
     "_wrapup_window", "_wrapup_window_used",
     "_iter_warn_injected", "timeout",
@@ -1413,11 +1416,18 @@ def run(
                         continue
 
                 # ── 验收门 3：concept 宏观记忆评估（必经，与成败无关）────────────
+                # 本次运行中途已经更新过宏观记忆的，这道门就没有存在意义了：再问一遍
+                # 只会换来一句"已经更新过了"，白烧一整轮最大上下文的迭代。
+                if state.meta.get("_concept_saved"):
+                    state.meta["_concept_evaluated"] = True
+                    if hooks.on_error and not state.meta.get("_concept_gate_skipped"):
+                        state.meta["_concept_gate_skipped"] = True
+                        hooks.on_error("[记忆评估] 本次运行已更新过宏观记忆，跳过评估门")
                 if not state.meta.get("_concept_evaluated"):
                     state.meta["_concept_evaluated"] = True
                     concept_path = state.meta.get("_concept_path", "./memory_macro.md")
                     if not _nostop:
-                        # 暂存收尾信息：若 agent 接下来调用 save_concept，可在工具执行后
+                        # 暂存收尾信息：若 agent 接下来更新了宏观记忆，可在工具执行后
                         # 直接收尾，省去一次"再 done"的完整迭代——该迭代因 concept_memory
                         # 变更会导致整段 system prompt 前缀缓存失效（末尾上下文最大，最贵）。
                         state.meta["_pending_final"] = {
@@ -1425,9 +1435,22 @@ def run(
                             "verdict": verdict,
                             "verdict_dict": verdict_dict,
                         }
+                        # 清掉此前遗留的脏标记，保证收尾捷径只被"本窗口内的新写入"触发
+                        state.meta.pop("_concept_dirty", None)
+                        # edit_file 在收尾窗口里是被禁用的，那时提它只会换来一次
+                        # 被拦截的空转迭代——恰恰是这道门最贵的时候。
+                        _edit_hint = (
+                            ""
+                            if state.meta.get("_wrapup_window")
+                            else "    若只是给已有章节补一两句话，用 edit_file 精确替换更省\n"
+                        )
                         feedback = (
                             f"[系统][记忆评估] 任务已完成。请判断本次任务是否带来了新的领域认知或经验规律。\n"
-                            f"  - 如果有：调用 save_concept(path='{concept_path}', content=...) 更新宏观工作记忆\n"
+                            f"  - 如果有：调用 save_concept(path='{concept_path}', section='章节标题', content=...)，\n"
+                            f"    content 只写这一个章节的内容。宏观记忆已完整注入 system prompt"
+                            f"（见「宏观工作记忆」一节），不需要再 read_concept，更不要把整份记忆重抄一遍——\n"
+                            f"    整份重写要多生成上万 token，是收尾阶段最慢的一步。\n"
+                            f"{_edit_hint}"
                             f"    （按工作方向分章节，精简叙述，提及关键词即可，不写具体操作步骤）\n"
                             f"  - 如果没有新内容：直接再次调用 done() 完成任务"
                         )
@@ -1619,11 +1642,14 @@ def run(
                         },
                     )
 
-                # ── 收尾优化：concept 门后调用 save_concept 成功 → 直接收尾 ────────
+                # ── 收尾优化：concept 门后更新了宏观记忆 → 直接收尾 ────────────────
                 # 此时 concept_memory 已更新（system prompt 前缀已变），若再走一次 done
                 # 复评，该迭代会在最大上下文上全前缀重算缓存。直接用暂存的收尾信息结束。
+                # 触发条件看的是"宏观记忆有没有真的被写"（_concept_dirty 由 save_concept /
+                # write_file / edit_file 共同设置），而不是工具叫什么名字——否则用
+                # edit_file 增量改记忆的那条省 token 路径反而享受不到这个捷径。
                 _pending_final = state.meta.get("_pending_final")
-                if action.tool == "save_concept" and result.success and _pending_final:
+                if result.success and _pending_final and state.meta.pop("_concept_dirty", None):
                     _checkpoint_state(state)
                     _finalize_run(
                         state,

@@ -17,10 +17,13 @@ from agent.core.types_def import Action, ActionType, AgentState, ToolResult, Too
 from agent.runtime.persistence import RunPersistence
 from agent.tools.standard import (
     get_standard_tools,
+    tool_edit_file,
     tool_promote_tool_candidate,
     tool_repair_tool_candidate,
+    tool_save_concept,
     tool_scratchpad_set,
     tool_validate_tool_recipe,
+    tool_write_file,
 )
 import run_goal
 from run_goal import format_probe_summary, probe_openai_configuration
@@ -669,6 +672,117 @@ class AckOnlyToolFeedbackTests(unittest.TestCase):
              "scratchpad_append", "scratchpad_append"]
         )
         self.assertEqual(fired, [], "中间干了实事，连续计数必须清零")
+
+
+class MacroMemorySectionTests(unittest.TestCase):
+    """宏观记忆的写入必须是增量的。
+
+    全量覆盖模式下，模型每次更新都要把整份记忆（实测 21 KB）逐 token 重新解码
+    一遍——单次 204 s，占掉整个 run 四成的墙上时间，而真正的改动往往只有几百字。
+    章节模式把这笔开销降到 O(一个章节)。
+    """
+
+    SAMPLE = (
+        "# 宏观工作记忆\n\n"
+        "## 联网搜索\n集成 web_search、DDGS。\n\n"
+        "## AI for EDA\n旧内容。\n\n"
+        "### 子话题\n子内容。\n\n"
+        "## 远程运维\nssh 到 xxx。\n"
+    )
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = str(Path(self.tmp.name) / "memory_macro.md")
+        Path(self.path).write_text(self.SAMPLE, encoding="utf-8")
+        self.state = AgentState(goal="g")
+        self.state.meta["_concept_path"] = self.path
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _text(self):
+        return Path(self.path).read_text(encoding="utf-8")
+
+    def test_section_replace_leaves_other_sections_untouched(self):
+        r = tool_save_concept(
+            self.state, path=self.path, content="新内容。", section="AI for EDA")
+
+        self.assertTrue(r.success)
+        self.assertEqual(r.output["mode"], "section_replaced")
+        text = self._text()
+        self.assertIn("## 联网搜索\n集成 web_search、DDGS。", text)
+        self.assertIn("## AI for EDA\n新内容。", text)
+        self.assertIn("## 远程运维\nssh 到 xxx。", text)
+        self.assertNotIn("旧内容。", text)
+
+    def test_section_heading_casing_is_preserved(self):
+        """section 参数里的大小写差异不得悄悄改写文件里的标题。"""
+        tool_save_concept(self.state, path=self.path, content="x", section="ai for eda")
+
+        self.assertIn("## AI for EDA", self._text())
+        self.assertNotIn("## ai for eda", self._text())
+
+    def test_content_may_carry_its_own_heading(self):
+        tool_save_concept(
+            self.state, path=self.path,
+            content="## AI for EDA\n带标题的内容。", section="AI for EDA")
+
+        text = self._text()
+        self.assertIn("## AI for EDA\n带标题的内容。", text)
+        self.assertEqual(text.count("## AI for EDA"), 1)
+
+    def test_unknown_section_is_appended_with_existing_titles_listed(self):
+        """章节名写错会静默追加出一个重复章节——回执里必须把现有章节名摆出来。"""
+        r = tool_save_concept(
+            self.state, path=self.path, content="笔记。", section="AI for EDA（旧）")
+
+        self.assertEqual(r.output["mode"], "section_appended")
+        self.assertIn("AI for EDA", r.output["appended_as_new"])
+        self.assertTrue(self._text().rstrip().endswith("笔记。"))
+
+    def test_shrinking_a_section_warns_about_lost_content(self):
+        """整段替换会连子标题一起换掉；模型以为在补一句，实际删了半个章节。"""
+        r = tool_save_concept(self.state, path=self.path, content="x", section="AI for EDA")
+
+        self.assertIn("warning", r.output)
+        self.assertNotIn("### 子话题", self._text())
+
+    def test_full_overwrite_still_works_without_section(self):
+        r = tool_save_concept(self.state, path=self.path, content="# 全新\n\n## A\n1")
+
+        self.assertEqual(r.output["mode"], "full")
+        self.assertEqual(self._text(), "# 全新\n\n## A\n1\n")
+
+    def test_save_concept_syncs_state_and_marks_flags(self):
+        tool_save_concept(self.state, path=self.path, content="新。", section="AI for EDA")
+
+        self.assertIn("新。", self.state.meta["concept_memory"])
+        self.assertTrue(self.state.meta["_concept_saved"])
+        self.assertTrue(self.state.meta["_concept_dirty"])
+
+    def test_edit_file_on_macro_memory_syncs_concept_memory(self):
+        """宏观记忆靠 concept_memory 注入 system prompt；只写文件不同步 = 脏上下文。"""
+        r = tool_edit_file(
+            self.state, path=self.path, old_string="旧内容。", new_string="改过的内容。")
+
+        self.assertTrue(r.success)
+        self.assertIn("改过的内容。", self.state.meta["concept_memory"])
+        self.assertTrue(self.state.meta["_concept_dirty"])
+
+    def test_write_file_on_macro_memory_syncs_concept_memory(self):
+        tool_write_file(self.state, path=self.path, content="# 覆盖\n")
+
+        self.assertEqual(self.state.meta["concept_memory"], "# 覆盖")
+        self.assertTrue(self.state.meta["_concept_dirty"])
+
+    def test_edit_file_on_other_files_does_not_touch_concept_flags(self):
+        other = str(Path(self.tmp.name) / "other.md")
+        Path(other).write_text("hello\n", encoding="utf-8")
+
+        tool_edit_file(self.state, path=other, old_string="hello", new_string="bye")
+
+        self.assertNotIn("_concept_dirty", self.state.meta)
+        self.assertNotIn("concept_memory", self.state.meta)
 
 
 if __name__ == "__main__":

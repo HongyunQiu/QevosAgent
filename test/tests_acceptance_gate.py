@@ -158,6 +158,14 @@ def _noop_tool(state, **kwargs):
     return ToolResult(success=True, output="ok")
 
 
+def _call(tool, **args):
+    return json.dumps({"thought": "t", "action": "tool_call", "tool": tool, "args": args})
+
+
+def _done(answer="答案"):
+    return json.dumps({"thought": "t", "action": "done", "final_answer": answer})
+
+
 class ExhaustionTerminalStateTests(unittest.TestCase):
     """迭代耗尽必须留下 exhausted 终态，且要先给 agent 一次交代缺口的机会。"""
 
@@ -252,6 +260,111 @@ class StatusPayloadTests(unittest.TestCase):
             payload = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["run_outcome"], RUN_OUTCOME_COMPLETED)
             self.assertFalse(payload["resumable"])
+
+
+class ConceptGateTests(unittest.TestCase):
+    """门 3（宏观记忆）不该白烧迭代。
+
+    这道门每次打回都发生在 run 的最末尾——上下文最大、单次迭代最贵的时刻，
+    而且模型一旦选择"整份重写记忆"，那一次解码就能吃掉整个 run 四成的墙上时间。
+    所以这里守两件事：已经写过记忆就别再问；真的写了就直接收尾，别再要一次 done。
+    """
+
+    @staticmethod
+    def _meta_tool(**updates):
+        def _fn(state, **kwargs):
+            state.meta.update(updates)
+            return ToolResult(success=True, output="ok")
+        return _fn
+
+    def _run(self, tail_responses, extra_tools=None, max_iterations=12):
+        # run() 开头会清掉 _RESUME_RESET_KEYS，所以门 1/2 的前置状态必须由
+        # 循环内的工具调用真实产生，不能靠预置 meta。
+        tools = {
+            "noop": ToolSpec(name="noop", description="noop", args_schema={}, fn=_noop_tool),
+            "report": ToolSpec(
+                name="report", description="r", args_schema={},
+                fn=self._meta_tool(completion_report=_report())),
+            "episodic": ToolSpec(
+                name="episodic", description="e", args_schema={},
+                fn=self._meta_tool(_episodic_appended=True)),
+            "mark_saved": ToolSpec(
+                name="mark_saved", description="s", args_schema={},
+                fn=self._meta_tool(_concept_saved=True)),
+            "open_wrapup": ToolSpec(
+                name="open_wrapup", description="w", args_schema={},
+                fn=self._meta_tool(_wrapup_window=True)),
+        }
+        tools.update(extra_tools or {})
+        responses = [_call("report"), _call("episodic")] + list(tail_responses)
+        state = AgentState(goal="g", tools=dict(tools))
+        return run(
+            "g", _ScriptedLLM(responses), tools,
+            max_iterations=max_iterations, hooks=AgentHooks(), state=state,
+        )
+
+    @staticmethod
+    def _joined(state):
+        return "\n".join(
+            m.get("content", "") for m in state.short_term if isinstance(m.get("content"), str)
+        )
+
+    def test_gate_fires_when_memory_untouched(self):
+        state = self._run([_done(), _done()])
+
+        self.assertIn("[系统][记忆评估]", self._joined(state))
+        self.assertEqual(state.meta["final_answer"], "答案")
+
+    def test_gate_prompt_pushes_section_mode(self):
+        """提示词必须默认引导章节模式：整份重写是这道门最贵的失败模式。"""
+        joined = self._joined(self._run([_done(), _done()]))
+
+        self.assertIn("section=", joined)
+        self.assertIn("不需要再 read_concept", joined)
+
+    def test_gate_prompt_omits_edit_file_in_wrapup_window(self):
+        """收尾窗口里 edit_file 是被禁用的，提它只会换来一次被拦截的空转迭代。"""
+        joined = self._joined(self._run([_call("open_wrapup"), _done(), _done()]))
+
+        self.assertIn("[系统][记忆评估]", joined)
+        self.assertNotIn("edit_file", joined)
+
+    def test_gate_skipped_when_memory_already_saved(self):
+        """本次运行中途已写过宏观记忆：再问一遍只会换来一句"已经更新过了"。"""
+        state = self._run([_call("mark_saved"), _done()])
+
+        self.assertNotIn("[系统][记忆评估]", self._joined(state))
+        self.assertTrue(state.meta.get("_concept_evaluated"))
+        self.assertEqual(state.meta["final_answer"], "答案")
+
+    def test_shortcut_finalizes_on_any_concept_write(self):
+        """捷径看的是"记忆真的被写了"，不是工具叫 save_concept——否则用 edit_file
+        增量改记忆的那条省 token 路径反而享受不到收尾捷径。"""
+        state = self._run(
+            [_done(), _call("edit_file"), _done()],
+            extra_tools={"edit_file": ToolSpec(
+                name="edit_file", description="e", args_schema={},
+                fn=self._meta_tool(_concept_dirty=True))},
+        )
+
+        self.assertIn("[系统][记忆评估]", self._joined(state))
+        self.assertEqual(state.meta["final_answer"], "答案")
+        # 捷径生效 = 收尾信息已被消费，没有再走一轮 done 复评
+        self.assertIsNone(state.meta.get("_pending_final"))
+
+    def test_shortcut_not_triggered_by_unrelated_tool(self):
+        """打回时会清掉遗留的脏标记，普通工具调用不得被误判成"写了记忆"。"""
+        state = self._run([_done(), _call("noop"), _done()])
+
+        joined = self._joined(state)
+        self.assertIn("[系统][记忆评估]", joined)
+        self.assertIn("[Tool: noop]", joined)
+        self.assertEqual(state.meta["final_answer"], "答案")
+
+    def test_concept_flags_are_reset_on_resume(self):
+        """续跑不清 _concept_saved，门 3 就永远被跳过，新认知再也沉淀不下来。"""
+        for key in ("_concept_saved", "_concept_dirty", "_concept_gate_skipped"):
+            self.assertIn(key, _RESUME_RESET_KEYS)
 
 
 if __name__ == "__main__":

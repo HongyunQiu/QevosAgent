@@ -165,11 +165,17 @@ agent 在调用 `done` 之前，应先调用 `submit_completion_report` 工具�
 | 门 | 触发条件 | 行为 |
 |----|----------|------|
 | 门 2：episodic | `_episodic_appended` 未置位 | 打回，要求调用 `append_episodic` |
-| 门 3：concept | `_concept_evaluated` 未置位 | 打回一次，要求评估是否 `save_concept`；无论是否保存都只走一次 |
+| 门 3：concept | `_concept_evaluated` 未置位**且**本次运行未写过宏观记忆（`_concept_saved`） | 打回一次，要求评估是否 `save_concept`；无论是否保存都只走一次 |
 
 这两门的打回**不产生 verdict**，只往 `state.meta["acceptance_failures"]` 追加 `{"reason": "missing_episodic"}` 之类的记录。
 
-门 3 有一条收尾捷径：打回时把门 1 的结论暂存进 `_pending_final`，若 agent 接下来直接调用 `save_concept` 成功，则跳过"再 done 一次"的完整迭代，直接复用暂存结论收尾（`save_concept` 会改动 system prompt 前缀，那一次迭代的缓存失效代价最高）。两条路径共用 `_finalize_run`，行为一致。
+门 3 有一条收尾捷径：打回时把门 1 的结论暂存进 `_pending_final`，若 agent 接下来**真的写了宏观记忆**，则跳过"再 done 一次"的完整迭代，直接复用暂存结论收尾（写宏观记忆会改动 system prompt 前缀，那一次迭代的缓存失效代价最高）。两条路径共用 `_finalize_run`，行为一致。
+
+判定看的是 `_concept_dirty` 标记而非工具名：`save_concept` / `write_file` / `edit_file` 只要写的是 `_concept_path` 指向的文件，都会同步 `concept_memory` 并置位该标记。这样"用 `edit_file` 增量改记忆"这条省 token 的路径同样享受捷径。打回时会先清掉遗留的 `_concept_dirty`，保证捷径只被本窗口内的新写入触发。
+
+门 3 本身也会被跳过：若本次运行中途已经写过宏观记忆（`_concept_saved`），再问一遍只会换来一句"已经更新过了"，白烧一整轮最大上下文的迭代。
+
+**为什么强调增量**：宏观记忆是全量注入 system prompt 的 Markdown，实测能到 20 KB+。让模型整份重写意味着在收尾这一步串行解码上万 token——实测单次 204 s，占掉整个 run 40% 的墙上时间，且任何 JSON 出错/截断都要从头再来一遍。因此 `save_concept` 支持 `section=` 章节模式（只重写命中的 `##` 段落，未命中则追加），门 3 的提示词也默认引导章节模式。
 
 ---
 

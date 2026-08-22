@@ -26,6 +26,27 @@ from ..i18n import t as _t
 # ── 工具函数实现 ──────────────────────────────────────────────────────────────
 
 
+def _sync_concept_if_macro(state: AgentState, p: Path, new_content: str) -> bool:
+    """若刚写的文件就是宏观工作记忆，把新内容同步进 state。
+
+    宏观记忆是通过 state.meta['concept_memory'] 注入 system prompt 的，只写文件
+    不同步 = 本轮之后的 prompt 仍是旧记忆。save_concept 自己会同步，但 write_file /
+    edit_file 直接改 memory_macro.md 时会漏掉这一步——那正是"用 edit_file 增量改
+    记忆"这条省 token 的路，接缝必须在这里补上，否则省下的 token 换来的是脏上下文。
+    """
+    try:
+        concept_path = state.meta.get("_concept_path") or "./memory_macro.md"
+        if Path(concept_path).resolve() != p.resolve():
+            return False
+    except Exception:
+        return False
+    state.meta["concept_memory"] = (new_content or "").strip()
+    # 供 loop 判断"本次运行是否已更新过宏观记忆"（跳过重复的记忆评估门 / 直接收尾）
+    state.meta["_concept_saved"] = True
+    state.meta["_concept_dirty"] = True
+    return True
+
+
 def _validate_evolved_tool_python_code(python_code: str) -> list[str]:
     """Best-effort static validation for persisted tool recipes."""
     errors: list[str] = []
@@ -448,9 +469,13 @@ def tool_write_file(state: AgentState, path: str, content: str) -> ToolResult:
         # 登记进产物索引，压缩封段时会作为确定性清单附进交接文档
         from ..core.artifact_index import register_artifact
         register_artifact(state, str(p.resolve()), "write_file", chars=len(content))
+        _synced = _sync_concept_if_macro(state, p, content)
         return ToolResult(
             success=True,
-            output=f"已写入 {p.resolve()}（{len(content)} 字符）"
+            output=(
+                f"已写入 {p.resolve()}（{len(content)} 字符）"
+                + ("\n（该文件是宏观工作记忆，已同步注入 system prompt）" if _synced else "")
+            ),
         )
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
@@ -907,6 +932,7 @@ def tool_edit_file(
             replaced = 1
 
         p.write_text(new_content, encoding="utf-8")
+        _synced = _sync_concept_if_macro(state, p, new_content)
 
         old_lines = old_string.count("\n") + 1
         new_lines = new_string.count("\n") + 1
@@ -915,6 +941,7 @@ def tool_edit_file(
             output=(
                 f"已修改 {p.resolve()}\n"
                 f"替换了 {replaced} 处：{old_lines} 行 → {new_lines} 行"
+                + ("\n（该文件是宏观工作记忆，已同步注入 system prompt）" if _synced else "")
             ),
         )
     except Exception as e:
@@ -1596,8 +1623,57 @@ def tool_search_episodic(
 
 # ── 宏观工作记忆（macro Markdown） ───────────────────────────────────────────
 
-def tool_save_concept(state: AgentState, path: str, content: str) -> ToolResult:
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$")
+
+
+def _normalize_heading_title(text: str) -> str:
+    """把 '## AI for EDA' / 'AI for EDA' / ' ai for eda ' 归一成可比较的标题。"""
+    s = (text or "").strip()
+    s = re.sub(r"^#{1,6}[ \t]*", "", s).strip()
+    return s.casefold()
+
+
+def _find_section_span(lines: list[str], section: str) -> Optional[Tuple[int, int, int]]:
+    """定位章节块，返回 (起始行, 结束行独占, 标题层级)；找不到返回 None。
+
+    块的范围 = 标题行 起，到下一个「同级或更高级」标题行止。更深的子标题算块内内容。
+    """
+    target = _normalize_heading_title(section)
+    if not target:
+        return None
+    for i, line in enumerate(lines):
+        m = _HEADING_RE.match(line)
+        if not m or _normalize_heading_title(m.group(2)) != target:
+            continue
+        level = len(m.group(1))
+        end = len(lines)
+        for j in range(i + 1, len(lines)):
+            m2 = _HEADING_RE.match(lines[j])
+            if m2 and len(m2.group(1)) <= level:
+                end = j
+                break
+        return i, end, level
+    return None
+
+
+def tool_save_concept(
+    state: AgentState,
+    path: str,
+    content: str,
+    section: str = "",
+) -> ToolResult:
     """将宏观工作记忆写入 Markdown 文件，并同步到当前 state（立即注入 system prompt）。
+
+    两种模式：
+
+    1. **章节模式（推荐，传 section）**：只重写 section 命中的那个 ## 章节，
+       content 只需要该章节的内容。命中则整段替换，未命中则作为新章节追加到文末。
+    2. **全量模式（不传 section）**：content 覆盖整个文件——仅在需要重排章节结构、
+       或文件尚不存在时使用。
+
+    默认走章节模式的理由很实在：宏观记忆动辄 20 KB，全量覆盖意味着模型要把整份文件
+    逐 token 重新解码一遍（实测占单次运行 40% 的墙上时间），而真正改动往往只有几百字。
+    章节模式把这笔开销从 O(整份记忆) 降到 O(一个章节)，且不会在重抄时改坏别的章节。
 
     content 按工作方向分章节，每条精简一句话、提及关键词，不写具体流程，例如：
         ## 联网搜索
@@ -1605,17 +1681,83 @@ def tool_save_concept(state: AgentState, path: str, content: str) -> ToolResult:
 
         ## 远程运维
         通过 ssh 连接了 xxx、yyy 等远程主机，实现自动化部署。
-
-    每次更新前先用 read_concept 读取旧内容，修改后整体覆盖写入。
     """
     try:
         if not content or not content.strip():
             return ToolResult(success=False, output=None, error="content 不能为空")
-        p = Path(path)
+        p = Path(os.path.expandvars(os.path.expanduser(path)))
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content.strip() + "\n", encoding="utf-8")
-        state.meta["concept_memory"] = content.strip()
-        return ToolResult(success=True, output={"path": str(p.resolve()), "chars": len(content)})
+        body = content.strip()
+        section = (section or "").strip()
+
+        if not section:
+            new_text = body + "\n"
+            mode = "full"
+        else:
+            title = re.sub(r"^#{1,6}[ \t]*", "", section).strip()
+            existing = p.read_text(encoding="utf-8") if p.exists() else ""
+            lines = existing.splitlines()
+            span = _find_section_span(lines, title)
+            level = span[2] if span else 2
+
+            # 章节已存在时沿用原标题行，避免 section 参数里的大小写/空格差异
+            # 悄悄把文件里的标题改写掉。
+            heading = lines[span[0]] if span else f"{'#' * level} {title}"
+
+            # content 可以带标题行也可以不带；不带就替模型补上，省得它为了对齐格式重抄。
+            body_lines = body.splitlines()
+            first = next((ln for ln in body_lines if ln.strip()), "")
+            m_first = _HEADING_RE.match(first)
+            if m_first and _normalize_heading_title(m_first.group(2)) == _normalize_heading_title(title):
+                block_lines = [heading] + body_lines[body_lines.index(first) + 1:]
+            else:
+                block_lines = [heading] + body_lines
+
+            if span:
+                start, end, _ = span
+                old_block = "\n".join(lines[start:end]).strip()
+                # 保留章节之间的空行间距
+                new_lines = lines[:start] + block_lines + [""] + lines[end:]
+                # 去掉可能产生的连续空行
+                while len(new_lines) > start + len(block_lines) + 1 and \
+                        new_lines[start + len(block_lines) + 1].strip() == "":
+                    del new_lines[start + len(block_lines) + 1]
+                mode = "section_replaced"
+            else:
+                old_block = ""
+                new_lines = (lines + [""] if lines and lines[-1].strip() else list(lines)) + block_lines
+                mode = "section_appended"
+            new_text = "\n".join(new_lines).rstrip() + "\n"
+            written_chars = len("\n".join(block_lines))
+            extra = {"replaced_chars": len(old_block)}
+            # 整段替换会连同该章节下的子标题一起换掉；旧块明显更长时说一声，
+            # 免得模型以为自己只是"补了一句"，实际上删掉了半个章节。
+            if old_block and written_chars < len(old_block) * 0.6:
+                extra["warning"] = (
+                    f"该章节原有 {len(old_block)} 字符，本次整段替换后只剩 {written_chars} 字符——"
+                    f"章节内的子标题与其余内容已被覆盖。若只是想补充，请改用 edit_file 精确替换。"
+                )
+            if mode == "section_appended" and lines:
+                titles = [m.group(2).strip() for m in
+                          (_HEADING_RE.match(ln) for ln in lines) if m and len(m.group(1)) == 2]
+                extra["appended_as_new"] = (
+                    f"未找到章节「{title}」，已作为新章节追加。现有 ## 章节：{titles[:40]}"
+                )
+
+        p.write_text(new_text, encoding="utf-8")
+        state.meta["concept_memory"] = new_text.strip()
+        state.meta["_concept_saved"] = True
+        state.meta["_concept_dirty"] = True
+        out = {
+            "path": str(p.resolve()),
+            "mode": mode,
+            "section": section or None,
+            "written_chars": len(new_text) if not section else written_chars,
+            "chars": len(new_text),
+        }
+        if section:
+            out.update(extra)
+        return ToolResult(success=True, output=out)
     except Exception as e:
         return ToolResult(success=False, output=None, error=str(e))
 
@@ -3834,12 +3976,18 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             name="save_concept",
             description=(
                 "将宏观工作记忆写入 Markdown 文件，并同步注入当前 system prompt。"
-                "内容按工作方向分章节，每条精简一句话、提及关键词，不写具体流程。"
-                "更新时先用 read_concept 读取旧内容，修改后整体覆盖写入。"
+                "内容按工作方向分 ## 章节，每条精简一句话、提及关键词，不写具体流程。\n"
+                "【默认用章节模式】传 section='章节标题'，content 只写该章节内容："
+                "命中则整段替换，未命中则作为新章节追加。宏观记忆通常有几万字，"
+                "全量覆盖要把整份文件重新生成一遍（实测能占掉单次任务 40% 的时间），"
+                "而章节模式只生成改动的那一段。\n"
+                "不传 section 才是全量覆盖，仅在重排整体章节结构或文件不存在时使用。"
+                "只改某章节里的一两句话时，用 edit_file 做精确替换更省。"
             ),
             args_schema={
                 "path": "宏观工作记忆文件路径（如 ./memory_macro.md）",
-                "content": "完整 Markdown 内容，按工作方向分 ## 章节，每条一句话精简叙述",
+                "content": "章节模式=该章节的正文（可带可不带 ## 标题行）；全量模式=完整 Markdown",
+                "section": "（推荐）要写入的章节标题，如 'AI for EDA'；省略则整份覆盖",
             },
             fn=tool_save_concept,
         ),
@@ -3848,6 +3996,8 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description=(
                 "读取宏观工作记忆文件并加载到 state，使其注入后续 system prompt。"
                 "在任务开始时调用，获取当前的工作方向全景。"
+                "更新记忆时不要把读到的内容整份重抄回去——用 save_concept(section=...) "
+                "只写改动的章节，或用 edit_file 做精确替换。"
             ),
             args_schema={"path": "宏观工作记忆文件路径（如 ./memory_macro.md）"},
             fn=tool_read_concept,
