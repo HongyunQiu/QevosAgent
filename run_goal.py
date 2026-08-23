@@ -1036,6 +1036,13 @@ def main():
             elif state.meta.get("timeout"):
                 _finish_outcome = "failed"
                 _finish_error   = "timeout"
+            elif (state.meta.get("run_outcome") or {}).get("outcome") == "failed":
+                # loop 内部判定失败后是**正常返回**的（例如 LLM 确定性错误熔断），
+                # run_error 为空。不读 run_outcome 就会把一个失败的 run 记成 done——
+                # status 和 run_outcome 打架，dashboard 显示绿色而任务其实没做完。
+                _ro = state.meta["run_outcome"]
+                _finish_outcome = "failed"
+                _finish_error   = _ro.get("error") or _ro.get("reason") or "failed"
             else:
                 _finish_outcome = "done"
                 _finish_error   = None

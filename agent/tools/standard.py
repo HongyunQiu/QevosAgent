@@ -2338,10 +2338,104 @@ def _normalise_image(raw: bytes) -> tuple[str, str]:
         return base64.b64encode(raw).decode(), mime
 
 
+# ── 远程图片：先下载校验，再注入 ──────────────────────────────────────────────
+# 把 URL 原样丢给 LLM 后端，等于把"这串字节到底是不是图片"的判断权外包给了服务端，
+# 而服务端唯一的表达方式是让整轮调用 400——坏字节从此卡在上下文里，之后每一轮都必然
+# 失败（不可恢复的上下文污染）。典型触发源是维基/萌娘百科这类 `.../File:xxx.jpg`：
+# 它返回的是 HTML 页面，不是图片直链。另一个失败面是后端机器未必能出网、也不带 UA，
+# 很多站点直接 403。所以远程图片一律先落到本机、校验过再转 base64 注入。
+
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"BM", "image/bmp"),
+    (b"II*\x00", "image/tiff"),
+    (b"MM\x00*", "image/tiff"),
+    (b"\x00\x00\x01\x00", "image/x-icon"),
+)
+
+
+def _sniff_image_mime(raw: bytes) -> Optional[str]:
+    """按文件头判断字节流是不是已知图片格式，认不出返回 None。"""
+    for magic, mime in _IMAGE_MAGIC:
+        if raw.startswith(magic):
+            return mime
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw[4:12] in (b"ftypavif", b"ftypavis", b"ftypheic", b"ftypheix", b"ftypmif1"):
+        # Pillow 多半打不开，但它确实是图片——让 Pillow 去报真实的错，
+        # 而不是在这里谎称"这不是图片"。
+        return "image/heif"
+    return None
+
+
+def _fetch_remote_image(url: str, timeout: float = 20.0) -> Tuple[Optional[bytes], str, bool]:
+    """下载远程图片并校验它确实是图片字节。
+
+    返回 (raw, error, permanent)。permanent=True 表示"这个 URL 不是图片"这类重试也没
+    用的结论，调用方据此把它记进黑名单；网络抖动类失败 permanent=False。
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    max_bytes = int(os.environ.get("LOAD_IMAGE_MAX_BYTES", str(24 * 1024 * 1024)))
+    req = _ur.Request(
+        url,
+        headers={
+            # 不带 UA 会被相当多的图床/维基站点直接 403——这正是"让后端自己去取"
+            # 的老路径最常见的失败原因之一。
+            "User-Agent": "Mozilla/5.0 (compatible; QevosAgent/1.0; +load_image)",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        },
+    )
+    try:
+        with _ur.urlopen(req, timeout=timeout) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            raw = resp.read(max_bytes + 1)
+    except _ue.HTTPError as e:
+        return None, f"下载失败：HTTP {e.code} {e.reason}", e.code in (400, 401, 403, 404, 410, 451)
+    except Exception as e:
+        return None, f"下载失败：{type(e).__name__}: {e}", False
+
+    if not raw:
+        return None, "下载到 0 字节，该 URL 没有返回任何内容。", False
+    if len(raw) > max_bytes:
+        return None, (
+            f"图片超过 {max_bytes // 1024 // 1024}MB 上限。请换更小的图，"
+            "或先下载到本地压缩后再用本地路径加载。"
+        ), True
+
+    if _sniff_image_mime(raw):
+        return raw, "", False
+
+    stripped = raw[:512].lstrip()
+    if ctype == "image/svg+xml" or stripped[:4].lower() == b"<svg":
+        return None, (
+            "该 URL 返回的是 SVG 矢量图，视觉模型无法直接读取。"
+            "请先转成 PNG（下载后用 Pillow / cairosvg / inkscape 转换）再加载。"
+        ), True
+    if ctype.startswith("image/"):
+        # 声明是图片但文件头不认识：可能是没枚举到的格式，交给 Pillow 定夺。
+        return raw, "", False
+
+    head = stripped[:200].decode("utf-8", errors="replace").replace("\n", " ")
+    return None, (
+        f"该 URL 返回的不是图片（Content-Type: {ctype or '未知'}）。开头内容：{head}\n"
+        "最常见的原因是拿到了**图片描述页**而不是图片直链——例如维基/萌娘百科的 "
+        "`https://.../File:xxx.jpg` 是一个 HTML 页面，不是图片本身。\n"
+        "解决办法：打开该页面找到真正的图片地址（页面里 `<img>` 的 src 或 og:image，"
+        "通常在 static/upload/thumb 之类的域名或路径下），用那个地址重试。"
+    ), True
+
+
 def tool_load_image(state: AgentState, path: str, caption: str = "") -> ToolResult:
     """加载本地图片或远程图片 URL，将其注入下一次 LLM 调用的上下文（多模态）。
 
-    支持：本地文件路径（jpg/png/gif/webp/bmp/tiff/ico 等，自动转换为 PNG/JPEG）、http/https URL。
+    支持：本地文件路径（jpg/png/gif/webp/bmp/tiff/ico 等，自动转换为 PNG/JPEG）、http/https URL
+    （远程 URL 会先下载到本机、校验确实是图片字节，再以 base64 注入——绝不把未校验的 URL
+    交给 LLM 后端自己去取）。
     图片会作为 image content block 附加到对话历史，LLM 在下一轮可直接"看到"该图片。
     caption 会作为图片前的文字说明一并注入。
     """
@@ -2363,15 +2457,53 @@ def tool_load_image(state: AgentState, path: str, caption: str = "") -> ToolResu
 
     p = path.strip()
 
-    # ── 远程 URL：直接用 image_url_block，不下载 ──────────────────────────────
+    # ── 远程 URL：先下载 + 校验，再以 base64 注入 ─────────────────────────────
     if p.startswith("http://") or p.startswith("https://"):
+        # 同一个 URL 已被证实不能当图片用时直接拒绝：否则模型很容易"再试一次"，
+        # 把刚清理干净的上下文重新污染一遍。
+        _bad = state.meta.get("_bad_image_urls")
+        if isinstance(_bad, dict) and p in _bad:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"该 URL 之前已被证实无法作为图片使用：{_bad[p]}\n请换一个图片直链。",
+            )
+
+        # 逃生阀：个别后端（例如带内网鉴权的图床）更适合自己去取。
+        if os.environ.get("LOAD_IMAGE_REMOTE_MODE", "download").strip().lower() == "url":
+            blocks = []
+            if caption:
+                blocks.append({"type": "text", "text": caption})
+            blocks.append(image_url_block(p))
+            return ToolResult(
+                success=True,
+                output=f"已加载远程图片（URL 直传，未校验）：{p}",
+                content_blocks=blocks,
+            )
+
+        raw, err, permanent = _fetch_remote_image(p)
+        if err:
+            if permanent:
+                state.meta.setdefault("_bad_image_urls", {})[p] = err.split("\n")[0]
+            return ToolResult(success=False, output=None, error=err)
+
+        try:
+            data, mime = _normalise_image(raw)
+        except Exception as e:
+            state.meta.setdefault("_bad_image_urls", {})[p] = f"解码失败：{e}"
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"图片下载成功但无法解码（{len(raw)} 字节）：{e}\n请换一个图片地址。",
+            )
+
         blocks = []
         if caption:
             blocks.append({"type": "text", "text": caption})
-        blocks.append(image_url_block(p))
+        blocks.append(image_block(data, mime))
         return ToolResult(
             success=True,
-            output=f"已加载远程图片：{p}",
+            output=f"已加载远程图片：{p}（{mime}，{len(data) // 1024}KB base64）",
             content_blocks=blocks,
         )
 
@@ -4333,7 +4465,10 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             description=(
                 "将本地图片文件或远程图片 URL 加载到对话上下文，使 LLM 在下一轮能直接分析图片内容。\n"
                 "适用场景：分析截图、识别图表/表格、检查设计稿、读取扫描件等。\n"
-                "支持 jpg/png/gif/webp/bmp/tiff/ico 等常见格式（自动转换为 PNG/JPEG）；本地路径支持相对路径（相对于当前工作目录）。"
+                "支持 jpg/png/gif/webp/bmp/tiff/ico 等常见格式（自动转换为 PNG/JPEG）；本地路径支持相对路径（相对于当前工作目录）。\n"
+                "URL 必须是**图片直链**：远程图片会先下载并校验字节确实是图片，"
+                "维基/萌娘百科的 `.../File:xxx.jpg` 这类图片描述页是 HTML 网页，会被直接拒绝，"
+                "请改用页面里 `<img>` 的 src / og:image 指向的真实地址。"
             ),
             args_schema={
                 "path": "图片路径（本地文件路径或 http/https URL）",

@@ -1187,6 +1187,11 @@ def run(
                     hooks.on_error(error_msg)
 
                 es = str(e)
+                # 本轮是否做出了"改变下一次请求内容"的自愈动作。没有自愈的重试是
+                # 拿同一份上下文再撞一次墙——对确定性错误收益恒为 0。
+                _healed = False
+                _sys_note = f"[系统] LLM调用异常: {e}，请重试或换一种方式。"
+
                 if (
                     "max_tokens must be at least 1" in es
                     or "context_length" in es
@@ -1196,6 +1201,7 @@ def run(
                     _trim_short_term(state, keep_last=6)
                     _compact_short_term_messages(state, per_message_chars=1200)
                     state.long_term.append("[自我修复] 遇到上下文/输出长度错误，已自动裁剪+压缩 short_term 以缩短 prompt。")
+                    _healed = True
 
                 # 当前模型不支持多模态：清除 short_term 中所有图片块，标记能力缺失
                 _vision_unsupported = (
@@ -1213,15 +1219,37 @@ def run(
                     )
                     if hooks.on_error:
                         hooks.on_error(f"[自我修复] 多模态不支持，已清除 {stripped} 条图片块")
+                    _healed = True
 
-                _append_short_term(
-                    state,
-                    {
-                        "role": "user",
-                        "content": f"[系统] LLM调用异常: {e}，请重试或换一种方式。",
-                    },
-                )
-                _checkpoint_state(state)
+                # 后端解不开上下文里的某张图（最常见：URL 指向的是 HTML 页面而不是
+                # 图片直链）。坏图片不摘掉，之后每一轮都是同一个 400——整个 run 会
+                # 卡死在这一轮，重试多少次都没用。
+                elif _is_image_decode_error(es):
+                    stripped, bad_urls = _strip_broken_image_blocks(state)
+                    for _u in bad_urls:
+                        state.meta.setdefault("_bad_image_urls", {})[_u] = (
+                            "LLM 后端无法把该 URL 的内容解析为图片"
+                        )
+                    if stripped:
+                        _healed = True
+                        state.long_term.append(
+                            f"[自我修复] LLM 后端无法解析上下文中的图片，已移除（{stripped} 条消息受影响"
+                            + (f"，坏图 URL：{'、'.join(bad_urls[:3])}" if bad_urls else "")
+                            + "）。"
+                        )
+                        if hooks.on_error:
+                            hooks.on_error(f"[自我修复] 图片数据无法解析，已清除 {stripped} 条图片块")
+                        _sys_note = (
+                            f"[系统] LLM 后端无法解析你加载的图片：{e}\n"
+                            "该图片已从上下文中移除（重试同一张图不会成功）。"
+                            "若这张图对任务必要，请换一个**图片直链**再 load_image——"
+                            "维基/萌娘百科的 `.../File:xxx.jpg` 是 HTML 页面而非图片，"
+                            "要用页面里 `<img>` 的 src / og:image 指向的真实地址；"
+                            "也可以先把图片下载到本地再用本地路径加载。"
+                        )
+
+                _append_short_term(state, {"role": "user", "content": _sys_note})
+
                 # LLM 调用异常不应消耗用户的"思考预算"——这是网络/服务端故障，
                 # 不是模型完成了一轮推理。仅在连续失败次数超过熔断阈值后才扣预算，
                 # 以避免永久性故障（如鉴权错误）导致死循环。
@@ -1231,6 +1259,44 @@ def run(
                     _max_consec = int(os.environ.get("LLM_CONSEC_ERROR_BUDGET", "10"))
                 except Exception:
                     _max_consec = 10
+
+                # 同一个错误反复出现，说明重试没有触及病根。做过自愈就重新计数——
+                # 上下文变了，下一次是一次真正不同的尝试。
+                _sig = _llm_error_signature(es)
+                if _healed:
+                    _streak = 0
+                elif _sig == state.meta.get("_last_llm_error_sig"):
+                    _streak = int(state.meta.get("_same_llm_error_streak", 0)) + 1
+                else:
+                    _streak = 1
+                state.meta["_last_llm_error_sig"] = _sig
+                state.meta["_same_llm_error_streak"] = _streak
+
+                try:
+                    _det_budget = int(os.environ.get("LLM_DETERMINISTIC_ERROR_BUDGET", "3"))
+                except Exception:
+                    _det_budget = 3
+
+                # 止损：确定性错误（4xx）+ 上下文没变 + 已经重复够多次 = 再试也不会成功。
+                # 老逻辑在这里只是开始扣迭代预算、继续空转到耗尽，run 停在 status=running
+                # 且 run_outcome 为空——任务实际上是无声挂死的。必须写终态再退出。
+                if (
+                    not _healed
+                    and _streak >= max(1, _det_budget)
+                    and _is_deterministic_llm_error(e, es)
+                ):
+                    _reason = f"LLM 确定性错误连续 {_streak} 次且无可用自愈手段，终止运行"
+                    if hooks.on_error:
+                        hooks.on_error(f"[熔断] {_reason}: {es[:200]}")
+                    state.long_term.append(f"[熔断] {_reason}。")
+                    _set_run_outcome(
+                        state, RUN_OUTCOME_FAILED,
+                        reason="llm_error_deterministic", error=es,
+                    )
+                    _checkpoint_state(state, status="failed", error=error_msg)
+                    break
+
+                _checkpoint_state(state)
                 if _consec >= max(1, _max_consec):
                     state.iteration += 1
                 continue
@@ -2141,29 +2207,111 @@ def _collapse_attractor_context(
         pass
 
 
-def _strip_vision_blocks(state: AgentState) -> int:
-    """Remove all image content blocks from short_term messages.
+def _strip_image_blocks(state: AgentState, select, placeholder: str) -> tuple[int, list]:
+    """按谓词移除 short_term 中的图片块。
 
-    Called when the LLM backend reports it does not support vision.
-    Returns the number of messages that were modified.
+    select(block) 返回 True 表示"移除这一块"。返回 (受影响的消息数, 被移除的图片 URL)。
     """
     count = 0
+    urls: list = []
     for msg in state.short_term:
         content = msg.get("content")
         if not isinstance(content, list):
             continue
-        filtered = [b for b in content if not (isinstance(b, dict) and b.get("type") == "image")]
-        if len(filtered) == len(content):
+        filtered = []
+        removed = []
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "image" and select(b):
+                removed.append(b)
+            else:
+                filtered.append(b)
+        if not removed:
             continue
+        for b in removed:
+            u = b.get("url")
+            if isinstance(u, str) and u not in urls:
+                urls.append(u)
         # Simplify single remaining text block back to a plain string
         if len(filtered) == 1 and isinstance(filtered[0], dict) and filtered[0].get("type") == "text":
             msg["content"] = filtered[0]["text"]
         elif filtered:
             msg["content"] = filtered
         else:
-            msg["content"] = "[图片已移除：当前模型不支持多模态]"
+            msg["content"] = placeholder
         count += 1
-    return count
+    return count, urls
+
+
+def _strip_vision_blocks(state: AgentState) -> int:
+    """Remove all image content blocks from short_term messages.
+
+    Called when the LLM backend reports it does not support vision.
+    Returns the number of messages that were modified.
+    """
+    return _strip_image_blocks(state, lambda b: True, "[图片已移除：当前模型不支持多模态]")[0]
+
+
+def _strip_broken_image_blocks(state: AgentState) -> tuple[int, list]:
+    """后端解不开上下文里的某张图时，把嫌疑图片摘掉。
+
+    坏图片留在 short_term 里就是不可恢复的上下文污染：之后每一轮都会撞上同一个 400，
+    重试的期望收益是 0。所以这里必须真的动上下文，而不是再试一次。
+    """
+    ph = "[图片已移除：LLM 后端无法解析该图片数据]"
+    # 先只摘 URL 型图片块——base64 型是本地 Pillow 解过码才注入的，几乎不可能是元凶，
+    # 而它们多半是自己的截图，误伤代价高。
+    count, urls = _strip_image_blocks(state, lambda b: isinstance(b.get("url"), str), ph)
+    if count:
+        return count, urls
+    # 上下文里没有 URL 型图片却依然解析失败：只能全摘，否则这一轮永远过不去。
+    return _strip_image_blocks(state, lambda b: True, ph)
+
+
+# 后端"这张图我解不开"的错误面孔。vLLM 的原话是：
+#   An exception occurred while loading IMAGE data at index 0: ...
+#   cannot identify image file <_io.BytesIO object at 0x...>
+_IMAGE_DECODE_ERR_MARKERS = (
+    "cannot identify image file",
+    "loading image data",
+    "error while loading data imagedata",
+    "unidentifiedimageerror",
+    "invalid image",
+    "failed to load image",
+    "cannot decode image",
+    "image data is invalid",
+    "truncated image",
+)
+
+
+def _is_image_decode_error(es: str) -> bool:
+    low = es.lower()
+    return any(m in low for m in _IMAGE_DECODE_ERR_MARKERS)
+
+
+# 确定性错误：同样的请求再发一次必然得到同样的拒绝。429（限流）和 5xx 不在此列——
+# 那些是真正值得退避重试的瞬时故障。
+_DETERMINISTIC_STATUS = {400, 401, 403, 404, 405, 413, 415, 422}
+_DETERMINISTIC_EXC_NAMES = {
+    "BadRequestError", "AuthenticationError", "PermissionDeniedError",
+    "NotFoundError", "UnprocessableEntityError",
+}
+
+
+def _is_deterministic_llm_error(exc: Exception, es: str) -> bool:
+    code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    try:
+        if int(code) in _DETERMINISTIC_STATUS:
+            return True
+    except (TypeError, ValueError):
+        pass
+    if type(exc).__name__ in _DETERMINISTIC_EXC_NAMES:
+        return True
+    return any(f"Error code: {c}" in es for c in _DETERMINISTIC_STATUS)
+
+
+def _llm_error_signature(es: str) -> str:
+    """错误指纹：抹掉数字/地址等每次都变的部分，用来判断"还是同一个错"。"""
+    return re.sub(r"[0-9a-fx]{3,}", "#", es[:300].lower())
 
 
 def _spill_large_output_to_disk(tool_name: str, content: str, state: "AgentState") -> Optional[str]:
