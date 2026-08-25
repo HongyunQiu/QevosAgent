@@ -786,6 +786,16 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 /* ── Command bar ─────────────────────────────────────────────────────── */
 .cmdbar { grid-area:cmdbar; display:flex; align-items:center; gap:10px; padding:0 16px; background:var(--bg2); border-top:1px solid var(--border); }
 .cmd-prompt { font-family:var(--mono); font-size:15px; color:var(--green); font-weight:700; flex-shrink:0; }
+/* Attach button — replaces the old "›" prompt glyph, same footprint so the bar
+   layout is unchanged. Opens the file picker; images can also just be pasted. */
+.cmd-attach {
+  flex-shrink:0; width:24px; height:24px; padding:0; background:none; border:none;
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+  color:var(--muted); border-radius:6px; transition:color 0.15s, background 0.15s;
+}
+.cmd-attach:hover { color:var(--blue); background:var(--bg3); }
+.cmd-attach.has-image { color:var(--green); }
+.cmd-attach svg { width:16px; height:16px; display:block; }
 .cmd-input {
   flex:1; background:var(--bg3); border:1px solid var(--border); border-radius:7px;
   padding:8px 13px; color:var(--text); font-family:var(--mono); font-size:12.5px; outline:none;
@@ -804,6 +814,28 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 }
 .rigor-bulb:hover { background:var(--bg2); filter:grayscale(0.5) opacity(0.7); }
 .rigor-bulb.on { filter:none; text-shadow:0 0 7px rgba(255,200,40,0.95), 0 0 14px rgba(255,180,0,0.55); }
+/* Pending-image thumbnails — absolutely positioned inside the input box so the
+   input (and the whole 54px cmdbar row) keeps its height no matter how many are
+   attached. JS widens .cmd-input's padding-left to keep the caret clear of them. */
+.cmd-thumbs {
+  position:absolute; left:6px; top:50%; transform:translateY(-50%); z-index:2;
+  display:flex; align-items:center; gap:4px; max-width:55%; overflow-x:auto;
+  scrollbar-width:none; pointer-events:auto;
+}
+.cmd-thumbs::-webkit-scrollbar { display:none; }
+.cmd-thumb {
+  position:relative; width:21px; height:21px; flex-shrink:0; border-radius:4px;
+  overflow:hidden; border:1px solid var(--border); background:var(--bg2);
+}
+.cmd-thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+.cmd-thumb-x {
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  background:rgba(0,0,0,0.55); color:#fff; font-size:10px; line-height:1;
+  border:none; padding:0; cursor:pointer; opacity:0; transition:opacity 0.12s;
+}
+.cmd-thumb:hover .cmd-thumb-x { opacity:1; }
+/* No hover on touch screens — keep the remove affordance permanently visible. */
+@media (hover: none) { .cmd-thumb-x { opacity:1; background:rgba(0,0,0,0.35); } }
 .cmd-send {
   background:linear-gradient(135deg,#1f6feb,#3b82f6); border:1px solid transparent; color:#fff;
   box-sizing:border-box; width:72px; padding:8px 0; text-align:center;
@@ -2167,11 +2199,23 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
       <button class="ask-banner-toggle" id="askBannerToggle" type="button"
               title="收起 / 展开" aria-label="收起或展开提问" onclick="toggleAskBanner()">▾</button>
     </div>
-    <span class="cmd-prompt" id="cmdPrompt">›</span>
+    <button class="cmd-attach" id="cmdAttachBtn" type="button"
+            title="上传图片（也可直接把图片粘贴进输入框）" aria-label="上传图片"
+            onclick="document.getElementById('cmdImgPicker').click()">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.75"></rect>
+        <circle cx="5.6" cy="6.3" r="1.05" fill="currentColor" stroke="none"></circle>
+        <path d="M2 11l3.2-3.1 2.6 2.5 2.4-2.2 3.8 3.5"></path>
+      </svg>
+    </button>
+    <input type="file" id="cmdImgPicker" accept="image/*" multiple
+           style="display:none" onchange="onCmdImgPick(event)">
     <div class="cmd-input-wrap">
+      <div class="cmd-thumbs" id="cmdThumbs"></div>
       <input class="cmd-input" id="cmdInput"
              placeholder="/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20"
-             onkeydown="onCmdKey(event)">
+             onkeydown="onCmdKey(event)" onpaste="onCmdPaste(event)">
       <button class="rigor-bulb" id="rigorBulb" type="button"
               title="思维严密模式：observe → infer → decide。点亮即注入 /rigor on"
               aria-label="切换思维严密模式" onclick="toggleRigor()">💡</button>
@@ -4140,13 +4184,136 @@ function selectRun(runId) {
   }
 }
 
+// ── Command bar: pending images ───────────────────────────────────────────
+// Images attached by paste or by the attach button live here until the next
+// send. They are deliberately NOT uploaded on attach — an image the user
+// removes before sending should never touch disk.
+const CMD_IMG_MAX_BYTES = 20 * 1024 * 1024;
+let gPendingImgs   = [];   // [{ id, name, mime, b64, url }]
+let _pendingImgSeq = 0;
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload  = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(r.error || new Error('read failed'));
+    r.readAsDataURL(file);
+  });
+}
+
+async function addPendingImages(files) {
+  const list = [...files].filter(f => f && (f.type || '').startsWith('image/'));
+  if (!list.length) return;
+  for (const f of list) {
+    if (f.size > CMD_IMG_MAX_BYTES) { toast(`✗ ${f.name || '图片'} 超过 20MB`); continue; }
+    try {
+      const b64 = await fileToBase64(f);
+      const seq = ++_pendingImgSeq;
+      gPendingImgs.push({
+        id:   seq,
+        name: f.name || `pasted-${seq}.png`,
+        mime: f.type || 'image/png',
+        b64,
+        url:  URL.createObjectURL(f),
+      });
+    } catch { toast('✗ 读取图片失败'); }
+  }
+  renderPendingImgs();
+}
+
+function removePendingImg(id) {
+  const i = gPendingImgs.findIndex(im => im.id === id);
+  if (i < 0) return;
+  URL.revokeObjectURL(gPendingImgs[i].url);
+  gPendingImgs.splice(i, 1);
+  renderPendingImgs();
+}
+
+// Drop exactly the images that were just sent — anything the user attached while
+// the upload was in flight stays pending instead of being silently discarded.
+function dropPendingImgs(sent) {
+  const ids = new Set(sent.map(im => im.id));
+  gPendingImgs = gPendingImgs.filter(im => {
+    if (!ids.has(im.id)) return true;
+    URL.revokeObjectURL(im.url);
+    return false;
+  });
+  renderPendingImgs();
+}
+
+function renderPendingImgs() {
+  const box   = document.getElementById('cmdThumbs');
+  const input = document.getElementById('cmdInput');
+  const btn   = document.getElementById('cmdAttachBtn');
+  if (!box || !input) return;
+  box.textContent = '';
+  for (const im of gPendingImgs) {
+    const cell = document.createElement('div');
+    cell.className = 'cmd-thumb';
+    cell.title = im.name;
+    const img = document.createElement('img');
+    img.src = im.url;
+    img.alt = '';
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'cmd-thumb-x';
+    x.textContent = '✕';
+    x.title = '移除这张图片';
+    x.onclick = () => removePendingImg(im.id);
+    cell.append(img, x);
+    box.appendChild(cell);
+  }
+  if (btn) btn.classList.toggle('has-image', gPendingImgs.length > 0);
+  // Only the input's left padding moves — the box itself (and the fixed-height
+  // cmdbar row) never changes size, however many thumbnails are attached.
+  input.style.paddingLeft = gPendingImgs.length ? (box.offsetWidth + 12) + 'px' : '';
+}
+
+// The thumbnail strip is capped at a percentage of the input, so a resize can
+// leave the input's padding out of step with it — re-measure on the way out.
+window.addEventListener('resize', () => { if (gPendingImgs.length) renderPendingImgs(); });
+
+function onCmdImgPick(e) {
+  addPendingImages(e.target.files || []);
+  e.target.value = '';   // so picking the same file twice in a row still fires
+}
+
+function onCmdPaste(e) {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  const files = [];
+  for (const it of items) {
+    if (it.kind === 'file' && (it.type || '').startsWith('image/')) {
+      const f = it.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  if (!files.length) return;   // plain text paste — let the browser handle it
+  e.preventDefault();
+  addPendingImages(files);
+}
+
+function pendingImgPayload(imgs) {
+  return imgs.map(im => ({ data: im.b64, type: im.mime, filename: im.name }));
+}
+
+// One shot, no retry: a retried image POST would write the files twice and
+// inject the message twice. A visible failure the user can resend is better.
+const IMG_POST_OPTS = { tries: 1, timeoutMs: 60000 };
+
 // ── Command bar ───────────────────────────────────────────────────────────
 function onCmdKey(e) { if (e.key === 'Enter') sendCmd(); }
 
 async function sendCmd() {
   const input = document.getElementById('cmdInput');
   const raw   = input.value.trim();
-  if (!raw) return;
+  const imgs  = gPendingImgs.slice();
+  if (!raw && !imgs.length) return;
+
+  // Attached images are a message to the agent, not an argument to a command.
+  if (imgs.length && raw.startsWith('/')) {
+    toast('⚠ 图片不能和斜杠命令一起发送');
+    return;
+  }
 
   // Nostop idle: agent is alive waiting for next goal — plain text goes as raw
   // (unblocks get_user_input() in the nostop idle loop), slash commands route normally
@@ -4154,6 +4321,7 @@ async function sendCmd() {
     if (!raw.startsWith('/')) {
       const runId = (gState && gState.activeRunId) || gViewRunId;
       if (!runId) { toast('⚠ No active run'); return; }
+      if (imgs.length) { await sendCmdImages(runId, raw, imgs, true, '▶ New goal sent'); return; }
       try {
         const res = await postJsonWithRetry('/api/inject', { command: raw, runId });
         if (res.ok) { input.value = ''; toast(`▶ New goal sent`); }
@@ -4167,6 +4335,22 @@ async function sendCmd() {
   // If no agent running: non-slash input → launch directly with the typed goal
   if (gState && !isAgentActive(gState)) {
     if (!raw.startsWith('/')) {
+      // With images there is no run dir yet to park them in, so upload them to a
+      // run-independent folder first and fold the returned paths into the goal.
+      if (imgs.length) {
+        let up = null;
+        try {
+          const res = await postJsonWithRetry('/api/upload-image',
+                                              { images: pendingImgPayload(imgs) }, IMG_POST_OPTS);
+          if (res.ok) up = await res.json();
+        } catch { /* falls through to the error toast */ }
+        if (!up || !up.ok) { toast('✗ 图片上传失败'); return; }
+        input.value = '';
+        dropPendingImgs(imgs);
+        const goal = (raw || '请查看用户上传的图片，说明你看到了什么。') + '\n' + up.hint;
+        await launchAgent(goal);
+        return;
+      }
       input.value = '';
       await launchAgent(raw);
       return;
@@ -4182,8 +4366,11 @@ async function sendCmd() {
   // _input_queue (via _finish_line) and unblocks get_user_input().
   // Adding "/inject " would make _finish_line treat it as a slash-command
   // and route it to _cmd_queue instead — the agent would never receive it.
+  const asAnswer = isAwaitingInput(gState) && !raw.startsWith('/');
+  if (imgs.length) { await sendCmdImages(runId, raw, imgs, asAnswer, '✓ 图片已发送'); return; }
+
   let cmd;
-  if (isAwaitingInput(gState) && !raw.startsWith('/')) {
+  if (asAnswer) {
     cmd = raw;   // plain text → _input_queue → ask_user answer
   } else {
     // Auto-prepend /inject if not a slash command
@@ -4195,6 +4382,29 @@ async function sendCmd() {
     if (res.ok) { input.value = ''; toast(`✓ Sent: ${raw}`); }
     else toast('✗ Server rejected the command');
   } catch { toast('✗ Network error (retried)'); }
+}
+
+// Ship the attached images (plus any typed text) to the running agent. `asAnswer`
+// mirrors the text path: when the agent is parked in ask_user()/nostop-idle the
+// server must write the line WITHOUT an "/inject " prefix, or it lands in the
+// command queue and get_user_input() never unblocks.
+async function sendCmdImages(runId, message, imgs, asAnswer, okToast) {
+  const input = document.getElementById('cmdInput');
+  try {
+    const res = await postJsonWithRetry('/api/inject-image', {
+      runId,
+      raw:     asAnswer,
+      message,
+      images:  pendingImgPayload(imgs),
+    }, IMG_POST_OPTS);
+    if (res.ok) {
+      input.value = '';
+      dropPendingImgs(imgs);
+      toast(okToast);
+    } else {
+      toast('✗ Server rejected the image');
+    }
+  } catch { toast('✗ Network error'); }
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────

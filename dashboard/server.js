@@ -2681,6 +2681,39 @@ function serveStatic(req, res) {
   }
 }
 
+// ── Image upload helpers (shared by /api/inject-image and /api/upload-image) ─
+// Accepts either the new `images: [{data, type, filename}]` array or the legacy
+// single-image fields (`imageData` / `imageType` / `filename`) that view.html sends.
+function normaliseImageList(body) {
+  const list = Array.isArray(body.images) && body.images.length
+    ? body.images
+    : (body.imageData ? [{ data: body.imageData, type: body.imageType, filename: body.filename }] : []);
+  return list.filter(im => im && typeof im.data === 'string' && im.data.length);
+}
+// Writes the images into `dir` and returns their ABSOLUTE paths, forward-slashed.
+// Absolute on purpose: load_image() resolves a relative path against the agent's
+// cwd (the repo root), not against the run dir — a run-relative path never resolves.
+// Forward slashes on purpose: the path is embedded in a `load_image(path="…")`
+// hint the model retypes, and Windows backslashes would read as escapes.
+function saveImages(images, dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  const ts = Date.now();
+  return images.map((im, i) => {
+    const ext = (im.type || 'image/jpeg').split('/')[1]?.replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '') || 'jpg';
+    const name = `web_img_${ts}${images.length > 1 ? '_' + (i + 1) : ''}.${ext}`;
+    const abs = path.join(dir, name);
+    fs.writeFileSync(abs, Buffer.from(im.data, 'base64'));
+    return { name, path: abs.replace(/\\/g, '/') };
+  });
+}
+function loadImageHint(saved) {
+  const paths = saved.map(f => `load_image(path="${f.path}")`);
+  return saved.length === 1
+    ? `[系统提示]: 用户通过看板上传了图片，已保存至 ${saved[0].path}，请调用 ${paths[0]} 加载后分析。`
+    : `[系统提示]: 用户通过看板上传了 ${saved.length} 张图片，请依次调用以下工具逐张加载后分析：\n` +
+      paths.map(p => '  - ' + p).join('\n');
+}
+
 const server = http.createServer(async (req, res) => {
   if (!isIpAllowed(req.socket.remoteAddress)) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -2771,28 +2804,51 @@ const server = http.createServer(async (req, res) => {
   // ── POST /api/inject-image  ───────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/api/inject-image') {
     try {
-      const { imageData, imageType, filename, message, runId } = JSON.parse(await readBody(req));
+      const body = JSON.parse(await readBody(req));
+      const { message, runId } = body;
+      const images = normaliseImageList(body);
       const target = runId || state.activeRunId;
-      if (!target || !imageData) { json(400, { error: 'missing imageData or active run' }); return; }
+      if (!target || !images.length) { json(400, { error: 'missing imageData or active run' }); return; }
 
-      // Save image file to artifacts/
-      const ts = Date.now();
-      const ext = (imageType || 'image/jpeg').split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
-      const imgName = `web_img_${ts}.${ext}`;
-      const artifactsDir = path.join(RUNS_DIR, target, 'artifacts');
-      fs.mkdirSync(artifactsDir, { recursive: true });
-      fs.writeFileSync(path.join(artifactsDir, imgName), Buffer.from(imageData, 'base64'));
+      const saved = saveImages(images, path.join(RUNS_DIR, target, 'artifacts'));
 
-      // Inject command: agent will call load_image() on its next turn
-      const relPath = `artifacts/${imgName}`;
+      // `raw: true` — the agent is parked in ask_user()/nostop-idle waiting on
+      // get_user_input(). Plain text routes to _input_queue and unblocks it;
+      // an "/inject " prefix would route to _cmd_queue instead and the answer
+      // would never arrive. See _finish_line() in agent/runtime/user_interrupt.py.
+      const rawMode  = !!body.raw;
       const userText = message ? `[Web用户]: ${message}` : '[Web用户]: （图片）';
-      const cmd = `/inject ${userText}\n[系统提示]: 用户通过看板上传了图片，已保存至 ${relPath}，请调用 load_image(path="${relPath}") 加载后分析。`;
+      const cmd = `${rawMode ? '' : '/inject '}${userText}\n${loadImageHint(saved)}`;
       // Push optimistic BEFORE triggering the agent — otherwise updateShortTerm()
       // can dedup against an empty list before this push lands. See /api/inject above.
-      state.events.push({ type: 'injected', text: userText, iter: _iterCounter, idx: Number.MAX_SAFE_INTEGER, optimistic: true });
+      if (!rawMode) {
+        state.events.push({ type: 'injected', text: userText, iter: _iterCounter, idx: Number.MAX_SAFE_INTEGER, optimistic: true });
+      }
       fs.writeFileSync(path.join(RUNS_DIR, target, 'web_cmd.txt'), cmd.trim() + '\n', 'utf8');
       broadcast();
-      json(200, { ok: true, path: relPath });
+      json(200, { ok: true, path: saved[0].path, files: saved });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── POST /api/upload-image  ───────────────────────────────────────────────
+  // Park images on disk WITHOUT injecting anything. Used when no agent is running
+  // yet: the dashboard uploads first, then folds the returned paths into the goal
+  // it launches with (there is no run dir to write them into at that point).
+  if (req.method === 'POST' && req.url === '/api/upload-image') {
+    try {
+      const body   = JSON.parse(await readBody(req));
+      const images = normaliseImageList(body);
+      if (!images.length) { json(400, { error: 'missing images' }); return; }
+      // Only an EXPLICIT runId parks the images in a run's artifacts. Falling back
+      // to state.activeRunId would drop them into the previous (finished) run —
+      // this endpoint's whole reason to exist is that the new run has no dir yet.
+      const target = body.runId;
+      const dir = (target && fs.existsSync(path.join(RUNS_DIR, target)))
+        ? path.join(RUNS_DIR, target, 'artifacts')
+        : path.join(AGENT_DIR, 'artifacts', 'uploads');
+      const saved = saveImages(images, dir);
+      json(200, { ok: true, files: saved, hint: loadImageHint(saved) });
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }
