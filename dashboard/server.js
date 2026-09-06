@@ -1955,6 +1955,22 @@ function cronsUnregister(id) {
   cronJobs.delete(id);
 }
 
+/**
+ * Rewrite the `enabled:` frontmatter field of a cron file's raw text.
+ * The file stays the single source of truth, so the UI toggle and a hand-edit
+ * of the .md agree; a comment on that line is dropped, which is the point.
+ */
+function cronSetEnabledText(content, enabled) {
+  const val = enabled ? 'true' : 'false';
+  const nl  = content.includes('\r\n') ? '\r\n' : '\n';
+  const m = content.match(/^(---\r?\n)([\s\S]*?)(\r?\n---\r?\n?)([\s\S]*)$/);
+  if (!m) return '---' + nl + 'enabled: ' + val + nl + '---' + nl + nl + content;
+  let fm = m[2];
+  if (/^enabled\s*:/m.test(fm)) fm = fm.replace(/^enabled\s*:[^\r\n]*$/m, 'enabled: ' + val);
+  else fm += nl + 'enabled: ' + val;
+  return m[1] + fm + m[3] + m[4];
+}
+
 /** Read + register a single cron file. Returns the registered record. */
 function cronsRegister(id) {
   cronsUnregister(id);
@@ -3764,6 +3780,36 @@ const server = http.createServer(async (req, res) => {
       const id = decodeURIComponent(cronRunMatch[1]).replace(/\.md$/, '');
       const r  = cronsRunNow(id);
       json(r.ok ? 200 : 404, r);
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── POST /api/cron/:name/enabled  — flip the schedule on/off ─────────────
+  // Body {enabled:bool}; omitted = toggle. Writes the frontmatter and
+  // re-registers, so an off cron holds no node-cron task at all.
+  const cronEnabledMatch = req.url.match(/^\/api\/cron\/([^/?]+)\/enabled$/);
+  if (req.method === 'POST' && cronEnabledMatch) {
+    try {
+      const id = decodeURIComponent(cronEnabledMatch[1]).replace(/\.md$/, '');
+      const fp = path.join(CRONS_DIR, id + '.md');
+      if (!fs.existsSync(fp)) { json(404, { error: 'cron not found' }); return; }
+      let want;
+      try { want = JSON.parse(await readBody(req) || '{}').enabled; } catch { want = undefined; }
+      const job  = cronJobs.get(id);
+      const cur  = job && job.meta ? job.meta.enabled !== false : true;
+      const next = typeof want === 'boolean' ? want : !cur;
+      fs.writeFileSync(fp, cronSetEnabledText(readText(fp) || '', next), 'utf8');
+      const rec = cronsRegister(id);
+      if (!next) {
+        // Switching off also drops what this cron already queued — otherwise the
+        // next idle drain would launch a task the user just turned off.
+        const before = cronPending.length;
+        cronPending = cronPending.filter(p => p.id !== id);
+        if (cronPending.length !== before) cronsSavePending();
+      }
+      cronsAppendHistory({ event: next ? 'enabled' : 'disabled', id });
+      cronsBroadcast();
+      json(200, { ok: true, id, enabled: next, error: rec ? rec.error : null });
     } catch (e) { json(500, { error: String(e) }); }
     return;
   }
