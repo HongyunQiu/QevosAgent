@@ -1,7 +1,7 @@
 ---
 name: 每日复盘
 cron: "0 3 * * *"
-enabled: true
+enabled: false
 on_conflict: skip
 skills: []
 # timezone: Asia/Shanghai
