@@ -658,7 +658,7 @@ def main():
     agent.tools.update(get_team_tools())
 
     # ── 用户干预处理器：后台线程读取 stdin，"/" 开头为命令，其余为 ask_user 回答 ──
-    from agent.runtime.user_interrupt import UserInterruptHandler
+    from agent.runtime.user_interrupt import UserInterruptHandler, record_user_injection
     interrupt_handler = UserInterruptHandler()
     agent.hooks.interrupt_handler = interrupt_handler  # 挂载到 hooks，loop.py 会检查
 
@@ -690,6 +690,9 @@ def main():
         # 且 _wrapup_window 残留会直接把新任务的工具全禁掉。
         "run_outcome", "_wrapup_window", "_wrapup_window_used",
         "_obs_since_report", "_stale_report_rejections", "_pending_final",
+        # 上一轮的用户中途指令：_task_desc 已换成新目标，旧指令留着会让 advisor
+        # 拿着上一个任务的要求去指导这一个任务（方向相反的同一个毛病）。
+        "_user_injections",
     )
 
     current_goal = full_goal
@@ -802,6 +805,10 @@ def main():
                                 "role": "user",
                                 "content": t("marker.user_info", content=f"[上游节点回复] {_answer}"),
                             })
+                            # 组网模式下上游节点代替人回答，对本节点等价于一次用户指令
+                            record_user_injection(
+                                state, f"[上游节点回复] {_answer}", source="upstream_answer"
+                            )
                             if state.persistence is not None:
                                 state.persistence.append_short_term(state.short_term[-1])
                                 state.persistence.checkpoint(state)
@@ -872,6 +879,9 @@ def main():
                     "role": "user",
                     "content": t("marker.user_info", content=user_input),
                 })
+                # advisor 不带主对话历史：只看 _user_injections。ask_user 的回答
+                # 是用户最常见的中途输入，不记账 advisor 就会一直照最初目标指导。
+                record_user_injection(state, user_input, source="ask_user_answer")
                 if state.persistence is not None:
                     state.persistence.append_short_term(state.short_term[-1])
                     state.persistence.checkpoint(state)

@@ -378,23 +378,7 @@ class UserInterruptHandler:
             # ── 单独记录到 _user_injections，供 advisor 直接读取 ───────────────
             # advisor 上下文里会把每条用户注入作为独立分节呈现，不再被
             # "最后 N 条原文 + 400 字截断" 的窗口淹没。
-            try:
-                from datetime import datetime, timezone
-                # 顺手记录"干预落点"：Agent 当时正要做/刚做的动作。
-                # 一次人工干预天然是一对 (Agent劣动作, 人类优动作)：
-                # agent_pending_action 是被打断的"劣动作"，content 是纠正后的"优动作"。
-                # 复盘据此复原偏好对，也为将来的 DPO/权重训练供数据。
-                _pending = _capture_pending_action(state)
-                _inj_list = state.meta.setdefault("_user_injections", [])
-                _inj_list.append({
-                    "iter":    int(getattr(state, "iteration", 0) or 0),
-                    "ts":      datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-                    "content": arg,
-                    "source":  "inject_cmd",
-                    "agent_pending_action": _pending,
-                })
-            except Exception:
-                pass
+            record_user_injection(state, arg, source="inject_cmd")
             print(f"\n{BLUE}{t('interrupt.inject_done')}{RESET}", flush=True)
             return "continue"
 
@@ -448,6 +432,44 @@ class UserInterruptHandler:
 
         print(f"\n{BLUE}{t('interrupt.unknown_cmd', name=name)}{RESET}", flush=True)
         return "continue"
+
+
+# ── 用户指令记账 ──────────────────────────────────────────────────────────────
+
+def record_user_injection(state, content: str, source: str = "inject_cmd") -> None:
+    """把一条用户中途下达的指令记入 state.meta["_user_injections"]。
+
+    这是 advisor "## 用户后续指令" 分节的唯一权威数据源——advisor 不带主对话历史，
+    没记进这里的用户话它就永远看不见，只会继续照着最初的目标做指导。
+
+    因此凡是"用户在任务执行过程中说的话"都必须过这里，不止 /inject：
+      - /inject 命令（agent 正在跑）          → source="inject_cmd"
+      - ask_user 回答（agent 停在提问上）      → source="ask_user_answer"
+      - 组网模式下上游节点的回复              → source="upstream_answer"
+    历史上后两条都只往 short_term 追加、不记账，导致 advisor 看到 "（暂无）"。
+
+    唯一不走这里的是 nostop idle 的下一个目标：它会顶替 _task_desc 成为新的
+    "原始任务目标"，同时旧的记账被 _NOSTOP_RESET_KEYS 清空——那是换任务，不是追加指令。
+
+    失败静默——记账不能反过来打断主流程。
+    """
+    try:
+        body = (content or "").strip()
+        if not body:
+            return
+        from datetime import datetime as _dt, timezone as _tz
+
+        inj_list = state.meta.setdefault("_user_injections", [])
+        inj_list.append({
+            "iter":    int(getattr(state, "iteration", 0) or 0),
+            "ts":      _dt.now(_tz.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "content": body,
+            "source":  source,
+            # 干预落点：被打断的"劣动作"，与 content 的"优动作"构成偏好对，供复盘/DPO 使用
+            "agent_pending_action": _capture_pending_action(state),
+        })
+    except Exception:
+        pass
 
 
 # ── 干预落点抓取 ──────────────────────────────────────────────────────────────

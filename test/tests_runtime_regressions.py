@@ -785,5 +785,92 @@ class MacroMemorySectionTests(unittest.TestCase):
         self.assertNotIn("concept_memory", self.state.meta)
 
 
+class AdvisorUserInjectionTests(unittest.TestCase):
+    """advisor 不带主对话历史，用户中途说的话只能靠 _user_injections 传进去。
+
+    曾经的坑：只有 /inject 一条路记账；ask_user 回答（最常见的中途输入）既不记账，
+    前缀也不在扫描名单里，于是 advisor 的"## 用户后续指令"永远是"（暂无）"，
+    一直照最初的目标做指导。
+    """
+
+    def _state(self, **meta):
+        return AgentState(goal="原始目标", tools={}, meta=dict(meta))
+
+    def test_ask_user_answer_prefix_is_scanned(self):
+        from agent.core.advisor import _extract_user_injections
+
+        state = self._state()
+        state.short_term = [
+            {"role": "user", "content": "AGENTS.md ..."},
+            {"role": "user", "content": "[用户补充信息]\n改成只翻译摘要"},
+            {"role": "user", "content": "[User input]\nalso add a summary"},
+        ]
+
+        bodies = [i["content"] for i in _extract_user_injections(state)]
+        self.assertEqual(bodies, ["改成只翻译摘要", "also add a summary"])
+
+    def test_web_user_prefix_keeps_the_sentence_not_the_image_hint(self):
+        from agent.core.advisor import _extract_user_injections
+
+        state = self._state()
+        state.short_term = [
+            {"role": "user", "content": "AGENTS.md ..."},
+            {"role": "user", "content": "[Web用户]: 看这张图\n[图片已保存至 a.png]"},
+        ]
+
+        body = _extract_user_injections(state)[0]["content"]
+        self.assertTrue(body.startswith("看这张图"))
+
+    def test_explicit_and_scanned_are_merged_not_either_or(self):
+        from agent.core.advisor import _extract_user_injections
+
+        state = self._state(_user_injections=[
+            {"iter": 3, "ts": "", "content": "先读 README", "source": "inject_cmd"},
+        ])
+        state.short_term = [
+            {"role": "user", "content": "AGENTS.md ..."},
+            {"role": "user", "content": "[用户干预注入]\n先读 README"},
+            {"role": "user", "content": "[用户补充信息]\n再补一张对比图"},
+        ]
+
+        items = _extract_user_injections(state)
+        bodies = [i["content"] for i in items]
+        # 记账项保留；扫描到的新指令补进来；同一句话不重复出现
+        self.assertEqual(bodies, ["先读 README", "再补一张对比图"])
+        self.assertEqual(items[0]["source"], "inject_cmd")
+        self.assertEqual(items[1]["source"], "scanned")
+
+    def test_context_renders_follow_ups_instead_of_none_yet(self):
+        from agent.core.advisor import _build_advisor_context
+
+        state = self._state(_task_desc="阅读笔记 15539")
+        state.short_term = [
+            {"role": "user", "content": "AGENTS.md ..."},
+            {"role": "user", "content": "[用户补充信息]\n需要全文翻译成中文"},
+        ]
+
+        ctx = _build_advisor_context(state)
+        self.assertIn("需要全文翻译成中文", ctx)
+
+    def test_record_user_injection_appends_in_order(self):
+        from agent.runtime.user_interrupt import record_user_injection
+
+        state = self._state()
+        state.short_term = []
+        record_user_injection(state, "第一条", source="ask_user_answer")
+        record_user_injection(state, "   ", source="ask_user_answer")  # 空白丢弃
+        record_user_injection(state, "第二条", source="inject_cmd")
+
+        inj = state.meta["_user_injections"]
+        self.assertEqual([i["content"] for i in inj], ["第一条", "第二条"])
+        self.assertEqual(inj[0]["source"], "ask_user_answer")
+
+    def test_nostop_reset_clears_previous_round_injections(self):
+        # 新一轮换了 _task_desc，旧指令留着 advisor 就会拿上个任务的要求指导这个任务
+        src = Path("run_goal.py").read_text(encoding="utf-8")
+        head = src.split("_NOSTOP_RESET_KEYS = (", 1)[1].split(")", 1)[0]
+        self.assertIn('"_user_injections"', head)
+
+
 if __name__ == "__main__":
     unittest.main()

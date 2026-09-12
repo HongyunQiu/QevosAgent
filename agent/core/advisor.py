@@ -35,44 +35,80 @@ from ..i18n import t
 ADVISOR_LAST_CONTEXT_META_KEY = "_advisor_last_context"
 
 
+# 用户中途说的话落进 short_term 时会带的前缀。三条输入路径各有各的写法：
+#   /inject（agent 正在跑）            → [用户干预注入] / [User Injection]
+#   ask_user 回答（agent 停在提问上）   → [用户补充信息] / [User input]   ← marker.user_info
+#   看板带图消息的 raw 模式            → [Web用户]:
+# 漏掉任何一个，这条路上的用户指令在 advisor 眼里就等于没说过。
+_INJECTION_PREFIXES = (
+    "[用户干预注入]", "[User Injection]",
+    "[用户补充信息]", "[User input]",
+    "[Web用户]", "[Web看板]",
+)
+
+
+def _strip_injection_prefix(content: str) -> str:
+    """剥掉消息前缀，返回用户原话。
+
+    不能用"砍掉第一行"——[Web用户]: 是行内前缀，砍第一行会把用户的话整句丢掉，
+    只剩后面附带的图片提示。
+    """
+    for p in _INJECTION_PREFIXES:
+        if content.startswith(p):
+            return content[len(p):].lstrip(":：\n \t")
+    return content
+
+
 def _extract_user_injections(state: AgentState) -> list[dict]:
     """汇总用户中途注入的指令。
 
-    优先来源：state.meta["_user_injections"]（由 user_interrupt./inject 显式写入）。
-    回退来源：扫描 short_term 中带"[用户干预注入]"/"[User Injection]"/"[Web看板]" 前缀的 user 消息。
+    主来源：state.meta["_user_injections"]（record_user_injection 写入，跨压缩存活，
+    覆盖 /inject、ask_user 回答、上游节点回复三条路径）。
+    补充来源：扫描 short_term 中带 _INJECTION_PREFIXES 前缀的 user 消息。
+
+    两者是**合并**关系而非二选一。早期实现是"主来源非空就 return"，结果只要
+    用户 /inject 过一次，后面所有 ask_user 回答都不再被扫描兜住——而 ask_user
+    回答恰恰是最常见的中途输入。
+
+    补充项按内容去重后追加在末尾并标 source="scanned"（渲染成 [iter=?]）：
+    short_term 是近端窗口，能被扫到而没记账的多半就是近期消息，顺序上足够近似。
     返回按时间顺序的列表，每项 {iter, ts, content, source}。
     """
     items: list[dict] = []
-    explicit = state.meta.get("_user_injections")
-    if isinstance(explicit, list) and explicit:
-        for it in explicit:
-            if isinstance(it, dict) and (it.get("content") or "").strip():
-                items.append({
-                    "iter":    int(it.get("iter") or 0),
-                    "ts":      it.get("ts") or "",
-                    "content": str(it.get("content") or "").strip(),
-                    "source":  it.get("source") or "explicit",
-                })
-        return items
+    seen: set[str] = set()
 
-    # Fallback：扫描 short_term（兼容旧 run 或在 _user_injections 缺失时）。
-    _PREFIXES = ("[用户干预注入]", "[User Injection]", "[Web看板]")
-    for idx, m in enumerate(state.short_term[1:], start=1):
+    explicit = state.meta.get("_user_injections")
+    if isinstance(explicit, list):
+        for it in explicit:
+            if not isinstance(it, dict):
+                continue
+            body = str(it.get("content") or "").strip()
+            if not body:
+                continue
+            items.append({
+                "iter":    int(it.get("iter") or 0),
+                "ts":      it.get("ts") or "",
+                "content": body,
+                "source":  it.get("source") or "explicit",
+            })
+            seen.add(body)
+
+    for m in state.short_term[1:]:
         if m.get("role") != "user":
             continue
         content = m.get("content", "")
         if not isinstance(content, str):
             continue
-        if not any(content.startswith(p) for p in _PREFIXES):
+        if not any(content.startswith(p) for p in _INJECTION_PREFIXES):
             continue
-        # 去掉前缀的第一行
-        body = content.split("\n", 1)[1].strip() if "\n" in content else content
-        items.append({
-            "iter":    idx,
-            "ts":      "",
-            "content": body,
-            "source":  "scanned",
-        })
+        # 记账存的就是剥完前缀的原话，所以精确比对足以去重；用子串比对会把
+        # "继续" 这类短指令误判成某条长指令的一部分而整条吞掉。
+        body = _strip_injection_prefix(content).strip()
+        if not body or body in seen:
+            continue
+        items.append({"iter": 0, "ts": "", "content": body, "source": "scanned"})
+        seen.add(body)
+
     return items
 
 
