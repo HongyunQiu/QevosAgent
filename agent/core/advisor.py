@@ -28,6 +28,58 @@ from .llm import LLMBackend
 from ..i18n import t
 
 
+# ── 触发开关与频次 ────────────────────────────────────────────────────────────
+# 四个触发源各有一个使能开关，看板「设置 → 通用设置 → 指导员」写进 .env：
+#   ADVISOR_ENABLED      总开关，关掉则四个触发源全部失效
+#   ADVISOR_ON_PERIODIC  定期触发（每 ADVISOR_INTERVAL 轮）
+#   ADVISOR_ON_REQUEST   Agent 主动请求（request_advisor 工具）
+#   ADVISOR_ON_LOOP      循环检测触发
+#   ADVISOR_ON_STALL     执行图停滞触发
+# 全部默认开启——没配过的老环境行为不变。
+#
+# 关掉 loop/stall 只摘掉升级梯上「advisor 介入」这一级，折叠吸引子与最终的
+# ask_user 求助照常，循环保护不会跟着一起没了。
+
+ADVISOR_DEFAULT_INTERVAL = 15
+# 定期触发的硬下限。advisor 每次介入要先跑一遍进展日志自压缩、再做一次独立上下文
+# 调用，比 15 轮更密既烧 token 又会把主线淹在指导意见里。看板输入框和手改 .env
+# 都绕不过这条线——所以 clamp 放在这里，而不是只做前端校验。
+ADVISOR_MIN_INTERVAL = 15
+
+# 触发源 → 使能开关环境变量名
+_TRIGGER_ENV = {
+    "periodic":        "ADVISOR_ON_PERIODIC",
+    "agent_requested": "ADVISOR_ON_REQUEST",
+    "loop_detected":   "ADVISOR_ON_LOOP",
+    "graph_stall":     "ADVISOR_ON_STALL",
+}
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    """读一个布尔环境变量。留空/未设 = default（全部开关默认开）。"""
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "off", "no")
+
+
+def advisor_interval() -> int:
+    """定期触发间隔（轮），已按 ADVISOR_MIN_INTERVAL 取下限。"""
+    try:
+        val = int(float(os.environ.get("ADVISOR_INTERVAL") or ADVISOR_DEFAULT_INTERVAL))
+    except (TypeError, ValueError):
+        val = ADVISOR_DEFAULT_INTERVAL
+    return max(ADVISOR_MIN_INTERVAL, val)
+
+
+def advisor_trigger_enabled(kind: str) -> bool:
+    """某个触发源当前是否启用。kind 取 _TRIGGER_ENV 的键。"""
+    if not _env_flag("ADVISOR_ENABLED"):
+        return False
+    env_name = _TRIGGER_ENV.get(kind)
+    return _env_flag(env_name) if env_name else True
+
+
 # ── 上下文构建 ────────────────────────────────────────────────────────────────
 
 # 推送进入 dashboard 的最近一次 advisor user 上下文，由 run_advisor 写入；
@@ -295,6 +347,9 @@ def run_advisor(
     """
     if not advisor_system or not advisor_system.strip():
         return None
+    # 总开关兜底：调用点已各自判过，这里再拦一道，免得将来新增触发源漏判。
+    if not _env_flag("ADVISOR_ENABLED"):
+        return None
 
     context: Optional[str] = None
     try:
@@ -445,25 +500,34 @@ def ensure_progress_log(state: AgentState, llm: LLMBackend) -> None:
 
 def should_trigger_advisor(
     state: AgentState,
-    interval: int = 15,
+    interval: Optional[int] = None,
 ) -> Tuple[bool, str]:
     """检查是否应触发定期/主动请求型 advisor。
 
+    interval 留空 = 从环境变量读（推荐）。显式传入的值同样会被
+    ADVISOR_MIN_INTERVAL 夹住——下限是硬的，没有绕过的入口。
+
     返回 (should_trigger, reason)。
-    注意：loop_detected 触发由 loop.py 直接处理，不经过这里。
+    注意：loop_detected / graph_stall 触发由 loop.py 直接处理，不经过这里。
     """
-    # Agent 主动请求（优先级最高）
+    # Agent 主动请求（优先级最高）。
+    # 开关关掉时仍然把标志位摘掉：留着它会在开关被重新打开的那一刻突然放炮。
     if state.meta.pop("_advisor_requested", False):
         reason = state.meta.pop("_advisor_request_reason", "agent_requested")
-        return True, reason
+        if advisor_trigger_enabled("agent_requested"):
+            return True, reason
+
+    if not advisor_trigger_enabled("periodic"):
+        return False, ""
 
     # 定期触发（第 0 轮跳过，那时什么都还没做）
     iteration = getattr(state, "iteration", 0)
     if iteration == 0:
         return False, ""
 
+    eff_interval = advisor_interval() if interval is None else max(ADVISOR_MIN_INTERVAL, int(interval))
     last_advised = state.meta.get("_advisor_last_iter", 0)
-    if iteration - last_advised >= interval:
+    if iteration - last_advised >= eff_interval:
         return True, f"periodic (iter={iteration})"
 
     return False, ""

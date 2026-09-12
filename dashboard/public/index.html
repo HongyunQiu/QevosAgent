@@ -742,6 +742,14 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .set-eye { position:absolute; right:10px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:var(--muted); font-size:12px; }
 .set-eye:hover { color:var(--text); }
 .set-hint { margin-top:4px; font-size:11px; color:var(--muted); line-height:1.5; }
+/* 使能开关行：复选框与文字同一基线，整行可点。label 在 .set-body 下默认是 block，
+   这里要横排，所以显式覆盖 display/margin。 */
+.set-body label.set-chk { display:flex; align-items:flex-start; gap:8px; margin-bottom:0; cursor:pointer; line-height:1.45; }
+.set-body label.set-chk input[type=checkbox] { width:auto; margin:2px 0 0 0; flex-shrink:0; accent-color:var(--blue); cursor:pointer; }
+.set-chk-master { font-weight:600; }
+.set-chk + input[type=number] { margin-top:7px; }
+/* 总开关关掉时，四个触发源整组变灰且点不动——省得在「全关」状态下还去纠结子项 */
+#setAdvGroup.off { opacity:0.42; pointer-events:none; }
 .set-hint code { background:var(--bg3); border-radius:3px; padding:1px 4px; font-family:var(--mono); font-size:11px; color:var(--text); }
 .set-lblrow { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
 .set-lblrow label { margin-bottom:0; }
@@ -2286,6 +2294,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
         <button type="button" class="set-tab active" data-tab="other" id="setTabOther">其他配置</button>
         <button type="button" class="set-tab" data-tab="lan" id="setTabLan">局域网</button>
         <button type="button" class="set-tab" data-tab="runtime" id="setTabRuntime">运行参数</button>
+        <button type="button" class="set-tab" data-tab="advisor" id="setTabAdvisorCfg">指导员</button>
       </div>
 
       <!-- 其他配置 -->
@@ -2347,6 +2356,50 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
         <div class="set-fg">
           <label for="setCtxWindow">上下文窗口 tokens <span class="set-hint-inline">（LLM_CONTEXT_WINDOW，决定何时触发上下文压缩，留空=默认 153600；仅在服务端 /v1/models 未上报 max_model_len 时生效）</span></label>
           <input type="number" id="setCtxWindow" placeholder="（留空=默认 153600）" min="1024">
+        </div>
+      </div>
+
+      <!-- 高级设置 · 指导员 -->
+      <div class="set-pane" id="setPaneAdvisor" style="display:none;">
+        <div class="set-fg">
+          <label class="set-chk set-chk-master">
+            <input type="checkbox" id="setAdvEnabled" checked>
+            <span>启用高级指导员 <span class="set-hint-inline">（总开关，关掉则下面四个触发源全部失效）</span></span>
+          </label>
+        </div>
+
+        <div id="setAdvGroup">
+          <div class="set-fg">
+            <label class="set-chk">
+              <input type="checkbox" id="setAdvPeriodic" checked>
+              <span>定期触发 <span class="set-hint-inline">（跑满设定轮数就介入一次）</span></span>
+            </label>
+            <input type="number" id="setAdvInterval" placeholder="（留空=默认 15）" min="15" max="500" step="1">
+            <div class="set-hint">每多少轮触发一次。<b>最低 15 轮</b>——指导员每次介入都要先做一次进展日志自压缩、再做一次独立上下文调用，比这更密既烧 token 又会把主线任务淹在指导意见里。填小于 15 的值会被自动提到 15。</div>
+          </div>
+
+          <div class="set-fg">
+            <label class="set-chk">
+              <input type="checkbox" id="setAdvLoop" checked>
+              <span>循环检测触发 <span class="set-hint-inline">（反复以相同参数调同一个工具时介入）</span></span>
+            </label>
+          </div>
+
+          <div class="set-fg">
+            <label class="set-chk">
+              <input type="checkbox" id="setAdvStall" checked>
+              <span>执行图停滞触发 <span class="set-hint-inline">（一直在做不同的事却什么都没完成时介入）</span></span>
+            </label>
+          </div>
+
+          <div class="set-fg">
+            <label class="set-chk">
+              <input type="checkbox" id="setAdvRequest" checked>
+              <span>Agent 主动请求 <span class="set-hint-inline">（Agent 自己感到迷失方向时调 request_advisor 求助）</span></span>
+            </label>
+          </div>
+
+          <div class="set-hint">关掉「循环检测」或「执行图停滞」只是摘掉升级梯上指导员这一级：折叠重复上下文、以及卡死后暂停向你求助都照常进行，循环保护不会跟着一起没了。</div>
         </div>
       </div>
     </div>
@@ -7664,7 +7717,12 @@ fetch('/api/version').then(r => r.json()).then(d => {
   // 三个可互为 fallback 的 API 槽位；顾问模型不在其列（只被 consult_advisor 调用）。
   const API_TABS = ['primary', 'backup', 'backup2'];
   const isAdvisorTab = n => n === 'advisor1' || n === 'advisor2';
-  const GPANES = { other:'setPaneOther', lan:'setPaneLan', runtime:'setPaneRuntime' };
+  const GPANES = { other:'setPaneOther', lan:'setPaneLan', runtime:'setPaneRuntime', advisor:'setPaneAdvisor' };
+  // 指导员触发频次的硬下限，与 agent/core/advisor.py 的 ADVISOR_MIN_INTERVAL 对齐。
+  // 后端也会 clamp——这里拦一道只是为了当场告诉用户，而不是保存完偷偷改成别的值。
+  const ADVISOR_MIN_INTERVAL = 15;
+  // .env 里这些键留空 = 未配置 = 默认开启；只有显式的 '0' 才算关。
+  const envOn = v => String(v == null ? '' : v).trim().toLowerCase() !== '0';
   let apiTab     = 'primary';   // API 1|2|3 / 顾问 1|2 — what snap()/loadTab() act on
   let preferred  = 'primary';   // 首选 API：启动时先探它，失败按槽序回退到其余两个
   let generalTab = 'other';     // 其他配置 | 局域网 | 运行参数
@@ -7729,6 +7787,18 @@ fetch('/api/version').then(r => r.json()).then(d => {
     const el = document.getElementById(GPANES[n]); if (el) el.style.display = '';
     document.querySelectorAll('.set-tabs[data-group="general"] .set-tab').forEach(e => e.classList.toggle('active', e.dataset.tab === n));
   }
+  // ── 指导员：总开关关掉 → 四个触发源整组禁用；定期触发关掉 → 频次输入框禁用 ──
+  function syncAdvisorGroup() {
+    const on  = document.getElementById('setAdvEnabled').checked;
+    const per = document.getElementById('setAdvPeriodic').checked;
+    document.getElementById('setAdvGroup').classList.toggle('off', !on);
+    const iv = document.getElementById('setAdvInterval');
+    iv.disabled = !(on && per);
+    iv.style.opacity = iv.disabled ? '0.45' : '';
+  }
+  ['setAdvEnabled', 'setAdvPeriodic'].forEach(id =>
+    document.getElementById(id).addEventListener('change', syncAdvisorGroup));
+
   // ── 首选 API：三选一，永远恰好一个。点已是首选的按钮无动作（不允许“无首选”）──
   function setPreferred(n) {
     if (isAdvisorTab(n) || n === preferred) return;
@@ -7808,6 +7878,14 @@ fetch('/api/version').then(r => r.json()).then(d => {
       document.getElementById('setToolFeedback').value = env.MAX_TOOL_FEEDBACK_CHARS || '';
       document.getElementById('setMaxTokens').value    = env.LLM_MAX_TOKENS || '';
       document.getElementById('setCtxWindow').value    = env.LLM_CONTEXT_WINDOW || '';
+      // 指导员：四个使能开关 + 频次
+      document.getElementById('setAdvEnabled').checked  = envOn(env.ADVISOR_ENABLED);
+      document.getElementById('setAdvPeriodic').checked = envOn(env.ADVISOR_ON_PERIODIC);
+      document.getElementById('setAdvLoop').checked     = envOn(env.ADVISOR_ON_LOOP);
+      document.getElementById('setAdvStall').checked    = envOn(env.ADVISOR_ON_STALL);
+      document.getElementById('setAdvRequest').checked  = envOn(env.ADVISOR_ON_REQUEST);
+      document.getElementById('setAdvInterval').value   = env.ADVISOR_INTERVAL || '';
+      syncAdvisorGroup();
     } catch (e) {
       // Surface the failure instead of silently showing an empty form — most
       // commonly an old backend without /api/env (404), which used to look like
@@ -7930,6 +8008,19 @@ fetch('/api/version').then(r => r.json()).then(d => {
       }
       adv[n] = { base: aB, key: (aB || aK || aM) ? (aK || 'local') : '', model: aM, temp: (s.temp || '').trim() };
     }
+    // 指导员触发频次：留空 = 用默认 15；填了就必须 ≥ 15。后端也会 clamp，但在这里
+    // 当场拒绝，好过保存成功却被悄悄改成另一个值。
+    const advIntervalRaw = document.getElementById('setAdvInterval').value.trim();
+    if (advIntervalRaw) {
+      const v = Number(advIntervalRaw);
+      if (!Number.isFinite(v) || !Number.isInteger(v) || v < ADVISOR_MIN_INTERVAL) {
+        switchGeneralTab('advisor');
+        showMsg('error', '指导员触发频次最低 ' + ADVISOR_MIN_INTERVAL
+                       + ' 轮（留空则用默认 ' + ADVISOR_MIN_INTERVAL + '）——更密会让指导员淹没主线任务并翻倍烧 token');
+        return;
+      }
+    }
+
     const proxy = document.getElementById('setProxy').value.trim();
     const data = {
       OPENAI_BASE_URL: api.primary.base,
@@ -7970,6 +8061,14 @@ fetch('/api/version').then(r => r.json()).then(d => {
       // 否则它会继续压过新的默认值 0.8。
       LLM_TEMPERATURE: '',
       LLM_CONTEXT_WINDOW: document.getElementById('setCtxWindow').value.trim(),
+      // 高级设置 —— 指导员。四个开关都是「默认开」，所以勾上 = 空值 = 从 .env 删键，
+      // 只有关掉才写 '0'。这样 .env 里留下的永远只有用户实际改动过的项。
+      ADVISOR_ENABLED:     document.getElementById('setAdvEnabled').checked  ? '' : '0',
+      ADVISOR_ON_PERIODIC: document.getElementById('setAdvPeriodic').checked ? '' : '0',
+      ADVISOR_ON_LOOP:     document.getElementById('setAdvLoop').checked     ? '' : '0',
+      ADVISOR_ON_STALL:    document.getElementById('setAdvStall').checked    ? '' : '0',
+      ADVISOR_ON_REQUEST:  document.getElementById('setAdvRequest').checked  ? '' : '0',
+      ADVISOR_INTERVAL:    advIntervalRaw,
     };
     const btn = document.getElementById('setSave');
     btn.disabled = true; btn.textContent = '保存中…';

@@ -872,5 +872,149 @@ class AdvisorUserInjectionTests(unittest.TestCase):
         self.assertIn('"_user_injections"', head)
 
 
+class AdvisorTriggerConfigTests(unittest.TestCase):
+    """看板「设置 → 通用设置 → 指导员」写进 .env 的开关与频次。
+
+    四个触发源全部默认开启（没配过的老环境行为不变），只有显式 '0' 才算关。
+    频次有硬下限 15：advisor 每次介入要先做进展日志自压缩再做一次独立上下文调用，
+    比这更密既烧 token 又会把主线淹在指导意见里，所以 clamp 落在 Python 侧，
+    手改 .env 也绕不过去。
+    """
+
+    ENV_KEYS = (
+        "ADVISOR_ENABLED", "ADVISOR_INTERVAL", "ADVISOR_ON_PERIODIC",
+        "ADVISOR_ON_REQUEST", "ADVISOR_ON_LOOP", "ADVISOR_ON_STALL",
+    )
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in self.ENV_KEYS}
+        for k in self.ENV_KEYS:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _state(self, **meta):
+        st = AgentState(goal="g", tools={}, meta=dict(meta))
+        st.iteration = 100
+        return st
+
+    # ── 频次 ──────────────────────────────────────────────────────────────
+    def test_interval_defaults_to_15(self):
+        from agent.core.advisor import advisor_interval
+        self.assertEqual(advisor_interval(), 15)
+
+    def test_interval_below_floor_is_clamped(self):
+        from agent.core.advisor import advisor_interval
+        for raw in ("1", "5", "14", "0", "-3"):
+            os.environ["ADVISOR_INTERVAL"] = raw
+            self.assertEqual(advisor_interval(), 15, raw)
+
+    def test_interval_above_floor_is_honoured(self):
+        from agent.core.advisor import advisor_interval
+        os.environ["ADVISOR_INTERVAL"] = "40"
+        self.assertEqual(advisor_interval(), 40)
+
+    def test_garbage_interval_falls_back_to_default(self):
+        from agent.core.advisor import advisor_interval
+        os.environ["ADVISOR_INTERVAL"] = "abc"
+        self.assertEqual(advisor_interval(), 15)
+
+    def test_explicit_interval_argument_is_also_clamped(self):
+        # 调用点传 5 也不行——下限没有后门
+        from agent.core.advisor import should_trigger_advisor
+        state = self._state(_advisor_last_iter=95)   # 距上次 5 轮
+        self.assertFalse(should_trigger_advisor(state, interval=5)[0])
+        state = self._state(_advisor_last_iter=80)   # 距上次 20 轮
+        self.assertTrue(should_trigger_advisor(state, interval=5)[0])
+
+    # ── 使能开关 ──────────────────────────────────────────────────────────
+    def test_all_triggers_default_on(self):
+        from agent.core.advisor import advisor_trigger_enabled
+        for k in ("periodic", "agent_requested", "loop_detected", "graph_stall"):
+            self.assertTrue(advisor_trigger_enabled(k), k)
+
+    def test_master_switch_off_disables_every_trigger(self):
+        from agent.core.advisor import advisor_trigger_enabled
+        os.environ["ADVISOR_ENABLED"] = "0"
+        for k in ("periodic", "agent_requested", "loop_detected", "graph_stall"):
+            self.assertFalse(advisor_trigger_enabled(k), k)
+
+    def test_single_trigger_off_leaves_the_others_alone(self):
+        from agent.core.advisor import advisor_trigger_enabled
+        os.environ["ADVISOR_ON_LOOP"] = "0"
+        self.assertFalse(advisor_trigger_enabled("loop_detected"))
+        self.assertTrue(advisor_trigger_enabled("graph_stall"))
+        self.assertTrue(advisor_trigger_enabled("periodic"))
+
+    def test_periodic_off_stops_interval_firing(self):
+        from agent.core.advisor import should_trigger_advisor
+        state = self._state(_advisor_last_iter=0)    # 早就够 100 轮了
+        self.assertTrue(should_trigger_advisor(state)[0])
+        os.environ["ADVISOR_ON_PERIODIC"] = "0"
+        state = self._state(_advisor_last_iter=0)
+        self.assertFalse(should_trigger_advisor(state)[0])
+
+    def test_request_off_still_clears_the_flag(self):
+        # 留着标志位，开关一被打开就会立刻放炮——必须摘掉
+        from agent.core.advisor import should_trigger_advisor
+        os.environ["ADVISOR_ON_REQUEST"] = "0"
+        os.environ["ADVISOR_ON_PERIODIC"] = "0"
+        state = self._state(_advisor_requested=True, _advisor_request_reason="迷路了")
+        self.assertFalse(should_trigger_advisor(state)[0])
+        self.assertNotIn("_advisor_requested", state.meta)
+
+    def test_request_on_fires_with_its_reason(self):
+        from agent.core.advisor import should_trigger_advisor
+        state = self._state(_advisor_requested=True, _advisor_request_reason="迷路了")
+        fired, reason = should_trigger_advisor(state)
+        self.assertTrue(fired)
+        self.assertEqual(reason, "迷路了")
+
+    def test_run_advisor_is_a_noop_when_master_switch_off(self):
+        from agent.core.advisor import run_advisor
+
+        class BoomLLM:
+            def complete_text(self, **kw):
+                raise AssertionError("advisor 已关闭，不该发起 LLM 调用")
+
+        os.environ["ADVISOR_ENABLED"] = "0"
+        self.assertIsNone(run_advisor(self._state(), BoomLLM(), "system prompt"))
+
+    def test_request_advisor_tool_tells_agent_when_disabled(self):
+        from agent.tools.standard import tool_request_advisor
+
+        state = self._state()
+        os.environ["ADVISOR_ON_REQUEST"] = "0"
+        r = tool_request_advisor(state, reason="想确认方向")
+        self.assertTrue(r.success)
+        self.assertEqual(r.output["status"], "advisor_disabled")
+        self.assertNotIn("_advisor_requested", state.meta)
+
+        os.environ.pop("ADVISOR_ON_REQUEST")
+        r = tool_request_advisor(state, reason="想确认方向")
+        self.assertEqual(r.output["status"], "advisor_scheduled")
+        self.assertTrue(state.meta["_advisor_requested"])
+
+    # ── 前后端下限必须是同一个数 ──────────────────────────────────────────
+    def test_frontend_floor_matches_backend(self):
+        from agent.core.advisor import ADVISOR_MIN_INTERVAL
+
+        html = Path("dashboard/public/index.html").read_text(encoding="utf-8")
+        self.assertIn("const ADVISOR_MIN_INTERVAL = %d;" % ADVISOR_MIN_INTERVAL, html)
+        self.assertIn('id="setAdvInterval"', html)
+        self.assertIn('min="%d"' % ADVISOR_MIN_INTERVAL, html)
+
+    def test_api_env_reports_every_advisor_key(self):
+        # 面板读不回来的键，用户改完一刷新就"丢了"
+        server = Path("dashboard/server.js").read_text(encoding="utf-8")
+        for k in self.ENV_KEYS:
+            self.assertIn(k + ":", server, k)
+
+
 if __name__ == "__main__":
     unittest.main()

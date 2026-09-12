@@ -2943,6 +2943,15 @@ const server = http.createServer(async (req, res) => {
       LLM_MAX_TOKENS:  process.env.LLM_MAX_TOKENS  || '',
       // 采样温度已按模型拆到各 API 槽位（*_OPENAI_TEMPERATURE），这里不再回传旧的全局键
       LLM_CONTEXT_WINDOW: process.env.LLM_CONTEXT_WINDOW || '',
+      // 高级设置 —— 高级指导员（触发频次 + 四个触发源的使能）
+      // 空字符串 = 未配置 = 默认开启，与 agent/core/advisor.py 的 _env_flag 一致。
+      // 间隔下限 15 由 advisor.py 兜底 clamp，前端只是把这条线画出来。
+      ADVISOR_ENABLED:     process.env.ADVISOR_ENABLED     || '',
+      ADVISOR_INTERVAL:    process.env.ADVISOR_INTERVAL    || '',
+      ADVISOR_ON_PERIODIC: process.env.ADVISOR_ON_PERIODIC || '',
+      ADVISOR_ON_REQUEST:  process.env.ADVISOR_ON_REQUEST  || '',
+      ADVISOR_ON_LOOP:     process.env.ADVISOR_ON_LOOP     || '',
+      ADVISOR_ON_STALL:    process.env.ADVISOR_ON_STALL    || '',
       // 任一槽位配了 base 就算配置过（首选可以是 API 2/3，此时 API 1 允许留空）
       configured: !!(process.env.OPENAI_BASE_URL || process.env.BACKUP_OPENAI_BASE_URL
                      || process.env.BACKUP2_OPENAI_BASE_URL),

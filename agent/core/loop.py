@@ -29,7 +29,13 @@ from . import graph as _graph
 from . import timing as _timing
 from .artifact_index import register_artifact
 from .confidence import compute_confidence
-from .advisor import run_advisor, should_trigger_advisor, inject_advisor_advice, ensure_progress_log
+from .advisor import (
+    advisor_trigger_enabled,
+    ensure_progress_log,
+    inject_advisor_advice,
+    run_advisor,
+    should_trigger_advisor,
+)
 from agent.i18n import t
 
 
@@ -998,10 +1004,8 @@ def run(
             import os
             _advisor_sys = state.meta.get("_advisor_system", "")
             if _advisor_sys:
-                _should_advise, _advise_reason = should_trigger_advisor(
-                    state,
-                    interval=int(os.environ.get("ADVISOR_INTERVAL", "15")),
-                )
+                # 间隔与使能开关都由 advisor 模块统一裁决（看板「设置 → 指导员」）
+                _should_advise, _advise_reason = should_trigger_advisor(state)
                 if _should_advise:
                     # 批 2：advisor 调用前先让主 agent 产出一份"工作进展日志"，
                     # 利用主对话 KV 缓存 → 几乎零输入成本。日志写入 state.meta
@@ -1751,8 +1755,10 @@ def run(
                             hooks.on_error("[循环检测→用户求助] 自动暂停，等待用户指导")
                         _checkpoint_state(state, status="paused")
                         break
+                    # 开关关掉只摘掉梯子上「advisor 介入」这一级：上面的折叠吸引子
+                    # 和下一次的 ask_user 求助照常，循环保护不会跟着一起没了。
                     _advisor_sys = state.meta.get("_advisor_system", "")
-                    if _advisor_sys:
+                    if _advisor_sys and advisor_trigger_enabled("loop_detected"):
                         _advice = run_advisor(
                             state, llm, _advisor_sys, trigger_reason="loop_detected"
                         )
@@ -2000,7 +2006,8 @@ def _graph_convergence_check(state: "AgentState", llm, hooks: Optional["AgentHoo
                         reason=reason, stall=m.get("stall_iters", 0),
                         revisits=m.get("node_revisits", 0), fanout=m.get("open_fanout", 0),
                     ))
-                if _advisor_sys:
+                # 同循环梯：关掉只摘 advisor 这一级，L3 的 ask_user 求助照常
+                if _advisor_sys and advisor_trigger_enabled("graph_stall"):
                     _advice = run_advisor(state, llm, _advisor_sys, trigger_reason="graph_stall")
                     if _advice:
                         inject_advisor_advice(state, _advice, "graph_stall")

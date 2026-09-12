@@ -2144,6 +2144,20 @@ def tool_web_search(state: AgentState, query: str, max_results: int = 5) -> Tool
 
 def tool_request_advisor(state: AgentState, reason: str = "") -> ToolResult:
     """主动请求高级指导员在本轮结束后立即介入。"""
+    from ..core.advisor import advisor_trigger_enabled
+
+    # 用户可在看板关掉这个触发源。关着还回「已安排」等于骗 agent 干等一轮，
+    # 所以如实告知，让它自己接着往下做。
+    if not advisor_trigger_enabled("agent_requested"):
+        return ToolResult(
+            success=True,
+            output={
+                "status": "advisor_disabled",
+                "note": "用户已在看板（设置 → 通用设置 → 指导员）关闭「Agent 主动请求」触发，"
+                        "本次请求不会触发指导员。请自行判断下一步，不要重复调用本工具。",
+            },
+        )
+
     state.meta["_advisor_requested"] = True
     state.meta["_advisor_request_reason"] = reason or "agent_requested"
     return ToolResult(
