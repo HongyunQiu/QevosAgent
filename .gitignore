@@ -100,3 +100,5 @@ apps/pcb_router.md
 
 # 本机内置 App（非 myQevosApp 部署产物，只在这台机器上用）
 apps/agent_toolkit.md
+# 内含树莓派明文口令与内网地址，且写死了本机的 SpaceTraffic 路径——不能入公开库
+apps/onstep_connect.md
