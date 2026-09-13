@@ -1037,6 +1037,10 @@ def run(
             if _ensure_user_turn_last(state) and hooks.on_error:
                 hooks.on_error("[自我修复] 上下文以 assistant 结尾，已补一条占位 user 消息")
 
+            # 发请求前先收口图片预算：上限已知时（env 或上一次 400 学到的）绝不再
+            # 把超量的图送出去。少一次必然失败的往返，也少一次熔断计数。
+            _enforce_image_budget(state, hooks)
+
             messages = build_context_messages(
                 state,
                 scratchpad=state.meta.get("scratchpad", ""),
@@ -1208,13 +1212,7 @@ def run(
                     _healed = True
 
                 # 当前模型不支持多模态：清除 short_term 中所有图片块，标记能力缺失
-                _vision_unsupported = (
-                    "image" in es.lower()
-                    and any(k in es for k in ("0 image", "not support", "unsupport", "vision", "multimodal"))
-                )
-                if not _vision_unsupported and "At most 0 image" in es:
-                    _vision_unsupported = True
-                if _vision_unsupported:
+                if _is_vision_unsupported_error(es):
                     stripped = _strip_vision_blocks(state)
                     state.meta["_vision_supported"] = False
                     state.long_term.append(
@@ -1224,6 +1222,31 @@ def run(
                     if hooks.on_error:
                         hooks.on_error(f"[自我修复] 多模态不支持，已清除 {stripped} 条图片块")
                     _healed = True
+
+                # 上下文里的图片超过后端"一次最多 N 张"的上限。摘掉旧图这一轮立刻
+                # 就能过去，是最典型的可自愈错误；识别不出来的话，注入的那条
+                # "[系统] LLM调用异常…请重试"永远送不到模型面前——下一轮还是带着
+                # 同样几张图，在模型读到它之前就被 400 掉了。
+                elif (_img_limit := _parse_image_limit(es)) is not None and _img_limit >= 1:
+                    _had = _count_image_blocks(state)
+                    state.meta["_max_images"] = _img_limit
+                    _dropped = _trim_excess_image_blocks(state, _img_limit)
+                    if _dropped:
+                        _healed = True
+                        state.long_term.append(
+                            f"[自我修复] 上下文图片数（{_had}）超过后端上限 {_img_limit}，"
+                            f"已移除最旧的 {_dropped} 张，后续自动维持在该上限内。"
+                        )
+                        if hooks.on_error:
+                            hooks.on_error(
+                                f"[自我修复] 图片超限（上限 {_img_limit}），已移除最旧的 {_dropped} 张"
+                            )
+                        _sys_note = (
+                            f"[系统] 后端限制一次最多 {_img_limit} 张图片，而上下文里已有 {_had} 张。"
+                            f"已自动移除最旧的 {_dropped} 张（只保留最新的 {_img_limit} 张）。"
+                            "请继续——后续每加载一张新图都会自动挤掉一张最旧的，"
+                            "所以需要反复比对的画面请及时把结论写进 scratchpad 或记忆，不要指望旧图还在。"
+                        )
 
                 # 后端解不开上下文里的某张图（最常见：URL 指向的是 HTML 页面而不是
                 # 图片直链）。坏图片不摘掉，之后每一轮都是同一个 400——整个 run 会
@@ -2293,6 +2316,124 @@ _IMAGE_DECODE_ERR_MARKERS = (
 def _is_image_decode_error(es: str) -> bool:
     low = es.lower()
     return any(m in low for m in _IMAGE_DECODE_ERR_MARKERS)
+
+
+_VISION_UNSUPPORTED_MARKERS = ("not support", "unsupport", "vision", "multimodal")
+
+
+def _is_vision_unsupported_error(es: str) -> bool:
+    """后端"我根本收不了图片"的错误面孔。
+
+    "0 image" 必须按数字边界匹配：裸子串会把 "At most 10 image(s)"（一个纯粹的
+    超限错误）误判成不支持多模态，进而把上下文里所有图片永久摘光、之后 load_image
+    全部跳过——代价远大于多撞一次 400。
+    """
+    if "image" not in es.lower():
+        return False
+    if any(k in es for k in _VISION_UNSUPPORTED_MARKERS):
+        return True
+    return re.search(r"(?<![0-9])0\s*image", es, re.I) is not None
+
+
+# 后端"这一次请求里图片太多了"的错误面孔。典型原话（vLLM）：
+#   At most 5 image(s) may be provided in one prompt. (parameter=image)
+# 这类错误是**完全可自愈**的——摘掉几张旧图这一轮立刻就能过去。识别不出来的话
+# 它会被当成不可自愈的确定性 400，连撞三次后熔断，整个 run 停在最后一步。
+_IMAGE_LIMIT_RES = (
+    re.compile(r"at\s+most\s+(\d+)\s*image", re.I),
+    re.compile(r"(?:maximum|max)\s+(?:of\s+)?(\d+)\s*image", re.I),
+    re.compile(r"(\d+)\s*image\S*\s+(?:is|are)\s+the\s+(?:maximum|limit)", re.I),
+)
+
+
+def _parse_image_limit(es: str) -> Optional[int]:
+    """从后端错误里解析"一次最多几张图"。解析不出来返回 None。"""
+    for rx in _IMAGE_LIMIT_RES:
+        m = rx.search(es)
+        if m:
+            try:
+                return int(m.group(1))
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _count_image_blocks(state: AgentState) -> int:
+    n = 0
+    for msg in state.short_term:
+        content = msg.get("content")
+        if isinstance(content, list):
+            n += sum(
+                1 for b in content
+                if isinstance(b, dict) and b.get("type") == "image"
+            )
+    return n
+
+
+def _trim_excess_image_blocks(state: AgentState, keep: int) -> int:
+    """只保留最新的 keep 张图，把更早的图片块换成占位文字。
+
+    图片按 short_term 顺序从旧到新，超限时该丢的一定是旧的——新截图才是模型
+    当前正在看的那张。返回实际移除的图片张数。
+    """
+    keep = max(0, int(keep))
+    total = _count_image_blocks(state)
+    to_drop = total - keep
+    if to_drop <= 0:
+        return 0
+
+    dropped = 0
+    for msg in state.short_term:
+        if dropped >= to_drop:
+            break
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        filtered = []
+        hit = False
+        for b in content:
+            if (
+                dropped < to_drop
+                and isinstance(b, dict)
+                and b.get("type") == "image"
+            ):
+                dropped += 1
+                hit = True
+                continue
+            filtered.append(b)
+        if not hit:
+            continue
+        ph = "[图片已移除：上下文图片数超过后端上限，仅保留最新的几张]"
+        if len(filtered) == 1 and isinstance(filtered[0], dict) and filtered[0].get("type") == "text":
+            msg["content"] = filtered[0]["text"]
+        elif filtered:
+            msg["content"] = filtered
+        else:
+            msg["content"] = ph
+    return dropped
+
+
+def _enforce_image_budget(state: AgentState, hooks: "AgentHooks") -> int:
+    """发请求前的预防闸：上下文图片数不得超过已知上限。
+
+    上限来源有二：环境变量 LLM_MAX_IMAGES（一开始就生效），或上一次 400 里学到的
+    值（state.meta['_max_images']）。都没有就不限制——Anthropic 这类后端能收上百张，
+    硬塞一个保守值只会白白丢掉模型看得见的信息。
+    """
+    limit = state.meta.get("_max_images")
+    if limit is None:
+        try:
+            env_limit = int(os.environ.get("LLM_MAX_IMAGES", "0"))
+        except (TypeError, ValueError):
+            env_limit = 0
+        if env_limit <= 0:
+            return 0
+        limit = env_limit
+
+    dropped = _trim_excess_image_blocks(state, int(limit))
+    if dropped and hooks.on_error:
+        hooks.on_error(f"[图片预算] 上下文图片超过上限 {limit} 张，已移除最旧的 {dropped} 张")
+    return dropped
 
 
 # 确定性错误：同样的请求再发一次必然得到同样的拒绝。429（限流）和 5xx 不在此列——

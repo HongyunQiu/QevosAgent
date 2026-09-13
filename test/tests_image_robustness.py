@@ -339,5 +339,182 @@ class DeterministicErrorBreakerTests(unittest.TestCase):
         self.assertGreaterEqual(llm.calls, 4)
 
 
+# ── D 层：图片数量超限（可自愈，绝不该走到熔断）──────────────────────────────
+#
+# 背景：run 20260913-111822 在第 77 轮 load_image 加载第 6 张截图后死掉。后端上限是
+# 5 张，报 400；但这条错误一条 vision 关键词都不含、也不是解码失败，两个自愈分支全
+# 落空 → _healed=False → 连撞三次 → 确定性熔断，任务停在"展示截图给用户确认收尾"
+# 的最后一步。注入的那条"[系统] LLM调用异常…请重试"模型一次都没看到：下一轮请求还
+# 是带着同样 6 张图，在模型读到它之前就被 400 掉了。
+#
+# 守三条线：
+#   1 识别——"At most N image(s)" 要解析出 N，且不能被误判成"不支持多模态"；
+#   2 自愈——摘掉最旧的几张、保留文字上下文，并把上限记进 meta；
+#   3 预防——上限已知后，发请求前就把图片数收口，不再白撞 400。
+
+IMAGE_LIMIT_400 = (
+    "Error code: 400 - {'error': {'message': 'At most 5 image(s) may be provided "
+    "in one prompt. (parameter=image)', 'type': 'BadRequestError', "
+    "'param': 'image', 'code': 400}}"
+)
+
+
+def _img_state(n, goal="t"):
+    """构造 n 张图的 short_term，每张都配一句说明文字。"""
+    st = AgentState(goal=goal)
+    st.short_term = [{"role": "user", "content": [
+        {"type": "text", "text": f"第{i}张"},
+        {"type": "image", "media_type": "image/png", "data": f"IMG{i}"},
+    ]} for i in range(n)]
+    return st
+
+
+def _img_data(st):
+    return [b["data"] for m in st.short_term if isinstance(m.get("content"), list)
+            for b in m["content"] if isinstance(b, dict) and b.get("type") == "image"]
+
+
+class ImageLimitParsingTests(unittest.TestCase):
+    def test_parses_the_real_message(self):
+        self.assertEqual(L._parse_image_limit(IMAGE_LIMIT_400), 5)
+
+    def test_parses_other_phrasings(self):
+        self.assertEqual(L._parse_image_limit("maximum of 3 images allowed"), 3)
+        self.assertEqual(L._parse_image_limit("max 8 images per request"), 8)
+
+    def test_unrelated_errors_yield_none(self):
+        self.assertIsNone(L._parse_image_limit(REAL_400))
+        self.assertIsNone(L._parse_image_limit("context length exceeded"))
+        self.assertIsNone(L._parse_image_limit("Connection reset by peer"))
+
+    def test_limit_error_is_not_read_as_vision_unsupported(self):
+        # 这是关键的边界：裸子串 "0 image" 会把 "At most 10 image(s)" 误判成
+        # 后端不支持图片，然后把上下文里所有图片永久摘光。
+        self.assertFalse(L._is_vision_unsupported_error(IMAGE_LIMIT_400))
+        self.assertFalse(L._is_vision_unsupported_error("At most 10 image(s) may be provided"))
+        self.assertFalse(L._is_vision_unsupported_error("At most 20 image(s) may be provided"))
+        self.assertTrue(L._is_vision_unsupported_error("At most 0 image(s) may be provided"))
+        self.assertTrue(L._is_vision_unsupported_error("this model does not support image input"))
+
+
+class TrimExcessImagesTests(unittest.TestCase):
+    def test_keeps_the_newest_and_drops_the_oldest(self):
+        st = _img_state(6)
+        self.assertEqual(L._count_image_blocks(st), 6)
+        self.assertEqual(L._trim_excess_image_blocks(st, 5), 1)
+        # 该丢的一定是旧的——新截图才是模型当前正在看的那张。
+        self.assertEqual(_img_data(st), ["IMG1", "IMG2", "IMG3", "IMG4", "IMG5"])
+
+    def test_text_survives_so_the_model_still_knows_what_happened(self):
+        st = _img_state(6)
+        L._trim_excess_image_blocks(st, 5)
+        self.assertEqual(st.short_term[0]["content"], "第0张")
+
+    def test_noop_when_already_under_limit(self):
+        st = _img_state(3)
+        self.assertEqual(L._trim_excess_image_blocks(st, 5), 0)
+        self.assertEqual(L._count_image_blocks(st), 3)
+
+
+class ImageBudgetGateTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = os.environ.pop("LLM_MAX_IMAGES", None)
+        self.hooks = L.AgentHooks()
+
+    def tearDown(self):
+        os.environ.pop("LLM_MAX_IMAGES", None)
+        if self._saved is not None:
+            os.environ["LLM_MAX_IMAGES"] = self._saved
+
+    def test_no_cap_means_no_trimming(self):
+        # Anthropic 这类后端能收上百张，硬塞一个保守默认值只会白白丢信息。
+        st = _img_state(20)
+        self.assertEqual(L._enforce_image_budget(st, self.hooks), 0)
+        self.assertEqual(L._count_image_blocks(st), 20)
+
+    def test_env_cap_applies_before_any_failure(self):
+        os.environ["LLM_MAX_IMAGES"] = "2"
+        st = _img_state(6)
+        self.assertEqual(L._enforce_image_budget(st, self.hooks), 4)
+        self.assertEqual(_img_data(st), ["IMG4", "IMG5"])
+
+    def test_learned_cap_takes_precedence(self):
+        os.environ["LLM_MAX_IMAGES"] = "2"
+        st = _img_state(6)
+        st.meta["_max_images"] = 5      # 上一次 400 学到的真实上限
+        self.assertEqual(L._enforce_image_budget(st, self.hooks), 1)
+
+
+class _FailsWhileTooManyImages(LLMBackend):
+    """忠实复刻现场后端：请求里图片超过 limit 就 400，否则正常作答。"""
+
+    def __init__(self, limit=5):
+        self.limit = limit
+        self.calls = 0
+        self.rejections = 0
+        self.exc = type("BadRequestError", (Exception,), {"status_code": 400})
+
+    def complete(self, messages, system):
+        self.calls += 1
+        n = sum(
+            1 for m in messages if isinstance(m.get("content"), list)
+            for b in m["content"] if isinstance(b, dict) and b.get("type") == "image"
+        )
+        if n > self.limit:
+            self.rejections += 1
+            raise self.exc(IMAGE_LIMIT_400)
+        return '{"thought": "图都在了", "action": "done", "result": "ok"}'
+
+
+class ImageLimitHealingTests(unittest.TestCase):
+    def setUp(self):
+        self._saved = os.environ.pop("LLM_MAX_IMAGES", None)
+
+    def tearDown(self):
+        os.environ.pop("LLM_MAX_IMAGES", None)
+        if self._saved is not None:
+            os.environ["LLM_MAX_IMAGES"] = self._saved
+
+    def test_run_heals_and_finishes_instead_of_tripping_the_breaker(self):
+        st = _img_state(6, goal="测试目标")
+        llm = _FailsWhileTooManyImages(limit=5)
+        state = L.run("测试目标", llm, tools={}, state=st, max_iterations=30)
+
+        self.assertEqual(llm.rejections, 1, "摘图后不该再撞同一个 400")
+        self.assertEqual(L._count_image_blocks(state), 5)
+        self.assertEqual(state.meta.get("_max_images"), 5, "上限没被记住，下一次还会白撞一次")
+        self.assertNotEqual(
+            (state.meta.get("run_outcome") or {}).get("reason"),
+            "llm_error_deterministic",
+            "可自愈的图片超限被当成不可自愈的确定性错误熔断了",
+        )
+        # 多模态能力不能被误判掉：这只是超限，不是"后端收不了图"。
+        self.assertNotEqual(state.meta.get("_vision_supported"), False)
+
+    def test_the_system_note_actually_reaches_the_model(self):
+        # 现场的病根：错误提示写进了 short_term，却因为上下文没变而永远送不出去。
+        st = _img_state(6, goal="测试目标")
+        llm = _FailsWhileTooManyImages(limit=5)
+        L.run("测试目标", llm, tools={}, state=st, max_iterations=30)
+
+        notes = [m["content"] for m in st.short_term
+                 if isinstance(m.get("content"), str) and m["content"].startswith("[系统]")]
+        hits = [n for n in notes if "最多 5 张图片" in n]
+        self.assertTrue(hits, f"没有给模型留下可操作的解释，只有：{notes}")
+        self.assertIn("最旧的 1 张", hits[0], "没说清丢了哪几张")
+        self.assertFalse(
+            [n for n in notes if "请重试或换一种方式" in n],
+            "还是那条什么都没说、而且根本送不到模型面前的泛泛提示",
+        )
+
+    def test_budget_gate_prevents_the_second_collision(self):
+        # 上限学到之后，后面每加一张新图都该在发请求前自动挤掉最旧的一张。
+        st = _img_state(6, goal="测试目标")
+        st.meta["_max_images"] = 5
+        llm = _FailsWhileTooManyImages(limit=5)
+        L.run("测试目标", llm, tools={}, state=st, max_iterations=30)
+        self.assertEqual(llm.rejections, 0, "上限已知却还是把超量的图送了出去")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
