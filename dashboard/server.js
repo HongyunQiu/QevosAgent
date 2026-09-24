@@ -583,9 +583,9 @@ function isIpAllowed(rawIp) {
 }
 const RUNS_DIR        = path.resolve(process.env.RUNS_DIR        || path.join(__dirname, '..', 'runs'));
 const AGENT_DIR       = path.resolve(process.env.AGENT_DIR       || path.join(__dirname, '..'));
-// Episodic memory lives next to runs/ (agent writes ./memory_episodic.jsonl in its CWD).
-// Used to self-heal keyword tags on instances where runs/ was never backfilled.
-const EPISODIC_FILE   = path.resolve(process.env.EPISODIC_PATH   || path.join(AGENT_DIR, 'memory_episodic.jsonl'));
+// Manual sidebar groups for runs. Lives inside runs/ so it travels with the runs;
+// findRuns() only picks up timestamp-named dirs, so this file is never mistaken for one.
+const RUN_GROUPS_FILE = path.join(RUNS_DIR, '_run_groups.json');
 const SKILLS_DIR      = path.resolve(process.env.SKILLS_DIR      || path.join(AGENT_DIR, 'SKILLS'));
 const CRONS_DIR       = path.resolve(process.env.CRONS_DIR       || path.join(AGENT_DIR, 'crons'));
 const APPS_DIR        = path.resolve(process.env.APPS_DIR        || path.join(AGENT_DIR, 'apps'));
@@ -675,7 +675,7 @@ let isLaunching  = false;  // true from spawn() until first stdout or error
 let state = {
   runs:         [],
   runSummaries: {},     // { runId: summaryString } — short label for each run
-  runTags:      {},     // { runId: [tag, …] } — keywords for sidebar chip filtering (run_dir/tags.json)
+  runGroups:    loadRunGroups(),  // { groups: [{ id, name, runs }] } — manual sidebar groups (runs/_run_groups.json)
   activeRunId:  null,
   status:       null,
   scratchpad:   '',
@@ -805,80 +805,39 @@ function findRuns() {
   } catch { return []; }
 }
 
-// Normalize keyword tags: split on half/full-width commas, trim, drop empties,
-// dedupe case-insensitively (keeping first display form + order). Mirrors
-// agent/tools/standard.py:normalize_tags so both producers agree.
-function normalizeTags(tags) {
-  const raw = Array.isArray(tags) ? tags : (typeof tags === 'string' ? [tags] : []);
-  const seen = new Set();
-  const out = [];
-  for (const item of raw) {
-    for (const part of String(item).split(/[,，]/)) {
-      const p = part.trim();
-      if (!p) continue;
-      const key = p.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(p);
+// Manual run groups: { groups: [{ id, name, runs: [runId, …] }] }. Array order is
+// display order. A run belongs to at most one group. Collapse state is per-viewer
+// (frontend localStorage), so it is deliberately not stored here.
+function sanitizeRunGroups(data) {
+  const src  = (data && Array.isArray(data.groups)) ? data.groups : [];
+  const seenGroup = new Set();
+  const seenRun   = new Set();
+  const groups = [];
+  for (const g of src) {
+    if (!g || typeof g !== 'object') continue;
+    const id = String(g.id || '').slice(0, 64);
+    if (!/^[\w-]+$/.test(id) || seenGroup.has(id)) continue;
+    seenGroup.add(id);
+    const name = String(g.name || '').trim().slice(0, 80) || '未命名分组';
+    const runs = [];
+    for (const r of (Array.isArray(g.runs) ? g.runs : [])) {
+      const rid = String(r);
+      if (!/^\d{8}-\d{6}$/.test(rid) || seenRun.has(rid)) continue;
+      seenRun.add(rid);
+      runs.push(rid);
     }
+    groups.push({ id, name, runs });
   }
-  return out;
+  return { groups };
 }
 
-// Episodic-derived fallback map { runId: [tags] }, rebuilt when the run set
-// changes. Lets instances that never ran the backfill still show keywords,
-// derived on the fly from their own memory_episodic.jsonl.
-let _episodicTags = {};
-
-// Align every episodic entry to the run whose [start, next-start) window contains
-// its timestamp, then union the (normalized) tags per run. Run dir names are LOCAL
-// time; episodic ts is UTC ISO — Date handles the offset since the dashboard runs
-// in the same timezone as the agent that named the dirs. No tz constant needed.
-function rebuildEpisodicTags(runs) {
-  _episodicTags = {};
-  let text;
-  try { text = fs.readFileSync(EPISODIC_FILE, 'utf8'); }
-  catch { return; }                      // no episodic file → nothing to derive
-
-  const starts = runs.map(id => {
-    const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(id);
-    if (!m) return NaN;
-    const [, y, mo, d, h, mi, s] = m.map(Number);
-    return new Date(y, mo - 1, d, h, mi, s).getTime();   // local time
-  });
-
-  const acc = {};                        // runId -> tag[]
-  for (const line of text.split('\n')) {
-    const t = line.trim();
-    if (!t) continue;
-    let rec;
-    try { rec = JSON.parse(t); } catch { continue; }
-    const ms = Date.parse(rec.ts);       // UTC ISO → epoch
-    if (Number.isNaN(ms)) continue;
-    // rightmost run start <= ms (runs are chronologically sorted)
-    let lo = 0, hi = starts.length;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (starts[mid] <= ms) lo = mid + 1; else hi = mid; }
-    const i = lo - 1;
-    if (i < 0) continue;
-    const rid = runs[i];
-    (acc[rid] || (acc[rid] = [])).push(...normalizeTags(rec.tags));
-  }
-  for (const rid of Object.keys(acc)) _episodicTags[rid] = normalizeTags(acc[rid]);
+function loadRunGroups() {
+  return sanitizeRunGroups(readJSON(RUN_GROUPS_FILE));
 }
 
-// Read a run's keyword tags: prefer the on-disk tags.json (written by
-// append_episodic / the backfill script), else fall back to the episodic-derived
-// map so no instance shows empty keywords. Missing/invalid → [].
-function readRunTags(runDir, runId) {
-  const data = readJSON(path.join(runDir, 'tags.json'));
-  if (data) {
-    const arr = Array.isArray(data) ? data : data.tags;
-    if (Array.isArray(arr)) {
-      const tags = arr.filter(t => typeof t === 'string');
-      if (tags.length) return tags;
-    }
-  }
-  return (runId && _episodicTags[runId]) || [];
+function saveRunGroups(data) {
+  fs.mkdirSync(RUNS_DIR, { recursive: true });
+  fs.writeFileSync(RUN_GROUPS_FILE, JSON.stringify(data, null, 2), 'utf8');
 }
 
 // ── JSONL display helper ───────────────────────────────────────────────────
@@ -1165,15 +1124,12 @@ function poll() {
 
   if (JSON.stringify(runs) !== JSON.stringify(state.runs)) {
     state.runs = runs;
-    rebuildEpisodicTags(runs);   // refresh the tags.json-less fallback map for the new run set
-    state.runTags = {};          // window boundaries shifted → recompute all fallbacks
-    // Load summary + keyword tags for each run
+    // Load summary for each run
     for (const rid of runs) {
       if (!(rid in state.runSummaries)) {
         const s = readJSON(path.join(RUNS_DIR, rid, 'status.json'));
         state.runSummaries[rid] = (s && s.summary) || '';
       }
-      state.runTags[rid] = readRunTags(path.join(RUNS_DIR, rid), rid);
     }
     dirty = true;
   }
@@ -1218,10 +1174,6 @@ function poll() {
         state.runSummaries[state.activeRunId] = s.summary || '';
         dirty = true;
       }
-    }
-    if (changed(path.join(dir, 'tags.json'))) {
-      state.runTags[state.activeRunId] = readRunTags(dir, state.activeRunId);
-      dirty = true;
     }
     if (changed(path.join(dir, 'scratchpad.md'))) {
       const s = readText(path.join(dir, 'scratchpad.md'));
@@ -3072,9 +3024,29 @@ const server = http.createServer(async (req, res) => {
       fs.rmSync(runDir, { recursive: true, force: true });
       // Reflect immediately; the next poll reconciles the rest.
       state.runs = state.runs.filter(r => r !== runId);
+      // Drop it from its sidebar group too, so the group file never holds dangling ids.
+      if (state.runGroups.groups.some(g => g.runs.includes(runId))) {
+        for (const g of state.runGroups.groups) g.runs = g.runs.filter(r => r !== runId);
+        try { saveRunGroups(state.runGroups); } catch { /* stale id is harmless; frontend skips it */ }
+        broadcast();
+      }
       if (state.activeRunId === runId) state.activeRunId = state.runs[state.runs.length - 1] || null;
       json(200, { ok: true, runId });
     } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // ── PUT /api/run-groups  — replace the manual sidebar groups ──────────────
+  // Whole-document replace: the client sends { groups: [...] }; the server
+  // sanitizes (valid ids, one group per run), persists and broadcasts.
+  if (req.method === 'PUT' && req.url === '/api/run-groups') {
+    try {
+      const data = sanitizeRunGroups(JSON.parse(await readBody(req)));
+      saveRunGroups(data);
+      state.runGroups = data;
+      broadcast();
+      json(200, { ok: true, ...data });
+    } catch (e) { json(400, { error: String(e) }); }
     return;
   }
 
