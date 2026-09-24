@@ -265,6 +265,7 @@ body.large-font .app {
 }
 /* 收窄后 stat 单元更挤，缩小内边距与数值字号，避免 "100 / 100" 折行 */
 body.large-font .stat-cell { padding: 6px 8px; }
+body.large-font .section-head { padding: 0 8px; }   /* 与 stat-cell 左缘对齐 */
 body.large-font .stat-val { font-size: 13px; }
 body.large-font .stat-val.muted { font-size: 12px; }
 
@@ -279,8 +280,8 @@ body.large-font .stat-val.muted { font-size: 12px; }
   height: 26px;
   padding: 0 14px;
   display: flex; align-items: center;
-  font-size: 10.5px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.7px;
+  font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.5px;
   color: var(--muted); border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
 
@@ -347,7 +348,7 @@ body.large-font .stat-val.muted { font-size: 12px; }
 .goal-text { color: var(--cyan); font-size: 12.5px; line-height: 1.5; height: calc(1.5em * 5); overflow-y: auto; overflow-x: hidden; }
 
 .runs-scroller { flex: 1; overflow-y: auto; }
-.runs-search { width: 90px; flex-shrink: 0; margin-left: auto; margin-right: 4px; background: var(--bg3); border: 1px solid transparent; border-radius: 3px; color: var(--text); font-size: 10.5px; padding: 1px 6px; outline: none; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.runs-search { flex: 1; min-width: 0; width: 0; margin-left: 8px; margin-right: 0; background: var(--bg3); border: 1px solid transparent; border-radius: 3px; color: var(--text); font-size: 10.5px; padding: 1px 6px; outline: none; font-weight: 400; letter-spacing: 0; text-transform: none; }
 .runs-search:focus { border-color: var(--blue); }
 .runs-search::placeholder { color: var(--muted); }
 .run-item {
@@ -363,7 +364,8 @@ body.large-font .stat-val.muted { font-size: 12px; }
 .run-dot.active { background: var(--green); }
 .run-id { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-tag { margin-left: auto; font-size: 10px; color: var(--muted); background: var(--bg4); border-radius: 3px; padding: 1px 5px; }
-.runs-edit-btn { flex-shrink: 0; margin-left: 6px; background: transparent; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); font-size: 10px; padding: 1px 7px; cursor: pointer; text-transform: none; letter-spacing: 0; font-weight: 600; }
+.runs-edit-btn { flex-shrink: 0; margin-left: 4px; width: 20px; height: 18px; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); cursor: pointer; }
+.runs-edit-btn svg { width: 12px; height: 12px; }
 .runs-edit-btn:hover { color: var(--text); border-color: var(--blue); }
 .runs-edit-btn.active { color: var(--blue); border-color: var(--blue); background: rgba(88,166,255,0.08); }
 .run-del { flex-shrink: 0; margin-left: 6px; background: transparent; border: none; color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer; padding: 2px 5px; border-radius: 3px; }
@@ -1801,7 +1803,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
       <div class="goal-text" id="goalText">No active goal</div>
     </div>
 
-    <div class="section-head">Runs<input class="runs-search" id="runsSearch" type="text" placeholder="Search…" oninput="onRunsSearch(this.value)"><button class="runs-edit-btn" type="button" title="新建分组" onclick="createRunGroup()">＋分组</button><button class="runs-edit-btn" id="runsEditBtn" type="button" onclick="toggleRunsEdit()">管理</button></div>
+    <div class="section-head">Runs<input class="runs-search" id="runsSearch" type="text" placeholder="Search…" oninput="onRunsSearch(this.value)"><button class="runs-edit-btn" type="button" title="新建分组" aria-label="新建分组" onclick="createRunGroup()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/></svg></button><button class="runs-edit-btn" id="runsEditBtn" type="button" title="删除模式（删除任务 / 分组）" aria-label="删除模式" onclick="toggleRunsEdit()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg></button></div>
     <div class="runs-scroller" id="runsList"></div>
   </aside>
 
