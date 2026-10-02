@@ -62,7 +62,12 @@
         android:padding="12dp"
         android:gravity="center_vertical">
 
-        <com.google.android.material.button.MaterialButton
+        <!-- Plain <Button> so these match the row-level 连接/删除 buttons
+             (which are created the same way in code and stay legible). The
+             MaterialButton fill/outline colours flipped unreadably under the
+             DayNight theme; a plain Button keeps all four button groups
+             visually identical. -->
+        <Button
             android:id="@+id/btnAdd"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -70,7 +75,7 @@
             android:layout_marginEnd="8dp"
             android:text="+ 添加" />
 
-        <com.google.android.material.button.MaterialButton
+        <Button
             android:id="@+id/btnSave"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -78,9 +83,8 @@
             android:layout_marginEnd="8dp"
             android:text="保存" />
 
-        <com.google.android.material.button.MaterialButton
+        <Button
             android:id="@+id/btnLoad"
-            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"

@@ -33,6 +33,51 @@ object Servers {
 
     fun newId(): String = UUID.randomUUID().toString()
 
+    // ── Defensive host/port validation & normalization ──────────────────────
+    // These guard against hand-typed config errors (the recurring cause of the
+    // "app closes right after launch" symptom): a port accidentally typed into
+    // the host field, stray whitespace, an over-long port, etc. They are used
+    // at three layers — input (SettingsActivity), persistence (load/parseConfig)
+    // and launch (MainActivity.loadDashboard) — so one bad entry can no longer
+    // take the whole app down.
+
+    /** True if [h] looks like a bare IPv4 address or hostname: no whitespace,
+     *  no colon (a port belongs in the port field, not the host), no slash,
+     *  and dot/label characters only. */
+    fun isValidHost(h: String): Boolean {
+        val s = h.trim()
+        if (s.isEmpty() || s.length > 253) return false
+        if (s.any { it.isWhitespace() || it == ':' || it == '/' }) return false
+        return Regex("^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$").matches(s)
+    }
+
+    /** Clean up a host string: trim, and if the user accidentally pasted a
+     *  "host:port" into the host field, keep the host part (the port belongs in
+     *  its own column). Returns the cleaned value; caller still validates. */
+    fun normalizeHost(h: String): String {
+        var s = h.trim()
+        val c = s.indexOf(':')
+        if (c > 0 && c < s.length - 1 && s.substring(c + 1).all { it.isDigit() }) {
+            s = s.substring(0, c)   // strip an accidental ":port" tail
+        }
+        return s
+    }
+
+    /** True if [p] is a pure-numeric TCP/UDP port within 1..65535. */
+    fun isValidPort(p: String): Boolean {
+        val s = p.trim()
+        if (s.isEmpty() || !s.all { it.isDigit() }) return false
+        val n = s.toIntOrNull() ?: return false
+        return n in 1..65535
+    }
+
+    /** Trim a port; fall back to the default when it is missing or malformed
+     *  (e.g. an over-typed "87655"). */
+    fun normalizePort(p: String): String {
+        val s = p.trim()
+        return if (isValidPort(s)) s else MainActivity.DEFAULT_PORT
+    }
+
     fun load(prefs: SharedPreferences): MutableList<Server> {
         val list = mutableListOf<Server>()
         val raw = prefs.getString(KEY_SERVERS, null)
@@ -42,10 +87,12 @@ object Servers {
                 val arr = JSONArray(raw)
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
-                    val host = o.optString("host").trim()
-                    if (host.isBlank()) continue
-                    val port = o.optString("port", MainActivity.DEFAULT_PORT)
-                        .trim().ifBlank { MainActivity.DEFAULT_PORT }
+                    val host = normalizeHost(o.optString("host"))
+                    // Skip rows whose host is unusable even after cleanup, so a
+                    // hand-corrupted entry can't poison the whole list. Other
+                    // rows still load fine.
+                    if (!isValidHost(host)) continue
+                    val port = normalizePort(o.optString("port", MainActivity.DEFAULT_PORT))
                     // Backfill id for rows saved by older versions.
                     val id = o.optString("id", "").ifBlank {
                         needsResave = true
@@ -55,12 +102,14 @@ object Servers {
                 }
             } catch (_: Exception) { /* corrupt → treat as empty */ }
         }
-        // Migrate a pre-existing single host/port into the list.
+        // Migrate a pre-existing single host/port into the list, cleaning up
+        // the value (e.g. a port accidentally embedded in the host) as we go.
         if (list.isEmpty()) {
-            val h = prefs.getString(MainActivity.KEY_HOST, null)?.trim()
-            if (!h.isNullOrBlank()) {
-                val p = prefs.getString(MainActivity.KEY_PORT, MainActivity.DEFAULT_PORT)
-                    ?: MainActivity.DEFAULT_PORT
+            val h = normalizeHost(prefs.getString(MainActivity.KEY_HOST, "") ?: "")
+            if (isValidHost(h)) {
+                val p = normalizePort(
+                    prefs.getString(MainActivity.KEY_PORT, MainActivity.DEFAULT_PORT)
+                        ?: MainActivity.DEFAULT_PORT)
                 list.add(Server(newId(), h, p))
                 save(prefs, list)
             }

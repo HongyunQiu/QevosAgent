@@ -806,10 +806,17 @@ class MainActivity : AppCompatActivity() {
     private var loadToken = 0
 
     private fun loadDashboard() {
-        val host = prefs.getString(KEY_HOST, null)
-        val port = prefs.getString(KEY_PORT, DEFAULT_PORT) ?: DEFAULT_PORT
+        // Normalize first (a port accidentally pasted into the host field gets
+        // stripped), then validate. Any host that is empty OR malformed after
+        // cleanup is treated as "no usable server configured": we route the
+        // user to Settings instead of probing a broken http://host:port that
+        // would only flash an error page. This is what keeps a hand-corrupted
+        // config from wedging the launch flow.
+        val host = Servers.normalizeHost(prefs.getString(KEY_HOST, "") ?: "")
+        val port = Servers.normalizePort(
+            prefs.getString(KEY_PORT, DEFAULT_PORT) ?: DEFAULT_PORT)
 
-        if (host.isNullOrBlank()) {
+        if (!Servers.isValidHost(host)) {
             openSettingsActivity()
             return
         }

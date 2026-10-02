@@ -104,11 +104,18 @@ class SettingsActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
+        // Force a fixed dark text colour: the app theme is DayNight, so an
+        // EditText's default text colour flips to white in system dark mode,
+        // which is invisible on the white card/window background. Pin it to
+        // text_primary (same as the nickname label) so typed values are always
+        // readable regardless of the system theme.
         val hostEt = EditText(this).apply {
             hint = "IP 地址（如 192.168.1.100）"
             setText(server.host)
             inputType = InputType.TYPE_TEXT_VARIATION_URI
             setSingleLine()
+            setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.text_primary))
+            setHintTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.text_secondary))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
         val portEt = EditText(this).apply {
@@ -116,6 +123,8 @@ class SettingsActivity : AppCompatActivity() {
             setText(server.port)
             inputType = InputType.TYPE_CLASS_NUMBER
             setSingleLine()
+            setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.text_primary))
+            setHintTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.text_secondary))
             layoutParams = LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT)
                 .apply { marginStart = dp(8) }
         }
@@ -133,10 +142,14 @@ class SettingsActivity : AppCompatActivity() {
             rows.remove(pair)
         }
         connectBtn.setOnClickListener {
-            val host = hostEt.text.toString().trim()
+            val host = Servers.normalizeHost(hostEt.text.toString())
             if (host.isBlank()) { hostEt.error = "请输入主机地址"; return@setOnClickListener }
+            if (!Servers.isValidHost(host)) {
+                hostEt.error = "IP 格式不正确（不要带端口或空格）"
+                return@setOnClickListener
+            }
             saveAll()
-            val port = portEt.text.toString().trim().ifBlank { MainActivity.DEFAULT_PORT }
+            val port = Servers.normalizePort(portEt.text.toString())
             prefs.edit()
                 .putString(MainActivity.KEY_HOST, host)
                 .putString(MainActivity.KEY_PORT, port)
@@ -150,9 +163,16 @@ class SettingsActivity : AppCompatActivity() {
     private fun collect(): List<Server> {
         val list = mutableListOf<Server>()
         for ((_, r) in rows) {
-            val host = r.host.text.toString().trim()
+            // Normalize then validate: a hand-typed host that survives cleanup
+            // but is still malformed (embedded port, stray space, …) is dropped
+            // rather than persisted, so it can't later wedge the launch flow.
+            val host = Servers.normalizeHost(r.host.text.toString())
             if (host.isBlank()) continue
-            val port = r.port.text.toString().trim().ifBlank { MainActivity.DEFAULT_PORT }
+            if (!Servers.isValidHost(host)) {
+                r.host.error = "IP 格式不正确（不要带端口或空格）"
+                continue
+            }
+            val port = Servers.normalizePort(r.port.text.toString())
             list.add(Server(r.id, host, port, r.name))
         }
         return list
@@ -315,10 +335,13 @@ class SettingsActivity : AppCompatActivity() {
         val out = mutableListOf<Server>()
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
-            val host = o.optString("host").trim()
-            if (host.isBlank()) continue
-            val port = o.optString("port", MainActivity.DEFAULT_PORT)
-                .trim().ifBlank { MainActivity.DEFAULT_PORT }
+            val host = Servers.normalizeHost(o.optString("host"))
+            // Same guard as collect(): an entry that is still malformed after
+            // cleanup is skipped, so a hand-edited backup file can't import a
+            // poisoned row that later breaks the launch flow. Other rows load.
+            if (!Servers.isValidHost(host)) continue
+            val port = Servers.normalizePort(
+                o.optString("port", MainActivity.DEFAULT_PORT))
             val id = o.optString("id", "").ifBlank { Servers.newId() }
             out.add(Server(id, host, port, o.optString("name", "")))
         }
