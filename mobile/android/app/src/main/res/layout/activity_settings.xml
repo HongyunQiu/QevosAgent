@@ -67,12 +67,19 @@
              MaterialButton fill/outline colours flipped unreadably under the
              DayNight theme; a plain Button keeps all four button groups
              visually identical. -->
+        <!-- A static XML <Button> under the Material theme inflates with a dark
+             default fill + inherited dark text (black-on-black under DayNight),
+             unlike the row-level 连接/删除 buttons created at runtime (which get
+             the themed filled style). Pin the fill to colorPrimary and the text
+             to white so all four button groups look the same and stay legible. -->
         <Button
             android:id="@+id/btnAdd"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:layout_marginEnd="8dp"
+            android:backgroundTint="@color/colorPrimary"
+            android:textColor="@color/white"
             android:text="+ 添加" />
 
         <Button
@@ -81,6 +88,8 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:layout_marginEnd="8dp"
+            android:backgroundTint="@color/colorPrimary"
+            android:textColor="@color/white"
             android:text="保存" />
 
         <Button
@@ -88,6 +97,8 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:backgroundTint="@color/colorPrimary"
+            android:textColor="@color/white"
             android:text="加载" />
 
     </LinearLayout>
