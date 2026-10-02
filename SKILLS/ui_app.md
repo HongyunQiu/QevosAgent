@@ -320,6 +320,49 @@ for line in sys.stdin:        # 主循环：一行请求一行响应；异常回
 
 **方向说明**:`panel_control` 是 **Agent→App**(操控/自测),不制造运行时 App→Agent 依赖,与"App 纯独立"不冲突。它也是 v2"Agent 副驾操控面板"的传输层。
 
+### ⚠️ 内置 app 可靠控制与取图(实战经验,2026-09-30)
+
+`panel_control` 对内置 app **本身可靠**,但有两类陷阱会让它"看起来失效",务必先排除:
+
+1. **app 崩 init → iframe 空壳假象**。app 初始化抛错(白屏/项目树空/3D 黑)时,iframe 是空壳,此时
+   `eval` 返回 `undefined`/`NO_TEST`、`click` 返回 `True` 但没真生效、`screenshot` 返回空 base64——
+   **都是空壳假象,不是工具坏**。先用 `eval` 探一下 iframe 死活:
+   `eval(code="JSON.stringify({href:location.href,hasCanvas:document.querySelectorAll('canvas').length,hasQevosTest:!!window.qevosTest})")`
+   ——`href` 含 `/panel`、`hasCanvas>=1`、`hasQevosTest=true` 才说明 app 活着、通道可用;否则先修 app 的 init。
+2. **eval 黑盒拼 JS 访问闭包变量不可靠**。面板业务状态常藏在模块闭包里(如 three.js 的 `geomCache`、
+   `instances` 不是 `window` 全局),`eval` 里 `window.geomCache` 恒 `undefined`,无法据此程序化操作。
+   **正确做法=在 app 源码里埋"语义探针专用接口"**:把要暴露的能力在闭包内定义、挂到 `window.qevosTest`
+   (闭包内可直接调 `selectEdge`/`setMode` 等),agent 只需 `eval` 调用该接口,不碰闭包内部。这是可靠、
+   可复用的控制面(例:`qevosTest.pickEdgeAtScreen(x,y)` 封装"模拟点击选边"、`qevosTest.listEdgesScreen()`
+   列出边的屏幕坐标)。
+
+**取图通道(内置 app)**:`eval(code="(async()=>{await window.exportShot();return 'ok'})()")` 触发 app 自带
+截图(把 WebGL 真实渲染存到 `app-data/<id>/exports/shot-*.png`)→ 用文件工具读那张 png → `load_image` 看。
+`panel_control` 的 `screenshot` 是 DOM 重绘(非像素抓屏),WebGL 内容截不到,要真实渲染走 exportShot 这条。
+
+### ⚠️ Agent 开关 App 面板 Tab 工具:`open_app_tab` / `close_app_tab`(实战经验,2026-10-02)
+
+内置终端早有『Agent 开关 Tab + 二次核对』(`terminal_open` 建完 GET /api/term 核对 registered)。
+App 面板 Tab 现已对齐:`open_app_tab(app,root?)` / `close_app_tab(app,root?)` 封装 `POST /api/agent-app-tab`
+(服务端状态驱动 `openAppTabs` Map + 幂等),再 `GET /api/agent-app-tab` 二次核对,返回
+`{ok,registered,appTabs}`。`root` 用于多实例面板区分。端口取 `DASHBOARD_PORT`(默认 8765)。
+
+**四个实战坑/判据**:
+
+1. **`registered=true` 只证服务端在册,不证前端渲染**。GET 查到 `appTabs` 含该 app,只说明服务端记下了,
+   不代表用户浏览器里 Tab 真弹出。要证前端真渲染,用 `panel_control` 做**『开→读→关→读』双向实证**:
+   `open_app_tab` 后 `panel_control` `getText body` 能读到面板真实内容(甚至面板自检脚本执行的痕迹)=前端真渲染;
+   `close_app_tab` 后再 `panel_control` 报 **『该 App 的面板未打开(无 SSE 连接)』**——这个报错恰恰是**关闭生效的正面证据**
+   (面板 SSE 连接断了=Tab 真关了),不是工具失败。
+2. **`register_tool` 注册的工具必须 `save_tools` 持久化,否则重启即丢**(本轮重蹈的坑)。运行时注册的工具只存
+   `state.tools`(内存),用户重启 dashboard→agent 进程重启→工具消失,`agent_tools.json` 里查不到。
+   注册完**立刻** `save_tools(path="<cwd>/agent_tools.json")`,下次启动 `load_tools` 自动恢复。工具 JSON 独立管理、不进 git。
+3. **二次核对端点靠 server.js 状态驱动,改了要重启才生效**。旧进程 GET /api/agent-app-tab 返回 404;
+   新代码 GET 返回 200 `{"tabs":[...]}` 且 `/api/state` 带 `appTabs` 字段。前端 `syncAppTabsFromState` 对齐终端的
+   diff 自愈策略(断线/后开也能从 state 补齐),不再纯事件驱动。
+4. **`close` 场景 `registered` 的语义**:工具里 `registered=操作后处于目标状态`,故 close 成功后 `registered=true`
+   (=已不在册=成功),配合 `appTabs:[]` 与 `ok:true` 一起看,别把 `registered` 误读成『还在册』。
+
 ---
 
 ## 检查清单(造 App 前自检)

@@ -3594,6 +3594,100 @@ def tool_terminal_open(state: AgentState, title: str = "Agent") -> ToolResult:
     return ToolResult(success=True, output=out)
 
 
+def tool_open_app_tab(state: AgentState, app: str, root: str = "") -> ToolResult:
+    """在 Dashboard 打开指定内置 App（runtime:web）的面板 Tab，用户界面会自动出现对应 Tab。
+
+    返回 {appId, root, port, appTabs, registered}：port 是本次实际命中的 dashboard 端口，
+    registered 表示该 App Tab 确实登记在了这台服务的 appTabs 在册表里。App Tab 是各服务进程
+    的内存态，只对连着【同一台 live 进程】的浏览器可见——同机多实例或服务重启后，即便 POST
+    成功、Tab 也可能落在你正看的浏览器所连之外的进程里。此工具因此建完会二次核对，发现没登记
+    在册就不再盲报成功。root 用于多实例面板区分（同一 App 开在不同项目文件夹）。
+    """
+    if not app:
+        return ToolResult(success=False, output=None, error="app (appId) is required")
+    port, is_default = _dashboard_port()
+    body = {"op": "open", "appId": app}
+    if root:
+        body["root"] = root
+    r = _term_api("POST", "/api/agent-app-tab", body)
+    if "error" in r:
+        return ToolResult(success=False, output=None, error=r["error"] + _port_hint())
+    out = {"appId": app, "root": root, "port": port}
+    if is_default:
+        out["warning"] = (
+            "DASHBOARD_PORT 未设置，已回退默认 8765；同机多实例时可能落到错误的 dashboard，"
+            "当前浏览器未必看得到该面板。"
+        )
+
+    # 自校验：确认 App Tab 确实登记在这台服务上（多实例 / 服务重启场景下能一眼看出错配）。
+    check = _term_api("GET", "/api/agent-app-tab")
+    if "error" in check:
+        out["registered"] = None
+        out["verify_error"] = check["error"]
+        return ToolResult(success=True, output=out)
+    tabs = check.get("tabs") or []
+    out["appTabs"] = tabs
+    registered = any(
+        t.get("appId") == app and (t.get("root", "") or "") == (root or "") for t in tabs
+    )
+    out["registered"] = registered
+    if not registered:
+        return ToolResult(
+            success=False, output=out,
+            error=(
+                f"App 面板已广播打开 (appId={app}) 但未出现在 :{port} 的 appTabs 列表中——"
+                "目标 dashboard 可能已重启，或 DASHBOARD_PORT 指向了非当前浏览器所连的实例。"
+                + _port_hint()
+            ),
+        )
+    return ToolResult(success=True, output=out)
+
+
+def tool_close_app_tab(state: AgentState, app: str, root: str = "") -> ToolResult:
+    """关闭指定内置 App（runtime:web）的面板 Tab，用户界面会自动移除对应 Tab。
+
+    返回 {appId, root, port, appTabs, registered}：registered 表示该 App Tab 确实已从这台服务
+    的 appTabs 在册表移除（不在册=关闭成功）。root 用于多实例面板区分要关的那一个。
+    """
+    if not app:
+        return ToolResult(success=False, output=None, error="app (appId) is required")
+    port, is_default = _dashboard_port()
+    body = {"op": "close", "appId": app}
+    if root:
+        body["root"] = root
+    r = _term_api("POST", "/api/agent-app-tab", body)
+    if "error" in r:
+        return ToolResult(success=False, output=None, error=r["error"] + _port_hint())
+    out = {"appId": app, "root": root, "port": port}
+    if is_default:
+        out["warning"] = (
+            "DASHBOARD_PORT 未设置，已回退默认 8765；同机多实例时可能落到错误的 dashboard。"
+        )
+
+    check = _term_api("GET", "/api/agent-app-tab")
+    if "error" in check:
+        out["registered"] = None
+        out["verify_error"] = check["error"]
+        return ToolResult(success=True, output=out)
+    tabs = check.get("tabs") or []
+    out["appTabs"] = tabs
+    still_there = any(
+        t.get("appId") == app and (t.get("root", "") or "") == (root or "") for t in tabs
+    )
+    registered = not still_there
+    out["registered"] = registered
+    if still_there:
+        return ToolResult(
+            success=False, output=out,
+            error=(
+                f"App 面板已广播关闭 (appId={app}) 但仍出现在 :{port} 的 appTabs 列表中——"
+                "目标 dashboard 可能已重启，或 DASHBOARD_PORT 指向了非当前浏览器所连的实例。"
+                + _port_hint()
+            ),
+        )
+    return ToolResult(success=True, output=out)
+
+
 def tool_terminal_send(state: AgentState, id: str, text: str, submit: bool = True) -> ToolResult:
     """向指定终端会话输入文本（submit=True 时自动追加回车提交），不等待输出立即返回。
 
@@ -3872,6 +3966,33 @@ def get_standard_tools() -> dict[str, ToolSpec]:
             ),
             args_schema={"title": "（可选）终端标题，默认 'Agent'"},
             fn=tool_terminal_open,
+        ),
+        ToolSpec(
+            name="open_app_tab",
+            description=(
+                "在 Dashboard 打开指定内置 App（runtime:web）的面板 Tab，并由服务端登记在册；"
+                "随后 GET 二次核对确认真的在册（registered），返回 ok/registered/诊断。"
+                "对齐内置终端 terminal_open 的『封装+二次核对』模式。"
+                "app 为 appId（apps/ 下 .md 的 id），root 可选（多实例面板用）。"
+            ),
+            args_schema={
+                "app": "要打开的 App id（apps/<id>.md 的 id）",
+                "root": "（可选）项目文件夹绝对路径，多实例面板时区分",
+            },
+            fn=tool_open_app_tab,
+        ),
+        ToolSpec(
+            name="close_app_tab",
+            description=(
+                "关闭指定内置 App（runtime:web）的面板 Tab（Dashboard），并由服务端从在册表移除；"
+                "随后 GET 二次核对确认已从 appTabs 移除（registered=false）。对齐内置终端。"
+                "app 为 appId，root 可选（多实例面板时区分要关的那一个）。"
+            ),
+            args_schema={
+                "app": "要关闭的 App id（apps/<id>.md 的 id）",
+                "root": "（可选）项目文件夹绝对路径，多实例面板时区分要关的那一个",
+            },
+            fn=tool_close_app_tab,
         ),
         ToolSpec(
             name="terminal_list",

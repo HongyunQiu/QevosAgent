@@ -1301,9 +1301,19 @@ function poll() {
 
 const clients = new Set();
 
+// ── Agent 远程开关 App 面板 Tab：服务端留状态（对齐 terminals 的状态驱动）──
+// key = appId + '|' + root（与前端 DOM tabId 解耦，服务端只认 appId+root）。
+// 每个前端（含后开/断线重连的）从全量 state.appTabs 重建自己的 App 面板 Tab，
+// 不再依赖那条转瞬即逝的 app-tab 事件——断线/后开前端自愈。
+const openAppTabs = new Map();          // appId|root → { appId, root }
+function appTabKey(appId, root) { return String(appId || '') + '|' + (root ? String(root) : ''); }
+function appTabListPublic() {
+  return [...openAppTabs.values()].map(t => ({ appId: t.appId, root: t.root }));
+}
+
 function broadcast() {
   const msg = JSON.stringify({
-    type: 'state', ...state, terminals: termListPublic(), browserAgent: browserAgentInfo(),
+    type: 'state', ...state, terminals: termListPublic(), appTabs: appTabListPublic(), browserAgent: browserAgentInfo(),
   });
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(msg);
@@ -1321,6 +1331,24 @@ function broadcastWebChat(msg) {
 /** Notify browser clients to open a view tab (remote-browser support). */
 function broadcastOpenView(displayId, path, title) {
   const data = JSON.stringify({ type: 'open-view', displayId, path, title });
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  }
+}
+
+/** Agent 远程开关 App 面板 Tab：更新服务端状态（对齐 terminals 状态驱动），
+ *  既走全量 broadcast（后开/断线重连前端从 state.appTabs 自愈重建），
+ *  又下发即时 app-tab 事件（当前已连接前端立刻开/关，不等下一轮 poll）。 */
+function broadcastAppTab(op, appId, root) {
+  const a = String(appId || '');
+  const r = root ? String(root) : '';
+  if (!a) return;
+  const key = appTabKey(a, r);
+  if ((op || 'open') === 'close') openAppTabs.delete(key);
+  else openAppTabs.set(key, { appId: a, root: r });
+  broadcast();   // 状态驱动：把 appTabs 带进全量 state
+  // 即时事件：当前已连前端立即响应（与状态驱动互补，不冲突——openAppPanel 有去重）
+  const data = JSON.stringify({ type: 'app-tab', op: String(op || 'open'), appId: a, root: r });
   for (const ws of clients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
   }
@@ -2848,7 +2876,7 @@ const server = http.createServer(async (req, res) => {
 
   // ── GET /api/state  ───────────────────────────────────────────────────────
   if (req.method === 'GET' && req.url === '/api/state') {
-    json(200, { type: 'state', ...state, terminals: termListPublic() });
+    json(200, { type: 'state', ...state, terminals: termListPublic(), appTabs: appTabListPublic() });
     return;
   }
 
@@ -3569,6 +3597,24 @@ const server = http.createServer(async (req, res) => {
       if (p) { clearTimeout(p.timer); panelCtlPending.delete(id); p.resolve({ ok: ok !== false, result, error }); }
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // POST /api/agent-app-tab   body: { op:'open'|'close', appId, root? }  (agent → dashboard)
+  // 广播给所有 dashboard 客户端，前端 gWs 收到后调 openAppPanel/closeAppPanel。
+  if (req.method === 'POST' && req.url === '/api/agent-app-tab') {
+    try {
+      const { op, appId, root } = JSON.parse(await readBody(req));
+      if (!appId) { json(400, { error: 'appId required' }); return; }
+      broadcastAppTab(op || 'open', appId, root || '');
+      json(200, { ok: true, op: op || 'open', appId });
+    } catch (e) { json(500, { error: String(e) }); }
+    return;
+  }
+
+  // GET /api/agent-app-tab  — 当前开着的 App 面板 Tab 清单（供 Agent 二次核对，对齐 GET /api/term）
+  if (req.method === 'GET' && req.url === '/api/agent-app-tab') {
+    json(200, { tabs: appTabListPublic() });
     return;
   }
 
@@ -4442,7 +4488,7 @@ wss.on('connection', (ws, req) => {
   if (!isBrowserExecutor) {
     clients.add(ws);
     ws.send(JSON.stringify({
-      type: 'state', ...state, terminals: termListPublic(), browserAgent: browserAgentInfo(),
+      type: 'state', ...state, terminals: termListPublic(), appTabs: appTabListPublic(), browserAgent: browserAgentInfo(),
     }));
   }
 

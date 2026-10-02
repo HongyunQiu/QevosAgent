@@ -2599,6 +2599,18 @@ function handleMsg(msg) {
     if (!msg.launching) gIsLaunching = false;
     // Keep terminal tabs in sync with live sessions across all frontends.
     updateTerminalTabsFromState(msg.terminals);
+    // Keep App panel tabs in sync with server state across all frontends
+    // (agent-opened via /api/agent-app-tab, or reopened after a reload).
+    syncAppTabsFromState(msg.appTabs);
+    // Keep App panel tabs in sync with server state across all frontends
+    // (agent-opened via /api/agent-app-tab, or reopened after a reload).
+    syncAppTabsFromState(msg.appTabs);
+    // Keep App panel tabs in sync with server state across all frontends
+    // (agent-opened via /api/agent-app-tab, or reopened after a reload).
+    syncAppTabsFromState(msg.appTabs);
+    // Keep App panel tabs in sync with server state across all frontends
+    // (agent-opened via /api/agent-app-tab, or reopened after a reload).
+    syncAppTabsFromState(msg.appTabs);
 
     const wasOnLive = !gViewRunId                    // first load
                    || gViewRunId === prevActiveRunId  // was watching the live run
@@ -2630,6 +2642,17 @@ function handleMsg(msg) {
       renderCronsList();
       renderCronsPending();
     }
+  } else if (msg.type === 'app-tab') {
+    // Agent 远程开关 App 面板 Tab（POST /api/agent-app-tab 广播过来）
+    try {
+      if (msg.op === 'close') {
+        const tid = 'app-' + msg.appId + (msg.root ? '-' + _appRootHash(msg.root) : '');
+        closeAppPanel(tid);
+      } else {
+        let app = (gApps || []).find(a => a.id === msg.appId) || { id: msg.appId, name: msg.appId, icon: '📦' };
+        openAppPanel(app, msg.root || '');
+      }
+    } catch (e) { console.error('app-tab handle failed', e); }
   } else if (msg.type === 'open-view') {
     const url = window.location.origin + msg.path;
     // Inside the Android app, hand the panel to the native browsing WebView.
@@ -4956,6 +4979,37 @@ function updateTerminalTabsFromState(terminals) {
   for (const b of tabs()) {
     const sid = b.dataset.sessionId;
     if (sid && !live.has(sid)) removeTerminalTabLocal(b.id.replace('ctab-', ''));
+  }
+}
+
+let gAppSynced = false;   // first sync after load adopts open App tabs as background (对齐 gTermSynced)
+
+// Sync App panel tabs to the server-side openAppTabs list (state.appTabs):
+// open a tab for any App the agent opened that we don't show yet, and drop tabs
+// whose App tab was closed elsewhere (or after a reload). Diff-based — never
+// rebuilds, so it won't thrash the iframes. This is what makes agent-opened App
+// panels appear across all frontends AND survive a reload (对齐 terminals).
+function syncAppTabsFromState(appTabs) {
+  if (!Array.isArray(appTabs)) return;
+  const live = new Set(appTabs.map(t => 'app-' + t.appId + (t.root ? '-' + _appRootHash(t.root) : '')));
+  const tabs = () => [...document.querySelectorAll('[id^=ctab-app-]')];
+  // First sync after (re)load: adopt existing open App tabs as background tabs
+  // (don't yank the user's focus on page load). After that, a tab that newly
+  // appears is agent-/other-frontend-created — surface it so it's actually seen.
+  const firstSync = !gAppSynced;
+  const savedTab = gCenterTab;
+  for (const t of appTabs) {
+    const tid = 'app-' + t.appId + (t.root ? '-' + _appRootHash(t.root) : '');
+    if (!document.getElementById('ctab-' + tid)) {
+      const app = (gApps || []).find(a => a.id === t.appId) || { id: t.appId, name: t.appId, icon: '📦' };
+      openAppPanel(app, t.root || '');
+    }
+  }
+  gAppSynced = true;
+  if (firstSync && savedTab && savedTab !== gCenterTab) setCenterTab(savedTab);
+  for (const b of tabs()) {
+    const tid = b.id.replace('ctab-', '');
+    if (!live.has(tid)) closeAppPanel(tid);
   }
 }
 
