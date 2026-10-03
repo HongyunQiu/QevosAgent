@@ -1048,17 +1048,50 @@ def tool_shell(state: AgentState, command: str, timeout: int = 0) -> ToolResult:
         except Exception:
             pass
 
+    # ── 分片等待 + 轮询 /stop（force_stop）───────────────────────────────────
+    # 原先用 proc.wait(timeout=timeout) 一次性阻塞：等待期间没有任何地方读
+    # force_stop，用户发 /stop 只能干等到超时。这里改成每 0.5s 醒一次，检查
+    # 用户是否按下 /stop（与 ssh_execute 同模式），命中就 kill 进程树并返回
+    # 『被用户中断』；超时判断沿用同一 deadline，行为与返回文案保持不变。
+    _ih = state.meta.get("_interrupt_handler")
+    _deadline = time.time() + timeout
+    _stopped_by_user = False
     try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
+        while True:
+            if _ih is not None and getattr(_ih, "force_stop", False):
+                _ih.force_stop = False
+                _stopped_by_user = True
+                break
+            _remain = _deadline - time.time()
+            if _remain <= 0:
+                break  # 真超时，交给下面的 poll() 判定
+            try:
+                proc.wait(timeout=min(0.5, _remain))
+                break  # 进程正常结束
+            except subprocess.TimeoutExpired:
+                continue  # 还没结束，继续轮询
+    except Exception as e:
+        _kill_tree()
+        return ToolResult(success=False, output=None, error=str(e))
+
+    if _stopped_by_user:
+        _kill_tree()
+        t_out.join(timeout=2)
+        t_err.join(timeout=2)
+        _partial = "".join(stdout_lines).strip()
+        return ToolResult(
+            success=False,
+            output=_partial or None,
+            error="命令被用户中断 (/stop)",
+        )
+
+    if proc.poll() is None:
+        # 走到这里进程仍在运行 = 真超时（与改前行为一致）
         _kill_tree()
         # Give reader threads a moment to drain whatever was buffered before kill
         t_out.join(timeout=2)
         t_err.join(timeout=2)
         return ToolResult(success=False, output=None, error=f"命令超时（>{timeout}s）")
-    except Exception as e:
-        _kill_tree()
-        return ToolResult(success=False, output=None, error=str(e))
 
     # Wait for both readers to finish flushing (process is already done)
     t_out.join(timeout=5)
