@@ -799,6 +799,22 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 /* Rigor lightbulb — sits inside the input box, right edge */
 .cmd-input-wrap { position:relative; flex:1; min-width:0; display:flex; }
 .cmd-input-wrap .cmd-input { flex:1; padding-right:34px; }
+/* ── Right-click quick-insert menu for the command input ───────────── */
+.cmd-ctx-menu {
+  position:fixed; z-index:9999; display:none; min-width:200px; max-width:320px;
+  background:var(--bg2); border:1px solid var(--border); border-radius:8px;
+  box-shadow:0 8px 28px rgba(0,0,0,0.45); padding:4px; font-size:12.5px;
+}
+.cmd-ctx-menu.open { display:block; }
+.cmd-ctx-title { color:var(--muted); font-size:10.5px; padding:4px 10px 3px; letter-spacing:0.4px; }
+.cmd-ctx-item {
+  display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:5px;
+  color:var(--text); cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.cmd-ctx-item:hover { background:var(--bg4); }
+.cmd-ctx-item .cmd-ctx-key { color:var(--cyan); font-family:var(--mono); font-size:12px; flex-shrink:0; }
+.cmd-ctx-item .cmd-ctx-text { overflow:hidden; text-overflow:ellipsis; }
+.cmd-ctx-sep { height:1px; background:var(--border); margin:4px 6px; }
 .rigor-bulb {
   position:absolute; right:5px; top:50%; transform:translateY(-50%);
   background:transparent; border:none; cursor:pointer; padding:2px 4px;
@@ -2208,7 +2224,8 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
       <div class="cmd-thumbs" id="cmdThumbs"></div>
       <input class="cmd-input" id="cmdInput"
              placeholder="/inject message  |  /status  |  /stop  |  /exit  |  /compress  |  /+20"
-             onkeydown="onCmdKey(event)" onpaste="onCmdPaste(event)">
+             onkeydown="onCmdKey(event)" onpaste="onCmdPaste(event)"
+             oncontextmenu="showCmdMenu(event)">
       <button class="rigor-bulb" id="rigorBulb" type="button"
               title="思维严密模式：observe → infer → decide。点亮即注入 /rigor on"
               aria-label="切换思维严密模式" onclick="toggleRigor()">💡</button>
@@ -2217,6 +2234,9 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
     <button class="nostop-btn" id="nostopBtn" onclick="toggleNostop()">nostop</button>
   </div>
 </div>
+
+<!-- Right-click quick-insert menu for the command input (content built by JS) -->
+<div class="cmd-ctx-menu" id="cmdCtxMenu"></div>
 
 <!-- Mobile overlay backdrop (closes drawers on tap) -->
 <div class="mobile-overlay" id="mobileOverlay" onclick="closeMobilePanels()"></div>
@@ -4450,6 +4470,91 @@ const IMG_POST_OPTS = { tries: 1, timeoutMs: 60000 };
 
 // ── Command bar ───────────────────────────────────────────────────────────
 function onCmdKey(e) { if (e.key === 'Enter') sendCmd(); }
+
+/* ── Right-click quick-insert menu for the command input ───────────────
+   在输入框上点右键弹出预设项菜单，点击某项把文本插入到光标位置（不自动发送，
+   用户可继续编辑或回车发送）。预设项集中在 CMD_CTX_ITEMS，日后增删只改这里。 */
+const CMD_CTX_ITEMS = [
+  { group: '命令', items: [
+    { text: '/+100' },
+    { text: '/PAUSE' },
+    { text: '/STOP' },
+  ]},
+  { group: '快捷语句', items: [
+    { text: '任务结束之前请征求我的意见,' },
+    { text: '本任务是一项长期任务，' },
+  ]},
+];
+
+function _isCmdText(t) { return typeof t === 'string' && t[0] === '/'; }
+
+function _buildCmdCtxMenu() {
+  const menu = document.getElementById('cmdCtxMenu');
+  if (!menu || menu.dataset.built === '1') return menu;
+  let html = '';
+  CMD_CTX_ITEMS.forEach((g, gi) => {
+    if (gi > 0) html += '<div class="cmd-ctx-sep"></div>';
+    if (g.group) html += `<div class="cmd-ctx-title">${esc(g.group)}</div>`;
+    g.items.forEach(it => {
+      const cmd = _isCmdText(it.text);
+      html += `<div class="cmd-ctx-item" data-text="${esc(it.text)}">` +
+        `<span class="cmd-ctx-${cmd ? 'key' : 'text'}">${esc(it.text)}</span></div>`;
+    });
+  });
+  menu.innerHTML = html;
+  menu.dataset.built = '1';
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('.cmd-ctx-item');
+    if (!item) return;
+    insertCmdTextAtCursor(item.getAttribute('data-text'));
+    hideCmdMenu();
+  });
+  return menu;
+}
+
+function showCmdMenu(e) {
+  e.preventDefault();
+  const menu = _buildCmdCtxMenu();
+  if (!menu) return;
+  if (menu.classList.contains('open')) { hideCmdMenu(); return; }
+  // 定位到鼠标，并防止超出视口右/下边缘
+  menu.style.left = '0px'; menu.style.top = '0px';
+  menu.classList.add('open');
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  let x = e.clientX, y = e.clientY;
+  if (x + w > window.innerWidth - 8)  x = Math.max(8, window.innerWidth - w - 8);
+  if (y + h > window.innerHeight - 8) y = Math.max(8, window.innerHeight - h - 8);
+  menu.style.left = x + 'px';
+  menu.style.top  = y + 'px';
+}
+
+function hideCmdMenu() {
+  const menu = document.getElementById('cmdCtxMenu');
+  if (menu) menu.classList.remove('open');
+}
+
+// 把文本插入输入框光标位置（有选区则替换选区），插入后不自动发送
+function insertCmdTextAtCursor(text) {
+  const input = document.getElementById('cmdInput');
+  if (!input || typeof text !== 'string') return;
+  const start = input.selectionStart ?? input.value.length;
+  const end   = input.selectionEnd   ?? input.value.length;
+  input.value = input.value.slice(0, start) + text + input.value.slice(end);
+  const caret = start + text.length;
+  input.focus();
+  try { input.setSelectionRange(caret, caret); } catch (_) {}
+}
+
+// 全局关闭：点击菜单外部 / Esc / 滚动 / 窗口尺寸变化
+document.addEventListener('mousedown', (e) => {
+  const menu = document.getElementById('cmdCtxMenu');
+  if (menu && menu.classList.contains('open') && !menu.contains(e.target)) hideCmdMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideCmdMenu();
+});
+window.addEventListener('resize', hideCmdMenu);
+window.addEventListener('scroll', hideCmdMenu, true);
 
 async function sendCmd() {
   const input = document.getElementById('cmdInput');
