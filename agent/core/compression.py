@@ -168,9 +168,9 @@ def _llm_compress_full_history(messages: list[dict], state: AgentState, llm: LLM
         summary = llm.complete_text(
             messages=messages + [compress_request],
             system=compress_system,
-            max_tokens=1500,
+            max_tokens=2500,
         ).strip()
-        return summary[:4000]  # 硬上限（交接文档比常驻草稿本宽松）
+        return summary[:7000]  # 硬上限（交接文档比常驻草稿本宽松；用户注入指令另由代码摘录附加，不占此额度）
     except Exception:
         return ""
 
@@ -186,6 +186,48 @@ def _attach_manifest(state: AgentState, handoff: str) -> str:
         return handoff
     body = (handoff or "").rstrip()
     return f"{body}\n\n{manifest}" if body else manifest
+
+
+def _append_user_injections(state: AgentState, handoff: str) -> str:
+    """把用户在任务中注入的指令**用代码原样摘录**附到交接文档末尾。
+
+    为什么用代码摘录而非让摘要模型复述：用户注入的指令是最高优先级的方向性信息
+    （ask_user 回答、/inject 干预、上游节点回复），模型生成受输出字数上限约束、可能被
+    压缩或漏写；而代码摘录只占上文输入、不受生成上限影响，且 _extract_user_injections
+    的主来源 state.meta["_user_injections"] 本就跨压缩存活。这与 _attach_manifest
+    「不经模型复述、不随压缩代数衰减」是同一设计哲学。
+
+    复用 advisor._extract_user_injections（延迟导入，避免 compression↔advisor 循环导入）。
+    无注入则原样返回，不产生噪声。放在 _attach_manifest 之后调用，因此不受
+    摘要 [:7000] 截断影响。
+    """
+    try:
+        from .advisor import _extract_user_injections
+    except Exception:
+        return handoff
+    try:
+        items = _extract_user_injections(state)
+    except Exception:
+        return handoff
+    if not items:
+        return handoff
+    lines = [
+        "## 用户注入的指令（代码摘录 · 完整保留 · 最高优先级）",
+        "以下是用户在任务过程中注入的全部指令/回答/纠偏（原样摘录，未经模型复述）。",
+        "它们是方向性信息，优先级高于任务最初目标；继续工作时以此为准。",
+    ]
+    for it in items:
+        src = it.get("source") or ""
+        itn = it.get("iter") or 0
+        tag = f"[iter={itn}"
+        if src and src != "explicit":
+            tag += f"|{src}"
+        tag += "]"
+        body = str(it.get("content") or "").strip()
+        lines.append(f"- {tag} {body}")
+    block = "\n".join(lines)
+    b = (handoff or "").rstrip()
+    return f"{b}\n\n{block}" if b else block
 
 
 def _store_handoff(state: AgentState, handoff: str, seg: int) -> None:
@@ -309,6 +351,7 @@ def compress_context(
     if summary and summary.strip():
         core = summary.strip()
         handoff = _attach_manifest(state, core)
+        handoff = _append_user_injections(state, handoff)  # 用户注入指令用代码摘录附加（不受摘要字数上限约束）
         seg = _seal_segment_and_handoff(state, handoff)
         _store_handoff(state, core, seg)             # 草稿本只留指针，不重复全文
         _collapse_to_bridge(state, handoff, seg)     # 硬重置为 [goal, handoff]
@@ -324,6 +367,7 @@ def compress_context(
             core = _llm_compress_full_history(messages, state, llm)
             if core:
                 handoff = _attach_manifest(state, core)
+                handoff = _append_user_injections(state, handoff)  # 用户注入指令用代码摘录附加（不受摘要字数上限约束）
                 seg = _seal_segment_and_handoff(state, handoff)
                 _store_handoff(state, core, seg)
                 _collapse_to_bridge(state, handoff, seg)
