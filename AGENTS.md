@@ -132,6 +132,32 @@ dir /s /b C:\*程序名*
 3. **查注册表**：`reg query "HKLM\SOFTWARE" /s /f "程序名"`
 4. **有限目录递归**：`where /R "C:\Program Files" 程序名.exe`（限定在已知目录内）
 
+### Windows 下查找目录/文件的最佳实践（2026-10 复盘沉淀）
+
+> 反复踩坑：在 Windows 下用 Python `os.walk` 全盘递归找目录/文件经常『找不到』或超时。以下为可靠方法。
+
+**为什么 os.walk 全盘递归不可靠：**
+1. **超时**：E 盘等含 QevosAgent 大仓库（node_modules/runs/apps-dist 等海量文件），`os.walk` 全盘递归轻松超 30s/60s。
+2. **深度计算易出 bug**：`depth = root[len(drive)+1:].count(os.sep)` 对 `drive='E:'` 时 `root[len('E:')+1:]` 取的是 `root[3:]`，而 `root` 形如 `E:\xxx`，`root[3:]` 漏掉首字符，深度判断全错（所有目录被误判为浅层），导致目标目录被跳过或深度过滤失效。
+3. **静默跳过**：`os.walk` 对权限受限/长路径/特殊字符目录会静默跳过，不报错，表现为『找不到』。
+
+**首选：PowerShell `Get-ChildItem -Depth N`（限定深度按层级查找）**
+```powershell
+# 找特定目录名（限定深度2~3，快速可控）
+powershell -NoProfile -Command "Get-ChildItem -Path E:\ -Directory -Depth 2 -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '2026.10' } | Select-Object -ExpandProperty FullName"
+
+# 在已知目录内找特定文件（-Recurse 限定在已知目录，非全盘）
+powershell -NoProfile -Command "Get-ChildItem -Path E:\2026.10 -Recurse -File -ErrorAction SilentlyContinue | Select-Object FullName,Length | Format-Table -AutoSize"
+```
+
+**关键规则：**
+1. **禁止 `Get-ChildItem -Recurse` 全盘（不带 -Depth 限定在盘符）**：全 E 盘递归会超时（>60s）。必须 `-Depth N`（N=2~3 足够覆盖大多数场景）或限定在已知子目录内递归。
+2. **先列盘符再针对性搜**：`Get-PSDrive -PSProvider FileSystem` 看有哪些盘（C/D/E/F...），用户说『某盘』时直接针对该盘，不要全盘遍历。
+3. **找目录用 `-Directory`，找文件用 `-File`**，配合 `Where-Object { $_.Name -match '正则' }` 按名字过滤。
+4. **找不到时先怀疑搜索方法**（深度计算/盘符/目录名特殊字符/全角半角），再 `ask_user` 向用户确认确切路径，不要盲目扩大全盘搜索（触发死循环）。
+5. **用户给目录名时直接 `os.path.isdir`/`Test-Path` 验证**：用户明确说『XX目录在某盘』时，先直接测该路径是否存在，再递归找子文件，比盲搜高效。
+6. **删除 .git 目录的坑**：git push 后 `.git/objects` 下文件可能被短暂锁定，`shutil.rmtree` 报 `PermissionError: [WinError 5] 拒绝访问`；改用 PowerShell `Remove-Item -Recurse -Force` 删除更稳。
+
 ---
 
 ## 安装软件前的注意事项
