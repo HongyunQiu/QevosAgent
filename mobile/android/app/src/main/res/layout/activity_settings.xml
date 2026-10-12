@@ -65,6 +65,8 @@
                     android:id="@+id/btnDiscover"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:backgroundTint="@color/colorPrimary"
+                    android:textColor="@color/white"
                     android:text="重新扫描"
                     android:textAllCaps="false" />
             </LinearLayout>
