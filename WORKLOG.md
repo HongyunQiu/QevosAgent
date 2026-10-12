@@ -13,3 +13,7 @@
 ## 2026-10-12 | 过滤不可达的 mDNS 网卡地址
 
 真机验证发现同一个服务的 DNS-SD 主机记录同时包含 Wi-Fi、ZeroTier、VMware VMnet1 和 VMnet8 四个 IPv4 地址；这不是四个实例，而是 `bonjour-service` 为本机所有活动网卡生成的地址记录。安卓版现在并发请求每个候选地址的 `/api/version`，仅当 HTTP 200 且响应包含 QevosAgent `version` 字段时才展示，并用接口返回的最新实例昵称覆盖广播缓存。由此保留可达的 Wi-Fi 与 ZeroTier 独立入口，同时隐藏手机不可达的 VMware、WSL、Docker 或过期地址。扫描七秒无可用结果时显示明确的 Wi-Fi/VPN 手动地址提示，不再无限显示“正在扫描”。Android Debug APK 已重新构建并覆盖安装到 Samsung SM-F9710；构建及安装成功，等待用户在实际设置页确认最终地址列表。
+
+## 2026-10-12 | 修正安卓重新连接按钮可读性
+
+真机反馈连接失败页的“重新连接”按钮在当前 DayNight/Material 主题下呈现黑色文字，和深色按钮背景对比不足。为该按钮显式设置与设置页主要操作按钮一致的 `colorPrimary` 背景和白色文字，避免系统主题变化覆盖默认前景色。
