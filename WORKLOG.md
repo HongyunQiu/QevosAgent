@@ -19,3 +19,9 @@
 真机反馈连接失败页的“重新连接”按钮在当前 DayNight/Material 主题下呈现黑色文字，和深色按钮背景对比不足。为该按钮显式设置与设置页主要操作按钮一致的 `colorPrimary` 背景和白色文字，避免系统主题变化覆盖默认前景色。
 
 真机截图复核后确认用户实际指的是服务器设置页的“重新扫描”按钮；该普通 Button 同样被三星 DayNight 主题渲染为深色背景配黑色文字。已为“重新扫描”补上与底部“添加/保存/加载”一致的 `colorPrimary` 背景和白色文字。连接失败页“重新连接”的显式配色仍保留，防止同类问题。
+
+## 2026-10-12 | 补齐桌面安装包的 mDNS 依赖
+
+检查发现发布 CI 只在 `desktop/` 执行 npm 安装，而新增的 `bonjour-service` 此前只声明在 `dashboard/package.json`，干净环境打出的 Electron 安装包会缺少该模块。现已将其加入桌面运行依赖及锁文件，使 GitHub Actions 的既有 `desktop/npm install` 自动纳入安装包；Windows 本地打包脚本也在 setup/build 前执行 `npm install`。同时让 `setup_python.js` 跳过源码树中的任意 `node_modules`，避免开发机碰巧存在的 `dashboard/node_modules` 被复制进 `vendor/app`，保证本地与 CI 产物一致且不重复打包依赖。
+
+验证结果：桌面单元测试 7/7 通过；`npm run setup` 与 `electron-builder --win --dir` 成功；解包产物包含根级 `node_modules/bonjour-service/dist/index.js` 和 `vendor/app/dashboard/mdns.js`，从后者执行 Node 模块解析能正确定位前者，同时产物中不存在重复的 `vendor/app/dashboard/node_modules`。

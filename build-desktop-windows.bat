@@ -7,7 +7,15 @@ pushd "%SCRIPT_DIR%desktop" || (
   exit /b 1
 )
 
-echo [1/2] Running npm run setup...
+echo [1/3] Installing desktop dependencies...
+call npm install
+if errorlevel 1 (
+  echo [ERROR] npm install failed.
+  popd
+  exit /b 1
+)
+
+echo [2/3] Running npm run setup...
 call npm run setup
 if errorlevel 1 (
   echo [ERROR] npm run setup failed.
@@ -15,7 +23,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [2/2] Running npm run build...
+echo [3/3] Running npm run build...
 call npm run build
 if errorlevel 1 (
   echo [ERROR] npm run build failed.

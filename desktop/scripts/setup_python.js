@@ -232,6 +232,11 @@ function copyRecursive(src, dest) {
   if (stat.isDirectory()) {
     fs.mkdirSync(dest, { recursive: true });
     for (const name of fs.readdirSync(src)) {
+      // Runtime JS dependencies are owned by desktop/package.json and packed
+      // once at the Electron app root. Never copy a developer's dashboard
+      // node_modules into vendor/app: CI has no such directory, and doing so
+      // locally would create oversized, non-reproducible installers.
+      if (name === 'node_modules') continue;
       copyRecursive(path.join(src, name), path.join(dest, name));
     }
   } else {
