@@ -95,6 +95,7 @@ apps/searchnet.md
 apps/searchnet_start.md
 apps/mechanical_design.md
 apps/mcad_regen.md
+apps/mcad_intercheck.md
 apps/fits_viewer.md
 apps/pcb_router.md
 
@@ -102,3 +103,6 @@ apps/pcb_router.md
 apps/agent_toolkit.md
 # 内含树莓派明文口令与内网地址，且写死了本机的 SpaceTraffic 路径——不能入公开库
 apps/onstep_connect.md
+
+# 本机外部工作区链接，不纳入 QevosAgent 仓库
+biophotonics-workstation/
