@@ -5,8 +5,12 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import org.json.JSONObject
 import java.net.Inet4Address
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.ArrayDeque
+import java.util.concurrent.Executors
 
 data class DiscoveredServer(
     val serviceName: String,
@@ -26,11 +30,13 @@ class LanDiscovery(
     private val appContext = context.applicationContext
     private val nsd = appContext.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val found = linkedMapOf<String, DiscoveredServer>()
+    private val verifyExecutor = Executors.newFixedThreadPool(4)
     private val resolveQueue = ArrayDeque<Pair<String, NsdServiceInfo>>()
     private val queuedKeys = mutableSetOf<String>()
     private var resolvingKey: String? = null
     private var running = false
     private var restartWhenStopped = false
+    @Volatile private var scanGeneration = 0
     private var multicastLock: WifiManager.MulticastLock? = null
 
     private val listener = object : NsdManager.DiscoveryListener {
@@ -87,26 +93,59 @@ class LanDiscovery(
                     }
                     for (address in addresses.filterIsInstance<Inet4Address>()) {
                         val host = address.hostAddress ?: continue
-                        val item = DiscoveredServer(
+                        val candidate = DiscoveredServer(
                             serviceName = info.serviceName,
                             instanceName = attrs["name"].orEmpty().ifBlank { info.serviceName },
                             instanceId = attrs["id"].orEmpty(),
                             host = host,
                             port = info.port,
                         )
-                        // Deliberately keep every address as a separate entry so
-                        // users can explicitly choose LAN, VPN, or hotspot paths.
-                        found["$host:${info.port}"] = item
+                        verify(candidate, scanGeneration)
                     }
-                    onChanged(found.values.toList())
                     resolveNext()
                 }
             })
     }
 
+    /** Only expose addresses that actually answer QevosAgent's version API. */
+    private fun verify(candidate: DiscoveredServer, generation: Int) {
+        verifyExecutor.execute {
+            var connection: HttpURLConnection? = null
+            try {
+                connection = URL("http://${candidate.host}:${candidate.port}/api/version")
+                    .openConnection() as HttpURLConnection
+                connection.connectTimeout = VERIFY_TIMEOUT_MS
+                connection.readTimeout = VERIFY_TIMEOUT_MS
+                connection.requestMethod = "GET"
+                connection.useCaches = false
+                if (connection.responseCode != 200) return@execute
+                val payload = connection.inputStream.bufferedReader().use { it.readText() }
+                val json = JSONObject(payload)
+                if (!json.has("version")) return@execute
+                if (generation != scanGeneration) return@execute
+                val verified = candidate.copy(
+                    instanceName = json.optString("instanceName", "").trim()
+                        .ifBlank { candidate.instanceName }
+                )
+                val snapshot = synchronized(found) {
+                    // Preserve separate reachable LAN/VPN entries while hiding
+                    // unreachable VMware, WSL, Docker, and stale adapter IPs.
+                    found["${verified.host}:${verified.port}"] = verified
+                    found.values.toList()
+                }
+                onChanged(snapshot)
+            } catch (_: Exception) {
+                // Unreachable host-only adapters are normal and stay hidden.
+            } finally {
+                try { connection?.disconnect() } catch (_: Exception) {}
+            }
+        }
+    }
+
     fun start() {
         if (running) return
-        found.clear()
+        scanGeneration++
+        synchronized(found) { found.clear() }
         resolveQueue.clear()
         queuedKeys.clear()
         resolvingKey = null
@@ -121,11 +160,17 @@ class LanDiscovery(
     }
 
     fun stop() {
+        scanGeneration++
         if (running) {
             try { nsd.stopServiceDiscovery(listener) } catch (_: Exception) {}
         }
         running = false
         releaseLock()
+    }
+
+    fun close() {
+        stop()
+        verifyExecutor.shutdownNow()
     }
 
     fun restart() {
@@ -156,5 +201,6 @@ class LanDiscovery(
 
     companion object {
         const val SERVICE_TYPE = "_qevosagent._tcp."
+        private const val VERIFY_TIMEOUT_MS = 2500
     }
 }

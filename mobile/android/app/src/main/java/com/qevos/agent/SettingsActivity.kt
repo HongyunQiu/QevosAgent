@@ -34,6 +34,8 @@ class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var discovery: LanDiscovery
+    private var discoveryRequestId = 0
+    private var discoveryResultCount = 0
     private val prefs by lazy { getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE) }
 
     private class Row(val id: String, val host: EditText, val port: EditText, val name: String)
@@ -75,27 +77,43 @@ class SettingsActivity : AppCompatActivity() {
 
         discovery = LanDiscovery(
             this,
-            onChanged = { items -> runOnUiThread { showDiscovered(items) } },
+            onChanged = { items -> runOnUiThread {
+                discoveryResultCount = items.size
+                showDiscovered(items)
+            } },
             onError = { message -> runOnUiThread {
                 binding.discoveryStatus.text = message
             } },
         )
         binding.btnDiscover.setOnClickListener {
-            binding.discoveryStatus.text = "正在扫描局域网…"
+            binding.discoveryStatus.text = "正在扫描并验证局域网实例…"
             discovery.restart()
+            scheduleDiscoveryTimeout()
         }
         discovery.start()
+        scheduleDiscoveryTimeout()
     }
 
     override fun onDestroy() {
-        if (::discovery.isInitialized) discovery.stop()
+        if (::discovery.isInitialized) discovery.close()
         super.onDestroy()
+    }
+
+    private fun scheduleDiscoveryTimeout() {
+        discoveryResultCount = 0
+        val requestId = ++discoveryRequestId
+        binding.root.postDelayed({
+            if (!isFinishing && requestId == discoveryRequestId && discoveryResultCount == 0) {
+                binding.discoveryStatus.text =
+                    "未发现可连接的实例。请确认处于同一 Wi-Fi，或手动输入 VPN 地址。"
+            }
+        }, 7000)
     }
 
     private fun showDiscovered(items: List<DiscoveredServer>) {
         binding.discoveredList.removeAllViews()
-        binding.discoveryStatus.text = if (items.isEmpty()) "正在扫描局域网…"
-            else "发现 ${items.size} 个可用连接；同一实例的不同地址会分别显示。"
+        binding.discoveryStatus.text = if (items.isEmpty()) "正在扫描并验证局域网实例…"
+            else "发现 ${items.size} 个可连接地址；同一实例的不同地址会分别显示。"
         for (item in items.sortedWith(compareBy({ it.instanceName }, { it.host }, { it.port }))) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
