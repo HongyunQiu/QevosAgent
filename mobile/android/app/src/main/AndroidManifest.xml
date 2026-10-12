@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Needed on older Android releases so NSD can receive mDNS multicast. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <!-- Only needed to write the config file to public Download on API ≤ 28.
          API 29+ uses MediaStore, which needs no permission. -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"

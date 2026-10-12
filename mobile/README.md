@@ -22,10 +22,13 @@ gradlew.bat assembleDebug    # Windows
 
 1. 将 APK 发送到手机安装（允许安装未知来源）
 2. 首次打开会进入**连接设置**页
-3. 输入运行 QevosAgent 的主机 IP 地址，端口默认 `8765`
-4. 点击"保存并连接"
+3. 在“附近的实例”中选择自动发现的连接；也可以继续手动输入主机 IP，端口默认 `8765`
+4. 点击“连接”，或保存手动配置
 
-> ZeroTier 用户：在连接设置中填写 ZeroTier 分配给主机的 IP。
+> 服务端需要监听局域网地址（设置 `DASHBOARD_HOST=0.0.0.0`）才会发布
+> `_qevosagent._tcp.local` 服务。ZeroTier 等移动端 VPN 不一定转发 mDNS；此时继续
+> 手动填写 ZeroTier 分配给主机的 IP。同一实例的不同网卡地址会作为独立连接显示，
+> 方便明确选择局域网或 VPN 路径。
 
 ### 需求
 
@@ -133,7 +136,8 @@ gradlew.bat assembleDebug    # Windows
 |------|------|
 | `MainActivity.kt` | 主界面，看板 WebView + 浏览 WebView 切换 |
 | `BrowserAgent.kt` | 浏览器执行体：WS 通道 + 各 action 的原生实现 |
-| `SettingsActivity.kt` | IP/端口配置，存入 SharedPreferences |
+| `SettingsActivity.kt` | 自动发现及 IP/端口配置，存入 SharedPreferences |
+| `LanDiscovery.kt` | Android NSD/mDNS 浏览与串行服务解析 |
 | `activity_main.xml` | 主布局：看板 WebView + 浏览 WebView + 错误界面 |
 | `activity_settings.xml` | 设置布局 |
 

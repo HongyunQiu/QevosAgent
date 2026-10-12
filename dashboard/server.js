@@ -21,10 +21,12 @@ const http         = require('http');
 const fs           = require('fs');
 const path         = require('path');
 const os           = require('os');
+const crypto       = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const WebSocket    = require('ws');
 const EventEmitter = require('events');
 const { zipDirToStream } = require('./zip');
+const { startMdnsAdvertisement, stopMdnsAdvertisement } = require('./mdns');
 
 // Emits 'open-view' when Electron should open a view tab.
 // main.js listens to this because both files run in the same Node process.
@@ -4530,7 +4532,11 @@ wss.on('connection', (ws, req) => {
 
 // ── Cleanup on server exit ─────────────────────────────────────────────────
 
+let mdnsAdvertisement = null;
+
 function cleanup() {
+  stopMdnsAdvertisement(mdnsAdvertisement);
+  mdnsAdvertisement = null;
   if (isAgentRunning()) {
     console.log('\n  Terminating agent process…');
     agentProc.kill('SIGTERM');
@@ -4584,6 +4590,17 @@ findFreePort(PORT).then(port => {
     console.log('');
     console.log('  Press Ctrl+C to stop.');
     console.log('');
+
+    mdnsAdvertisement = startMdnsAdvertisement({
+      port,
+      host: HOST,
+      instanceName: state.instanceName || '',
+      version: APP_VERSION,
+      // Stable per checkout without exposing the local filesystem path in TXT.
+      instanceId: crypto.createHash('sha256')
+        .update(`${os.hostname()}\0${AGENT_DIR}`)
+        .digest('hex').slice(0, 24),
+    });
 
     // ⑥ Boot the optional PRO server plugin (no-op in open-source build).
     if (serverPlugin && typeof serverPlugin.init === 'function') {

@@ -33,6 +33,7 @@ import java.util.Locale
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
+    private lateinit var discovery: LanDiscovery
     private val prefs by lazy { getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE) }
 
     private class Row(val id: String, val host: EditText, val port: EditText, val name: String)
@@ -71,6 +72,71 @@ class SettingsActivity : AppCompatActivity() {
         binding.btnSave.setOnClickListener { saveConfig(closeAfter = true) }
         // Load: pull the whole list back from the config file (stays open).
         binding.btnLoad.setOnClickListener { loadConfig() }
+
+        discovery = LanDiscovery(
+            this,
+            onChanged = { items -> runOnUiThread { showDiscovered(items) } },
+            onError = { message -> runOnUiThread {
+                binding.discoveryStatus.text = message
+            } },
+        )
+        binding.btnDiscover.setOnClickListener {
+            binding.discoveryStatus.text = "正在扫描局域网…"
+            discovery.restart()
+        }
+        discovery.start()
+    }
+
+    override fun onDestroy() {
+        if (::discovery.isInitialized) discovery.stop()
+        super.onDestroy()
+    }
+
+    private fun showDiscovered(items: List<DiscoveredServer>) {
+        binding.discoveredList.removeAllViews()
+        binding.discoveryStatus.text = if (items.isEmpty()) "正在扫描局域网…"
+            else "发现 ${items.size} 个可用连接；同一实例的不同地址会分别显示。"
+        for (item in items.sortedWith(compareBy({ it.instanceName }, { it.host }, { it.port }))) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(6), dp(8), dp(6))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(8) }
+                background = ContextCompat.getDrawable(this@SettingsActivity, R.drawable.bg_server_row)
+            }
+            val text = TextView(this).apply {
+                this.text = "${item.instanceName}\n${item.host}:${item.port}"
+                setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.text_primary))
+                textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val connect = Button(this).apply { this.text = "连接"; isAllCaps = false }
+            connect.setOnClickListener { connectDiscovered(item) }
+            row.addView(text)
+            row.addView(connect)
+            binding.discoveredList.addView(row)
+        }
+    }
+
+    private fun connectDiscovered(item: DiscoveredServer) {
+        saveAll()
+        val servers = Servers.load(prefs).toMutableList()
+        val existing = servers.firstOrNull { it.host == item.host && it.port == item.port.toString() }
+        val selected = existing ?: Server(
+            Servers.newId(), item.host, item.port.toString(), item.instanceName
+        ).also {
+            servers.add(it)
+            Servers.save(prefs, servers)
+        }
+        prefs.edit()
+            .putString(MainActivity.KEY_HOST, selected.host)
+            .putString(MainActivity.KEY_PORT, selected.port)
+            .putString(MainActivity.KEY_SERVER_ID, selected.id)
+            .apply()
+        setResult(RESULT_OK)
+        finish()
     }
 
     private fun addRow(server: Server) {
