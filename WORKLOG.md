@@ -27,3 +27,7 @@
 验证结果：桌面单元测试 7/7 通过；`npm run setup` 与 `electron-builder --win --dir` 成功；解包产物包含根级 `node_modules/bonjour-service/dist/index.js` 和 `vendor/app/dashboard/mdns.js`，从后者执行 Node 模块解析能正确定位前者，同时产物中不存在重复的 `vendor/app/dashboard/node_modules`。
 
 进一步复核 GitHub Release 工作流：Windows、macOS、Linux 共享同一个 `desktop/npm install → npm run setup → electron-builder` 流程，因此桌面依赖声明会覆盖三个平台；Android 为独立 Gradle 任务，不受该 Node 依赖影响。为防止未来新增 Dashboard 运行依赖时 Electron Builder 未执行服务端代码、仍然产出缺模块的坏包，在三平台 setup 后增加了 `require('./vendor/app/dashboard/mdns')` 显式验证，模块解析失败会在上传 Release 产物前终止对应平台构建。
+
+## 2026-10-12 | 发布 v0.4.0
+
+本阶段增加了跨平台 mDNS/DNS-SD 实例发布、Android 自动发现与可达性验证，并为桌面安装包新增 `bonjour-service` 运行依赖。依据 `doc/versioning.md` 中“新增运行依赖必须发布 minor/major 完整安装包”的规则，将版本从 0.3.45 提升到 0.4.0，而非仅提升 patch。同步更新桌面 package 与 lock 基准版本；推送 `v0.4.0` 标签后由 GitHub Actions 构建 Windows、macOS、Linux 和 Android 发布产物。
