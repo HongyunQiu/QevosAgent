@@ -66,6 +66,14 @@ jobs:
         run: npm run setup
         timeout-minutes: 20
 
+      # setup 会把 dashboard 源码复制到 vendor/app；从最终目录层级加载一次，
+      # 确认它能向上解析 desktop/node_modules 中的全部运行时依赖。
+      # Electron Builder 本身不会执行 server.js，缺模块时也可能“成功”产出坏包，
+      # 因此必须在三平台打包前显式验证。
+      - name: Verify dashboard runtime dependencies
+        working-directory: desktop
+        run: node -e "require('./vendor/app/dashboard/mdns')"
+
       # Windows：PNG → ICO（多尺寸，BMP编码兼容rcedit）
       - name: Install Pillow for icon generation
         if: runner.os == 'Windows'

@@ -25,3 +25,5 @@
 检查发现发布 CI 只在 `desktop/` 执行 npm 安装，而新增的 `bonjour-service` 此前只声明在 `dashboard/package.json`，干净环境打出的 Electron 安装包会缺少该模块。现已将其加入桌面运行依赖及锁文件，使 GitHub Actions 的既有 `desktop/npm install` 自动纳入安装包；Windows 本地打包脚本也在 setup/build 前执行 `npm install`。同时让 `setup_python.js` 跳过源码树中的任意 `node_modules`，避免开发机碰巧存在的 `dashboard/node_modules` 被复制进 `vendor/app`，保证本地与 CI 产物一致且不重复打包依赖。
 
 验证结果：桌面单元测试 7/7 通过；`npm run setup` 与 `electron-builder --win --dir` 成功；解包产物包含根级 `node_modules/bonjour-service/dist/index.js` 和 `vendor/app/dashboard/mdns.js`，从后者执行 Node 模块解析能正确定位前者，同时产物中不存在重复的 `vendor/app/dashboard/node_modules`。
+
+进一步复核 GitHub Release 工作流：Windows、macOS、Linux 共享同一个 `desktop/npm install → npm run setup → electron-builder` 流程，因此桌面依赖声明会覆盖三个平台；Android 为独立 Gradle 任务，不受该 Node 依赖影响。为防止未来新增 Dashboard 运行依赖时 Electron Builder 未执行服务端代码、仍然产出缺模块的坏包，在三平台 setup 后增加了 `require('./vendor/app/dashboard/mdns')` 显式验证，模块解析失败会在上传 Release 产物前终止对应平台构建。
