@@ -60,8 +60,6 @@
 [data-theme="light"] .ftree-file.selected { background: rgba(9,105,218,0.08); }
 [data-theme="light"] .run-pill.live       { border-color: rgba(26,127,55,0.4); }
 [data-theme="light"] .run-pill.launching  { border-color: rgba(188,76,0,0.4); }
-[data-theme="light"] .mobile-menu-btn.open,
-[data-theme="light"] .mobile-panel-btn.open { border-color: rgba(9,105,218,0.4); }
 [data-theme="light"] .cmd-input:focus     { box-shadow: 0 0 0 3px rgba(9,105,218,0.12); }
 [data-theme="light"] .nostop-btn.on       { background: rgba(26,127,55,0.08); box-shadow: 0 0 0 1px rgba(26,127,55,0.2); }
 [data-theme="light"] .ask-banner {
@@ -1591,12 +1589,12 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .mobile-panel-btn {
   display: flex;
   background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 6px; padding: 4px 9px; font-size: 15px; color: var(--muted);
+  border-radius: 20px; padding: 3px 9px; font-size: 13px; line-height: 1; color: var(--muted);
   align-items: center; justify-content: center; flex-shrink: 0;
   transition: border-color 0.15s, color 0.15s;
 }
 .mobile-menu-btn:hover,  .mobile-panel-btn:hover  { border-color: var(--blue); color: var(--blue); }
-.mobile-menu-btn.open,   .mobile-panel-btn.open   { border-color: rgba(88,166,255,0.5); color: var(--blue); }
+.mobile-menu-btn.open,   .mobile-panel-btn.open   { color: var(--text); }
 
 /* Desktop side-panel controls. The same two topbar buttons become persistent
    collapse controls outside the drawer layout, so panel access is available
