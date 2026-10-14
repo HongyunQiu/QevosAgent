@@ -1597,10 +1597,10 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
   border-radius: 4px; padding: 6px 10px; font-size: 11px; color: var(--orange);
 }
 
-/* ── Mobile buttons (hidden on desktop) ──────────────────────────────────── */
+/* ── Side-panel buttons ──────────────────────────────────────────────────── */
 .mobile-menu-btn,
 .mobile-panel-btn {
-  display: none;
+  display: flex;
   background: var(--bg3); border: 1px solid var(--border);
   border-radius: 6px; padding: 4px 9px; font-size: 15px; color: var(--muted);
   align-items: center; justify-content: center; flex-shrink: 0;
@@ -1608,6 +1608,23 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 }
 .mobile-menu-btn:hover,  .mobile-panel-btn:hover  { border-color: var(--blue); color: var(--blue); }
 .mobile-menu-btn.open,   .mobile-panel-btn.open   { border-color: rgba(88,166,255,0.5); color: var(--blue); }
+
+/* Desktop side-panel controls. The same two topbar buttons become persistent
+   collapse controls outside the drawer layout, so panel access is available
+   at every viewport size. */
+.app.left-panel-collapsed { grid-template-columns: 0 1fr 310px; }
+.app.right-panel-collapsed { grid-template-columns: 230px 1fr 0; }
+.app.left-panel-collapsed.right-panel-collapsed { grid-template-columns: 0 1fr 0; }
+.app.left-panel-collapsed .sidebar,
+.app.right-panel-collapsed .right-panel { display: none; }
+body.large-font .app.left-panel-collapsed { grid-template-columns: 0 1fr 248px; }
+body.large-font .app.right-panel-collapsed { grid-template-columns: 184px 1fr 0; }
+body.large-font .app.left-panel-collapsed.right-panel-collapsed { grid-template-columns: 0 1fr 0; }
+/* Zen is stronger than either remembered per-panel state. */
+.app.pane-zen,
+body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
+.app.pane-zen .sidebar,
+.app.pane-zen .right-panel { display: none; }
 
 /* ── Mobile overlay backdrop ─────────────────────────────────────────────── */
 .mobile-overlay {
@@ -1658,10 +1675,6 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
   .kill-btn, .kill-btn.visible { display: none; }
   .run-pill[data-killable="1"] { cursor: pointer; touch-action: none; -webkit-user-select: none; user-select: none; }
 
-  /* Show mobile toggle buttons */
-  .mobile-menu-btn,
-  .mobile-panel-btn { display: flex; }
-
   /* Sidebar: left drawer */
   .sidebar {
     position: fixed;
@@ -1685,6 +1698,11 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
     box-shadow: -4px 0 20px rgba(0,0,0,0.4);
   }
   .right-panel.open { transform: translateX(0); }
+
+  /* Desktop collapsed state is deliberately preserved across breakpoint
+     changes, but drawers must remain available while this layout is active. */
+  .app.left-panel-collapsed .sidebar,
+  .app.right-panel-collapsed .right-panel { display: flex; }
 
   /* Command bar: larger touch targets — keep Send and nostop identical size.
      Narrower than desktop so the input keeps more room on small screens. */
@@ -1753,7 +1771,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
 
   <!-- ── Top Bar ─────────────────────────────────────────────────── -->
   <header class="topbar">
-    <button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleMobileSidebar()" title="Sidebar">☰</button>
+    <button class="mobile-menu-btn" id="mobileMenuBtn" onclick="toggleMobileSidebar()" title="收起左侧看板" aria-label="收起左侧看板" aria-expanded="true">☰</button>
     <div class="logo">
       <img class="logo-icon" src="/LOGO_256.png" alt="QevosAgent">
       QevosAgent
@@ -1785,7 +1803,7 @@ body.large-font .app.pane-zen { grid-template-columns: 0 1fr 0; }
     <button class="theme-btn" id="settingsBtn" onclick="openSettings()" title="设置 / Settings">
       <span>⚙</span>
     </button>
-    <button class="mobile-panel-btn" id="mobilePanelBtn" onclick="toggleMobileRightPanel()" title="Panel">⊞</button>
+    <button class="mobile-panel-btn" id="mobilePanelBtn" onclick="toggleMobileRightPanel()" title="收起右侧看板" aria-label="收起右侧看板" aria-expanded="true">⊞</button>
   </header>
 
   <!-- ── Sidebar ────────────────────────────────────────────────── -->
@@ -7761,34 +7779,70 @@ function updateFilesTabsFromState(fileTabs) {
   }
 }
 
-// ── Mobile panel toggles ──────────────────────────────────────────────────
+// ── Side panel toggles ────────────────────────────────────────────────────
+function syncPanelToggleButtons() {
+  const app = document.querySelector('.app');
+  const drawerLayout = isMobileLayout();
+  const leftOpen = drawerLayout
+    ? document.querySelector('.sidebar').classList.contains('open')
+    : !app.classList.contains('left-panel-collapsed');
+  const rightOpen = drawerLayout
+    ? document.querySelector('.right-panel').classList.contains('open')
+    : !app.classList.contains('right-panel-collapsed');
+  const leftBtn = document.getElementById('mobileMenuBtn');
+  const rightBtn = document.getElementById('mobilePanelBtn');
+  leftBtn.classList.toggle('open', leftOpen);
+  rightBtn.classList.toggle('open', rightOpen);
+  leftBtn.setAttribute('aria-expanded', String(leftOpen));
+  rightBtn.setAttribute('aria-expanded', String(rightOpen));
+  leftBtn.title = leftBtn.getAttribute('aria-label') = `${leftOpen ? '收起' : '打开'}左侧看板`;
+  rightBtn.title = rightBtn.getAttribute('aria-label') = `${rightOpen ? '收起' : '打开'}右侧看板`;
+}
+
 function closeMobilePanels() {
   document.querySelector('.sidebar').classList.remove('open');
   document.querySelector('.right-panel').classList.remove('open');
   document.getElementById('mobileOverlay').classList.remove('visible');
-  document.getElementById('mobileMenuBtn').classList.remove('open');
-  document.getElementById('mobilePanelBtn').classList.remove('open');
+  syncPanelToggleButtons();
 }
 
 function toggleMobileSidebar() {
+  if (!isMobileLayout()) {
+    const app = document.querySelector('.app');
+    if (app.classList.contains('pane-zen')) setPaneZen(false);
+    app.classList.toggle('left-panel-collapsed');
+    syncPanelToggleButtons();
+    return;
+  }
   const isOpen = document.querySelector('.sidebar').classList.contains('open');
   closeMobilePanels();
   if (!isOpen) {
     document.querySelector('.sidebar').classList.add('open');
     document.getElementById('mobileOverlay').classList.add('visible');
-    document.getElementById('mobileMenuBtn').classList.add('open');
   }
+  syncPanelToggleButtons();
 }
 
 function toggleMobileRightPanel() {
+  if (!isMobileLayout()) {
+    const app = document.querySelector('.app');
+    if (app.classList.contains('pane-zen')) setPaneZen(false);
+    app.classList.toggle('right-panel-collapsed');
+    syncPanelToggleButtons();
+    return;
+  }
   const isOpen = document.querySelector('.right-panel').classList.contains('open');
   closeMobilePanels();
   if (!isOpen) {
     document.querySelector('.right-panel').classList.add('open');
     document.getElementById('mobileOverlay').classList.add('visible');
-    document.getElementById('mobilePanelBtn').classList.add('open');
   }
+  syncPanelToggleButtons();
 }
+
+matchMedia('(max-width: 768px), (orientation: portrait)')
+  .addEventListener('change', () => { closeMobilePanels(); syncPanelToggleButtons(); });
+syncPanelToggleButtons();
 
 // ── Init ──────────────────────────────────────────────────────────────────
 // 让中间标签栏支持鼠标滚轮横向滚动：桌面上的纵向滚轮 → 横向 scrollLeft，
