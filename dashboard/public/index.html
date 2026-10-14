@@ -7795,8 +7795,12 @@ function syncPanelToggleButtons() {
   rightBtn.classList.toggle('open', rightOpen);
   leftBtn.setAttribute('aria-expanded', String(leftOpen));
   rightBtn.setAttribute('aria-expanded', String(rightOpen));
-  leftBtn.title = leftBtn.getAttribute('aria-label') = `${leftOpen ? '收起' : '打开'}左侧看板`;
-  rightBtn.title = rightBtn.getAttribute('aria-label') = `${rightOpen ? '收起' : '打开'}右侧看板`;
+  const leftLabel = `${leftOpen ? '收起' : '打开'}左侧看板`;
+  const rightLabel = `${rightOpen ? '收起' : '打开'}右侧看板`;
+  leftBtn.title = leftLabel;
+  rightBtn.title = rightLabel;
+  leftBtn.setAttribute('aria-label', leftLabel);
+  rightBtn.setAttribute('aria-label', rightLabel);
 }
 
 function closeMobilePanels() {
