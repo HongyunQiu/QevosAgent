@@ -1739,11 +1739,12 @@ body.app-only .right-panel,
 body.app-only .cmdbar,
 body.app-only .mobile-overlay { display: none !important; }
 body.app-only .events-panel { grid-area: events; min-width: 0; min-height: 0; }
-body.app-only .center-tab-strip { display: none; }
-body.app-only.app-only-has-tabs .center-tab-strip { display: flex; }
+body.app-only .center-tab-strip { display: flex; }
 body.app-only .center-tab-strip > * { display: none !important; }
+body.app-only .center-tab-strip > #ctab-apps,
 body.app-only .center-tab-strip > [id^="ctab-app-"] { display: inline-flex !important; }
 body.app-only .center-pane { display: none; }
+body.app-only #cpane-apps.active,
 body.app-only .center-pane[id^="cpane-app-"].active { display: flex; }
 
 /* ── Right-click context menu (file manager upload/download) ─────────────── */
@@ -4954,13 +4955,13 @@ function showOpenViewPrompt(label, url, displayId) {
 }
 
 // ── Center tabs ───────────────────────────────────────────────────────────
-let gCenterTab     = 'events';
+let gCenterTab     = gAppOnlyMode ? 'apps' : 'events';
 let gSelectedFile  = null;
 let gFileTabsSig   = '';     // last applied fileTabs serialization — skip rebuild if unchanged
 let gFileTabsInit  = false;  // restore saved active tab only on first state push
 
 function setCenterTab(name) {
-  if (gAppOnlyMode && !String(name).startsWith('app-')) return;
+  if (gAppOnlyMode && name !== 'apps' && !String(name).startsWith('app-')) return;
   gCenterTab = name;
   document.querySelectorAll('.center-tab').forEach(btn => {
     btn.classList.toggle('active', btn.id === 'ctab-' + name);
@@ -5093,15 +5094,10 @@ let gAppSynced = false;   // first sync after load adopts open App tabs as backg
 function refreshAppOnlyTabState() {
   if (!gAppOnlyMode) return;
   const tabs = [...document.querySelectorAll('[id^=ctab-app-]')];
-  document.body.classList.toggle('app-only-has-tabs', tabs.length > 0);
-  const activeExists = gCenterTab.startsWith('app-')
-    && document.getElementById('ctab-' + gCenterTab);
+  const activeExists = gCenterTab === 'apps' || (gCenterTab.startsWith('app-')
+    && document.getElementById('ctab-' + gCenterTab));
   if (tabs.length && !activeExists) setCenterTab(tabs[0].id.replace('ctab-', ''));
-  if (!tabs.length) {
-    gCenterTab = '';
-    document.querySelectorAll('.center-tab.active, .center-pane.active')
-      .forEach(el => el.classList.remove('active'));
-  }
+  if (!tabs.length && !activeExists) setCenterTab('apps');
 }
 
 // Sync App panel tabs to the server-side openAppTabs list (state.appTabs):
@@ -5514,6 +5510,8 @@ function fitGraph() {
 // ── Apps (user-space executable programs) ──────────────────────────────────
 let gApps        = [];      // [{id,name,icon,description,runtime,enabled,size}]
 let gAppsEditing = false;   // manage/edit mode
+
+if (gAppOnlyMode) setCenterTab('apps');
 
 async function loadApps() {
   try {
