@@ -518,6 +518,10 @@ function getLanIps() {
 const NETWORK_INFO = { hostname: os.hostname(), ips: getLanIps() };
 
 const PORT       = parseInt(process.env.DASHBOARD_PORT || '8765', 10);
+// Kiosk-style UI for dedicated built-in App displays. This is intentionally
+// startup-only: expose it as an environment variable without adding a mutable
+// setting to the Dashboard UI.
+const APP_ONLY_MODE = /^(?:1|true|yes|on)$/i.test(String(process.env.DASHBOARD_APP_ONLY || '').trim());
 // 默认只绑回环地址，避免在没有鉴权时被内网其他主机直接访问。
 // 等加上密码鉴权后，再通过 DASHBOARD_HOST=0.0.0.0 显式开放局域网。
 const HOST       = process.env.DASHBOARD_HOST || '127.0.0.1';
@@ -2659,10 +2663,10 @@ function serveStatic(req, res) {
   try {
     let content = fs.readFileSync(fp);
     if (ext === '.html') {
-      const langScript = `<script>window.QEVOS_LANG="${LANG}";</script>`;
-      // Inject right after <head> so QEVOS_LANG is defined before ui_i18n.js
-      // runs; otherwise UI_LANG freezes to the default before the value is set.
-      let html = content.toString('utf8').replace('<head>', '<head>' + langScript);
+      const bootScript = `<script>window.QEVOS_LANG="${LANG}";window.QEVOS_APP_ONLY=${APP_ONLY_MODE};</script>`;
+      // Inject right after <head> so boot-time UI flags are defined before the
+      // page scripts run. APP_ONLY_MODE is fixed for the server lifetime.
+      let html = content.toString('utf8').replace('<head>', '<head>' + bootScript);
       // ③ PRO frontend overlay (no-op when public/pro/pro.js is absent).
       if (PRO_UI_ENTRY) {
         html = html.replace('</body>', '<script src="/pro/pro.js" defer></script>\n</body>');
@@ -4611,7 +4615,7 @@ findFreePort(PORT).then(port => {
           wss,
           getState: () => state,
           broadcast,
-          config: { port, HOST, AGENT_DIR, RUNS_DIR, SKILLS_DIR, APP_VERSION, instanceName: state.instanceName || '' },
+          config: { port, HOST, AGENT_DIR, RUNS_DIR, SKILLS_DIR, APP_VERSION, APP_ONLY_MODE, instanceName: state.instanceName || '' },
         });
       } catch (e) {
         console.error(`  [ext] server-plugin init failed: ${e.message}`);

@@ -1721,6 +1721,31 @@ body.large-font .app.left-panel-collapsed.right-panel-collapsed { grid-template-
 
 }
 
+/* Built-in App-only mode (`DASHBOARD_APP_ONLY=1`). The App iframe owns the
+   viewport; the tab strip appears only when there are App tabs to switch.
+   Rules live after the responsive block so this mode wins in every layout. */
+body.app-only .app,
+body.large-font.app-only .app {
+  transform: none;
+  width: 100%;
+  height: 100dvh;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "events";
+}
+body.app-only .topbar,
+body.app-only .sidebar,
+body.app-only .right-panel,
+body.app-only .cmdbar,
+body.app-only .mobile-overlay { display: none !important; }
+body.app-only .events-panel { grid-area: events; min-width: 0; min-height: 0; }
+body.app-only .center-tab-strip { display: none; }
+body.app-only.app-only-has-tabs .center-tab-strip { display: flex; }
+body.app-only .center-tab-strip > * { display: none !important; }
+body.app-only .center-tab-strip > [id^="ctab-app-"] { display: inline-flex !important; }
+body.app-only .center-pane { display: none; }
+body.app-only .center-pane[id^="cpane-app-"].active { display: flex; }
+
 /* ── Right-click context menu (file manager upload/download) ─────────────── */
 .ctx-menu {
   position: fixed; z-index: 9999; min-width: 180px;
@@ -2410,6 +2435,9 @@ body.large-font .app.left-panel-collapsed.right-panel-collapsed { grid-template-
 <div id="openview-prompts"></div>
 
 <script>
+const gAppOnlyMode = window.QEVOS_APP_ONLY === true;
+if (gAppOnlyMode) document.body.classList.add('app-only');
+
 // ── State ─────────────────────────────────────────────────────────────────
 let gState         = null;
 let gViewRunId     = null;
@@ -4932,6 +4960,7 @@ let gFileTabsSig   = '';     // last applied fileTabs serialization — skip reb
 let gFileTabsInit  = false;  // restore saved active tab only on first state push
 
 function setCenterTab(name) {
+  if (gAppOnlyMode && !String(name).startsWith('app-')) return;
   gCenterTab = name;
   document.querySelectorAll('.center-tab').forEach(btn => {
     btn.classList.toggle('active', btn.id === 'ctab-' + name);
@@ -5061,6 +5090,20 @@ function updateTerminalTabsFromState(terminals) {
 
 let gAppSynced = false;   // first sync after load adopts open App tabs as background (对齐 gTermSynced)
 
+function refreshAppOnlyTabState() {
+  if (!gAppOnlyMode) return;
+  const tabs = [...document.querySelectorAll('[id^=ctab-app-]')];
+  document.body.classList.toggle('app-only-has-tabs', tabs.length > 0);
+  const activeExists = gCenterTab.startsWith('app-')
+    && document.getElementById('ctab-' + gCenterTab);
+  if (tabs.length && !activeExists) setCenterTab(tabs[0].id.replace('ctab-', ''));
+  if (!tabs.length) {
+    gCenterTab = '';
+    document.querySelectorAll('.center-tab.active, .center-pane.active')
+      .forEach(el => el.classList.remove('active'));
+  }
+}
+
 // Sync App panel tabs to the server-side openAppTabs list (state.appTabs):
 // open a tab for any App the agent opened that we don't show yet, and drop tabs
 // whose App tab was closed elsewhere (or after a reload). Diff-based — never
@@ -5083,11 +5126,12 @@ function syncAppTabsFromState(appTabs) {
     }
   }
   gAppSynced = true;
-  if (firstSync && savedTab && savedTab !== gCenterTab) setCenterTab(savedTab);
+  if (!gAppOnlyMode && firstSync && savedTab && savedTab !== gCenterTab) setCenterTab(savedTab);
   for (const b of tabs()) {
     const tid = b.id.replace('ctab-', '');
     if (!live.has(tid)) closeAppPanel(tid);
   }
+  refreshAppOnlyTabState();
 }
 
 // Bridge postMessages from terminal.html iframes: capture each tab's backing
@@ -5581,6 +5625,7 @@ function openAppPanel(app, root) {
   pane.appendChild(frame);
   panel.appendChild(pane);
 
+  refreshAppOnlyTabState();
   setCenterTab(tabId);
 }
 
@@ -5605,7 +5650,8 @@ function closeAppPanel(tabId) {
   const wasActive = gCenterTab === tabId;
   document.getElementById('ctab-' + tabId)?.remove();
   document.getElementById('cpane-' + tabId)?.remove();
-  if (wasActive) setCenterTab('events');
+  if (gAppOnlyMode) refreshAppOnlyTabState();
+  else if (wasActive) setCenterTab('events');
 }
 
 async function appDelete(id, name) {
