@@ -1722,7 +1722,7 @@ body.large-font .app.left-panel-collapsed.right-panel-collapsed { grid-template-
 }
 
 /* Built-in App-only mode (`DASHBOARD_APP_ONLY=1`). The App iframe owns the
-   viewport; the tab strip appears only when there are App tabs to switch.
+   viewport; the launcher opens directly on the icon grid without dashboard chrome.
    Rules live after the responsive block so this mode wins in every layout. */
 body.app-only .app,
 body.large-font.app-only .app {
@@ -1739,10 +1739,9 @@ body.app-only .right-panel,
 body.app-only .cmdbar,
 body.app-only .mobile-overlay { display: none !important; }
 body.app-only .events-panel { grid-area: events; min-width: 0; min-height: 0; }
-body.app-only .center-tab-strip { display: flex; }
-body.app-only .center-tab-strip > * { display: none !important; }
-body.app-only .center-tab-strip > #ctab-apps,
-body.app-only .center-tab-strip > [id^="ctab-app-"] { display: inline-flex !important; }
+body.app-only .center-tab-strip,
+body.app-only #cpane-apps .agents-toolbar { display: none !important; }
+body.app-only #cpane-apps .apps-body { padding-top: 18px; }
 body.app-only .center-pane { display: none; }
 body.app-only #cpane-apps.active,
 body.app-only .center-pane[id^="cpane-app-"].active { display: flex; }
