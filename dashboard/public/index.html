@@ -1588,12 +1588,16 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .mobile-menu-btn,
 .mobile-panel-btn {
   display: flex;
-  background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 20px; padding: 3px 9px; font-size: 13px; line-height: 1; color: var(--muted);
+  width: 28px; height: 28px; padding: 0;
+  background: transparent; border: 0;
+  border-radius: 6px; font-size: 15px; line-height: 1; color: var(--muted);
   align-items: center; justify-content: center; flex-shrink: 0;
-  transition: border-color 0.15s, color 0.15s;
+  transition: background-color 0.08s, color 0.12s;
 }
-.mobile-menu-btn:hover,  .mobile-panel-btn:hover  { border-color: var(--blue); color: var(--blue); }
+.mobile-menu-btn:hover,  .mobile-panel-btn:hover  { color: var(--text); }
+.mobile-menu-btn:active, .mobile-panel-btn:active { background: var(--bg3); }
+.mobile-menu-btn:focus-visible,
+.mobile-panel-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .mobile-menu-btn.open,   .mobile-panel-btn.open   { color: var(--text); }
 
 /* Desktop side-panel controls. The same two topbar buttons become persistent
