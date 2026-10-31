@@ -1720,6 +1720,23 @@ def tool_save_concept(
             return ToolResult(success=False, output=None, error="content 不能为空")
         p = Path(os.path.expandvars(os.path.expanduser(path)))
         p.parent.mkdir(parents=True, exist_ok=True)
+
+        # ── 目录索引检测：若 path 指向目录索引文件，自动重定向到全量正文 ──────
+        # 防止新章节正文混入目录索引（目录索引只应由自动迁移生成/维护）。
+        _index_marker = "记忆目录（按需加载索引）"
+        if p.exists():
+            try:
+                _head = p.read_text(encoding="utf-8")[:500]
+                if _index_marker in _head:
+                    _full_path = p.parent / "memory" / "memory_macro_full.md"
+                    _full_path.parent.mkdir(parents=True, exist_ok=True)
+                    if not _full_path.exists():
+                        # 全量正文不存在，先备份原文件（虽然它是索引，但保留以防万一）
+                        _full_path.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+                    p = _full_path
+            except Exception:
+                pass  # 检测失败不阻断写入
+
         body = content.strip()
         section = (section or "").strip()
 

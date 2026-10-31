@@ -446,3 +446,46 @@ watch_register(name="mysql-err",  path="./watchers/tail_grep.py", interval=30,
 如果 `args.command` 或 `args.content` 中包含超长内容（如 base64 编码、代码脚本），
 不要在字符串中间折行——建议先用 `write_file` 工具将内容写入临时文件，
 再在命令中引用该文件路径（如 `python3 /tmp/script.py`），可彻底避免此类问题。
+
+---
+
+## 记忆管理约定（2026-10-31 新增）
+
+### 文件布局
+
+```
+根目录/
+├── memory_macro.md          ← 目录索引（~10-30K，全量注入 system prompt）
+├── memory_episodic.jsonl    ← 细粒度记忆（按需检索，不占 system prompt）
+└── memory/
+    └── memory_macro_full.md ← 全量宏观正文（save_concept 写入这里，按需 read_file_lines）
+```
+
+### 写入规则
+
+| 工具 | 写入目标 | 说明 |
+|------|---------|------|
+| `save_concept` | `memory/memory_macro_full.md` | 新宏观记忆写入全量正文，**不要**写入根目录 `memory_macro.md`（目录索引） |
+| `append_episodic` | `memory_episodic.jsonl`（根目录） | 细粒度记忆保持单一文件 |
+| `search_episodic` | `memory_episodic.jsonl`（根目录） | 从根目录检索 |
+
+### 自动迁移
+
+- 启动时（`run_goal.py`）检测 `memory_macro.md` 大小，若 **>100KB** 且 `memory/memory_macro_full.md` 不存在，自动执行迁移：
+  1. 创建 `memory/` 子目录
+  2. 复制原文件 → `memory/memory_macro_full.md`（全量正文）
+  3. 解析所有 `##` 标题 + 行号 → 生成目录索引
+  4. 写入新 `memory_macro.md`（目录索引版）
+- 迁移幂等：已存在 `memory/memory_macro_full.md` 则跳过
+- 迁移失败不阻断启动（try/except 包裹）
+
+### save_concept 重定向
+
+- `tool_save_concept` 内部检测：若 path 指向的文件包含「记忆目录（按需加载索引）」标记，自动重定向到 `memory/memory_macro_full.md`
+- 防止 LLM 误将新章节写入目录索引文件
+
+### 按需加载
+
+- 目录索引中列出各章节标题与行号（指向 `memory/memory_macro_full.md`）
+- Agent 根据目录判断相关性，用 `read_file_lines` 读取对应行号范围
+- 或用 `grep_files` 按关键词检索全量正文

@@ -12,6 +12,85 @@ DEFAULT_EPISODIC = "./memory_episodic.jsonl"
 DEFAULT_CONCEPT  = "./memory_macro.md"
 DEFAULT_RUNS_DIR = "./runs"
 
+# ── 记忆自动迁移 ─────────────────────────────────────────────────────────────
+_MIGRATION_THRESHOLD = 100_000  # 100KB：超过此值自动迁移到目录索引模式
+
+
+def _auto_migrate_memory(concept_path: Path, episodic_path: Path) -> None:
+    """自动迁移：大文件概念记忆 → 目录索引 + 全量正文分离。
+
+    检测条件：memory_macro.md 大小 > _MIGRATION_THRESHOLD 且 memory/ 子目录中
+    尚无 memory_macro_full.md（即未迁移过）。
+
+    迁移步骤：
+    1. 创建 memory/ 子目录
+    2. 复制原文件 → memory/memory_macro_full.md（全量正文）
+    3. 解析原文件所有 ## 标题 + 行号 → 生成目录索引
+    4. 写入新 memory_macro.md（目录索引版）
+
+    安全：迁移失败不影响启动（调用方 try/except 包裹）。
+    """
+    import shutil
+    import re as _re
+
+    mem_dir = concept_path.parent / "memory"
+    mem_dir.mkdir(exist_ok=True)
+    full_path = mem_dir / "memory_macro_full.md"
+
+    # 已迁移过则跳过
+    if full_path.exists():
+        print(f"[run_goal] memory already migrated, skipping")
+        return
+
+    # 读取原始全量正文
+    content = concept_path.read_text(encoding="utf-8")
+    lines = content.splitlines()
+
+    # 备份到 memory/memory_macro_full.md
+    shutil.copy2(concept_path, full_path)
+
+    # 解析 ## 标题，生成目录索引
+    entries: list[tuple[str, int, int]] = []  # (title, start_line, end_line)
+    for i, line in enumerate(lines, 1):
+        if line.startswith("## "):
+            title = line[3:].strip()
+            start = i
+            # 找结束行：下一个同级或更高级标题
+            end = len(lines)
+            for j in range(i, len(lines)):
+                if lines[j].startswith("## "):
+                    end = j
+                    break
+            entries.append((title, start, end))
+
+    index_lines = [
+        "# 记忆目录（按需加载索引）",
+        "",
+        "**机制**：本文件是记忆的**目录/索引**，只列出各记忆条目的标题与在全文中的行号，不直接加载具体正文。",
+        "",
+        "**指令：通过记忆工具查看记忆文件，并提取和本次任务有关的记忆加载。**",
+        "",
+        "**记忆文件位置**：",
+        "- 宏观记忆全文：`memory/memory_macro_full.md`（含全部正文）",
+        f"- 细粒度任务记忆：`{episodic_path.name}`（JSONL，按任务检索）",
+        "",
+        "**按需加载方法**：根据下方目录判断哪些条目与本次任务相关，用 `read_file_lines` 读 `memory/memory_macro_full.md` 对应行号范围（start~end），或用 `grep_files` 按关键词检索；细粒度记忆用 `search_episodic` 检索。",
+        "",
+        f"## 目录（共 {len(entries)} 条）",
+        "",
+    ]
+    for idx, (title, start, end) in enumerate(entries, 1):
+        index_lines.append(f"{idx}. {title}  [L{start}-{end}]")
+
+    new_index = "\n".join(index_lines) + "\n"
+    concept_path.write_text(new_index, encoding="utf-8")
+
+    print(
+        f"[run_goal] auto-migrated concept memory: "
+        f"{concept_path.stat().st_size}B index + {full_path.stat().st_size}B full "
+        f"({len(entries)} sections)"
+    )
+
 
 class _FaultTolerantTextIO:
     """Wrap a text stream (stdout/stderr) so a broken downstream never aborts the run.
@@ -478,6 +557,15 @@ def main():
             print(f"[run_goal] episodic memory: {len(preloaded_long_term)} entries loaded")
     else:
         print(f"[run_goal] no episodic file at {episodic_path}, starting fresh")
+
+    # ── (2.5) 自动迁移检测：概念记忆过大 → 目录索引 + 全量正文分离 ─────────────
+    if concept_path.exists():
+        try:
+            _concept_size = concept_path.stat().st_size
+            if _concept_size > _MIGRATION_THRESHOLD:
+                _auto_migrate_memory(concept_path, episodic_path)
+        except Exception as _me:
+            print(f"[run_goal] auto-migration warning: {_me}")
 
     # ── (3) 预加载概念记忆 ────────────────────────────────────────────────────
     preloaded_concept = ""

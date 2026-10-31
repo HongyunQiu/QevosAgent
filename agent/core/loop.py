@@ -1519,6 +1519,11 @@ def run(
                 if not state.meta.get("_concept_evaluated"):
                     state.meta["_concept_evaluated"] = True
                     concept_path = state.meta.get("_concept_path", "./memory_macro.md")
+                    # 目录索引模式下，save_concept 应写入全量正文文件
+                    import os as _os
+                    _concept_full_path = _os.path.join(
+                        _os.path.dirname(concept_path) or ".", "memory", "memory_macro_full.md"
+                    )
                     if not _nostop:
                         # 暂存收尾信息：若 agent 接下来更新了宏观记忆，可在工具执行后
                         # 直接收尾，省去一次"再 done"的完整迭代——该迭代因 concept_memory
@@ -1539,7 +1544,7 @@ def run(
                         )
                         feedback = (
                             f"[系统][记忆评估] 任务已完成。请判断本次任务是否带来了新的领域认知或经验规律。\n"
-                            f"  - 如果有：调用 save_concept(path='{concept_path}', section='章节标题', content=...)，\n"
+                            f"  - 如果有：调用 save_concept(path='{_concept_full_path}', section='章节标题', content=...)，\n"
                             f"    content 只写这一个章节的内容。宏观记忆已完整注入 system prompt"
                             f"（见「宏观工作记忆」一节），不需要再 read_concept，更不要把整份记忆重抄一遍——\n"
                             f"    整份重写要多生成上万 token，是收尾阶段最慢的一步。\n"
