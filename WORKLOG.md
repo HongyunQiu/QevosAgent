@@ -63,3 +63,24 @@
 ## 2026-10-16 | 优化左右看板开关的顶栏样式
 
 参考 QNOTES 的轻量顶栏控件风格，移除左右看板开关默认的背景、边框和胶囊外形，使其直接融入顶栏。悬停时仅提升图标颜色，按下瞬间才显示浅层主题背景；保留键盘 `focus-visible` 轮廓以保证可访问性，横屏与竖屏沿用同一反馈。
+## 2026-10-31 | 记忆系统整体改造——目录索引+全量正文分离+自动迁移
+
+**背景**：2026-10-31 实验把 memory_macro.md 从 419K 全量正文换成 20K 目录索引版（降95% system prompt 占用），但发现新任务产生的记忆（save_concept）仍写入根目录 memory_macro.md，导致正文混入索引文件（已发生一次：体检章节混入 L236-244）。用户要求做整体改动+增加自动迁移功能（已有客户下载新版本运行时自动检测并迁移）。
+
+**改动（commit 76ec9cb，4 files, +154/-1）**：
+1. **run_goal.py**：新增 `_auto_migrate_memory()` 函数 + 启动检测（阈值 100K）。检测 memory_macro.md >100K 且 memory/memory_macro_full.md 不存在时，自动备份全量正文到 memory/ 子目录并解析 ## 标题+行号生成目录索引。幂等（已迁移跳过），失败不阻断启动（try/except）。
+2. **standard.py**：`tool_save_concept` 增加目录索引检测——若 path 指向的文件前500字符含「记忆目录（按需加载索引）」标记，自动重定向到 memory/memory_macro_full.md。防止 LLM 误将新章节写入索引。
+3. **loop.py**：验收门反馈消息中 save_concept 路径从 concept_path 改为 os.path.join(dirname, 'memory', 'memory_macro_full.md')，引导 LLM 写入全量正文。
+4. **AGENTS.md**：末尾新增「记忆管理约定」章节，文档化文件布局、写入规则、自动迁移逻辑、save_concept 重定向、按需加载方法。
+
+**测试**：
+- 迁移函数：200 章节/45.2K → 6.2K 索引 + 45.2K 全量，幂等性验证通过
+- save_concept 重定向：索引文件→重定向到全量正文，非索引文件→直接写入，均正确
+- 语法检查：run_goal.py / standard.py / loop.py 全部 py_compile 通过
+
+**清理**：memory_macro.md 中混入的体检章节正文（L236-244，11行）已删除（该章节已存在于 memory/memory_macro_full.md）。
+
+**遗留**：
+- llm.py:1184 注入机制未改（仍全量注入 concept_memory 字符串）——当前索引版 ~20K 足够小，不需要改；若索引增长超过 100K 可考虑加预算/截断
+- memory/ 子目录未纳入 git（.gitignore 或本地数据），客户首次运行需自动迁移生成
+- 未做端到端实际运行验证（需重启 agent 才能验证完整流程）
