@@ -139,6 +139,57 @@
     var url = canvas.toDataURL('image/png');   // 跨域资源会 SecurityError（被 handleCtl 捕获回报）
     return { image: url.split(',')[1], mime: 'image/png' };
   }
+  // ── listControls: 枚举面板内所有可交互控件，返回 {selector, tag, text, type, enabled} 清单 ──
+  function _makeSelector(el) {
+    // 优先 id
+    if (el.id) return '#' + CSS.escape(el.id);
+    // 其次 tag + 第一个 class
+    var tag = el.tagName.toLowerCase();
+    if (el.className && typeof el.className === 'string') {
+      var cls = el.className.trim().split(/\s+/).filter(function(c) { return c && !c.startsWith('qevos'); });
+      if (cls.length) return tag + '.' + CSS.escape(cls[0]);
+    }
+    // 回退：tag + nth-child 路径（最多3层）
+    var parts = [];
+    var node = el;
+    for (var i = 0; i < 3 && node && node !== document.body; i++) {
+      var parent = node.parentElement;
+      if (!parent) break;
+      var siblings = Array.from(parent.children).filter(function(c) { return c.tagName === node.tagName; });
+      var idx = siblings.indexOf(node) + 1;
+      var part = node.tagName.toLowerCase();
+      if (siblings.length > 1) part += ':nth-of-type(' + idx + ')';
+      parts.unshift(part);
+      node = parent;
+    }
+    return parts.join(' > ') || tag;
+  }
+  function listControls(a) {
+    var SEL = 'button, input, select, textarea, [onclick], [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="tab"], [role="switch"], a[href], [tabindex]:not([tabindex="-1"])';
+    var els = document.querySelectorAll(SEL);
+    var seen = new Set();
+    var out = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      // 跳过隐藏元素和 qevos 桥自身
+      if (el.closest('[hidden], [style*="display:none"], [style*="display: none"]')) continue;
+      if (el.closest('script, style, #qevos-bridge')) continue;
+      if (seen.has(el)) continue;
+      seen.add(el);
+      var sel = _makeSelector(el);
+      // 去重 selector
+      if (out.some(function(o) { return o.selector === sel; })) {
+        // 加 nth 区分
+        var count = out.filter(function(o) { return o.selector.startsWith(sel); }).length;
+        sel = sel + ':nth-of-type(' + (count + 1) + ')';
+      }
+      var text = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+      var type = el.getAttribute('type') || el.tagName.toLowerCase();
+      var enabled = !el.disabled && !el.getAttribute('aria-disabled');
+      out.push({ selector: sel, tag: el.tagName.toLowerCase(), text: text, type: type, enabled: enabled });
+    }
+    return out;
+  }
   function runCtl(action, a) {
     switch (action) {
       case 'click':   { q(a.selector).click(); return true; }
@@ -152,6 +203,7 @@
       case 'waitFor': return waitFor(a.selector, a.timeout);
       case 'screenshot': return screenshot(a);
       case 'eval':    return (0, eval)(a.code);   // expression; returns JSON-serializable value
+      case 'listControls': return listControls(a);
       default: throw new Error('未知控制动作: ' + action);
     }
   }

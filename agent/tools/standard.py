@@ -3227,6 +3227,8 @@ def tool_panel_control(state: AgentState, app: str, action: str, selector: str =
       screenshot — 把面板（或 selector 元素）DOM 渲染成 PNG。注意是"重绘非抓屏"，
                    布局够用、精细样式可能有偏差；跨域资源会失败。inject=True 时图像直接注入上下文。
       eval     — 在面板内求值 code（表达式，返回可 JSON 序列化的值）
+      listControls — 自动枚举面板内所有可交互控件（button/input/select/textarea/[onclick]/[role=button]等），
+                   返回 [{selector, tag, text, type, enabled}, ...] 清单，agent 可据此逐个 click/fill
     root: （可选）项目根绝对路径，同 openProject 的 root。
     """
     import urllib.request as _ur
