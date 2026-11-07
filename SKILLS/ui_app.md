@@ -295,7 +295,7 @@ for line in sys.stdin:        # 主循环：一行请求一行响应；异常回
 
 **控制面板 → 用 `panel_control`(默认,跨模式无标志)**，不要用 web_interact/CDP 碰自己的面板：
 - 面板是我们自己的代码(桥在里面),`panel_control` 经桥的 SSE 通道下发指令,**Electron 与普通浏览器一致、无需调试启动浏览器**。
-- action：`click`/`fill`/`value`/`getText`/`getHtml`/`exists`/`count`/`waitFor`/`eval`。
+- action：`click`/`fill`/`value`/`getText`/`getHtml`/`exists`/`count`/`waitFor`/`eval`/`listControls`。
 - **前提:面板已打开**(有 SSE 连接)。未打开会报错——先让面板开着(桌面版可用 web_interact 开 WebContentsView;浏览器模式请开发者先开着该面板)。
 - `web_interact`/CDP **只留给外部非-UI-App 页面**,或需要**像素截图 / 无头渲染上下文**时(桥给不了图)。
 
@@ -303,7 +303,8 @@ for line in sys.stdin:        # 主循环：一行请求一行响应；异常回
 
 **配方**：
 1. 确保面板打开且连着(桌面版 `web_interact new_tab` 指向 `…/api/app/<id>/panel`；浏览器模式用现开的面板)。
-2. 驱动:`panel_control(app="<id>", action="click", selector="#save")`、`panel_control(app, "fill", selector, value)`、`panel_control(app, "eval", code="…")`。
+2. **探索控件清单**（不知道 selector 时先做这步）:`panel_control(app, "listControls")` → 返回 `[{selector, tag, text, type, enabled}, ...]`，据此选目标控件的 selector。
+3. 驱动:`panel_control(app="<id>", action="click", selector="#save")`、`panel_control(app, "fill", selector, value)`、`panel_control(app, "eval", code="…")`。
 3. **断言(按稳健度排序)**：
    | 优先级 | 通道 | 怎么做 |
    |---|---|---|
