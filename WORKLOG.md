@@ -84,3 +84,6 @@
 - llm.py:1184 注入机制未改（仍全量注入 concept_memory 字符串）——当前索引版 ~20K 足够小，不需要改；若索引增长超过 100K 可考虑加预算/截断
 - memory/ 子目录未纳入 git（.gitignore 或本地数据），客户首次运行需自动迁移生成
 - 未做端到端实际运行验证（需重启 agent 才能验证完整流程）
+## 2026-11-14 | 看板『当前任务』置顶块样式统一为普通分组观感
+
+承接上一任务(runs/20261114-171538)给任务看板加『当前任务』置顶块后,用户反馈其字体/风格/左边尖三角与普通分组不一致,要求统一。改 dashboard/public/index.html 两处:①CSS .runs-pinned-head 对齐 .run-group-head(padding 左8/gap6/color muted),新增 .runs-pinned-head .caret(9px muted width10)与 .runs-pinned-name;②renderRunsList 里 topHtml 的标题从硬拼『▶ 当前任务』(▶随标题变11px蓝色)改为 <span class=caret>▾</span><span class=runs-pinned-name>当前任务</span>,三角字符▶→▾、结构/字号/颜色与普通分组完全一致。保留 .runs-pinned .run-item 淡蓝背景作『当前』标识。node --check 内联脚本通过。serveStatic 实时 readFileSync(public/index.html) 无构建产物,刷新即生效。手机执行体因看板IP白名单无法跨设备截图,改由用户刷新看板确认观感,用户回复『可以了』。遗留:三角为静态▾(置顶块无折叠交互),用户未要求折叠。

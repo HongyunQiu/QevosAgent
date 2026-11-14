@@ -387,6 +387,13 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .run-group-empty { padding: 3px 26px; font-size: 11px; font-style: italic; color: var(--muted); }
 .runs-ungrouped-head { padding: 4px 14px 4px 24px; font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--muted); user-select: none; }
 .run-group.drop-over, .runs-ungrouped.drop-over { background: rgba(88,166,255,0.10); outline: 1px dashed var(--blue); outline-offset: -1px; }
+/* 置顶区：当前正在运行的对话，提到所有分组之上，分类多时也能一眼找到。
+   标题观感刻意与普通分组 .run-group-head 完全一致（同 padding/gap/字号/颜色/三角），仅靠行高亮区分『当前』。 */
+.runs-pinned { border-bottom: 1px solid var(--border); margin-bottom: 2px; }
+.runs-pinned-head { padding: 4px 14px 4px 8px; font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--muted); user-select: none; display: flex; align-items: center; gap: 6px; }
+.runs-pinned-head .caret { font-size: 9px; color: var(--muted); width: 10px; display: inline-block; }
+.runs-pinned-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runs-pinned .run-item { background: rgba(88,166,255,0.08); }
 
 /* ── Events panel ────────────────────────────────────────────────────── */
 .events-panel { grid-area: events; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
@@ -3572,8 +3579,22 @@ function renderRunsList(runs, activeId) {
   const runSet  = new Set(runs);
   const grouped = new Set();
   const parts   = [];
+
+  // 置顶：当前正在运行的对话（live run）单独提到所有分组之上，分类多时也能一眼找到。
+  // 同时把它加入 grouped 并在各分组 members 中排除，避免在下方分组/未分组里重复出现。
+  let topHtml = '';
+  // 置顶对象：Agent 正在运行时优先置顶 live run（正在做的对话）；
+  // 空闲时置顶用户当前选中查看的 run。两种『当前对话』的理解都能被提到分组之上。
+  const pinnedId = (liveId && runSet.has(liveId)) ? liveId
+                 : (activeId && runSet.has(activeId) ? activeId : null);
+  if (pinnedId) {
+    const topRow = row(pinnedId);
+    if (topRow) topHtml = `<div class="runs-pinned"><div class="runs-pinned-head"><span class="caret">▾</span><span class="runs-pinned-name">当前任务</span></div>${topRow}</div>`;
+    grouped.add(pinnedId);
+  }
+
   for (const g of runGroups()) {
-    const members = g.runs.filter(r => runSet.has(r)).sort().reverse();   // newest first
+    const members = g.runs.filter(r => runSet.has(r) && r !== pinnedId).sort().reverse();   // newest first
     members.forEach(r => grouped.add(r));
     const rows      = members.map(row).filter(Boolean);
     const nameMatch = q && g.name.toLowerCase().includes(q);
@@ -3612,7 +3633,7 @@ function renderRunsList(runs, activeId) {
   } else {
     parts.push(looseRows);
   }
-  const html = parts.join('');
+  const html = topHtml + parts.join('');
   list.innerHTML = html.trim() ? html : '<div style="color:var(--muted);font-size:12px;padding:12px 14px;">No matches</div>';
 
   const input = document.getElementById('runGroupInput');
