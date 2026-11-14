@@ -87,3 +87,10 @@
 ## 2026-11-14 | 看板『当前任务』置顶块样式统一为普通分组观感
 
 承接上一任务(runs/20261114-171538)给任务看板加『当前任务』置顶块后,用户反馈其字体/风格/左边尖三角与普通分组不一致,要求统一。改 dashboard/public/index.html 两处:①CSS .runs-pinned-head 对齐 .run-group-head(padding 左8/gap6/color muted),新增 .runs-pinned-head .caret(9px muted width10)与 .runs-pinned-name;②renderRunsList 里 topHtml 的标题从硬拼『▶ 当前任务』(▶随标题变11px蓝色)改为 <span class=caret>▾</span><span class=runs-pinned-name>当前任务</span>,三角字符▶→▾、结构/字号/颜色与普通分组完全一致。保留 .runs-pinned .run-item 淡蓝背景作『当前』标识。node --check 内联脚本通过。serveStatic 实时 readFileSync(public/index.html) 无构建产物,刷新即生效。手机执行体因看板IP白名单无法跨设备截图,改由用户刷新看板确认观感,用户回复『可以了』。遗留:三角为静态▾(置顶块无折叠交互),用户未要求折叠。
+## 2026-11-14 | 发版 v0.4.1
+
+发布 v0.4.1（末位+1，上一版 v0.4.0）。本次包含 v0.4.0 之后 13 个提交，主题：①Dashboard 侧面板/布局改进（ac48ec2/70888ac/d6d5456/4879211/e05641c）；②内置 App-only 模式（3d7b1f1/1abdda6/4957a06）；③记忆系统整体改造——目录索引+全量正文分离+自动迁移（76ec9cb）；④panel_control 新增 listControls 枚举面板控件（a537c2d）；⑤看板『当前任务』置顶块样式统一（fec08ee）。
+
+发版机制沿用 e6294a4：改 desktop/package.json version + desktop/package-lock.json 两处 version + 本 WORKLOG，commit 'release: v0.4.1'，打 tag v0.4.1 并 push 触发 .github/workflows/release.yml（on push tags v*.*.*，三平台 Electron + Android 打包并创建 GitHub Release）。
+
+重要提醒（网站版本号）：qevos.ai 首页版本号由服务器 cron 脚本 scripts/sync_releases.sh 每天 04:00 从 GitHub releases/latest 拉取生成 /api/latest.json，前端 fetch 显示。上次 v0.4.0 网站仍显示 0.3.x，根因是 v0.4.0 的 GitHub Release 未成功生成（workflow 未跑成功），导致 cron 拉到的 latest 仍是旧 tag。故本次发版后须确认 GitHub Releases 中确实出现 v0.4.1，否则网站不会自动更新。
