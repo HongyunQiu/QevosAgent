@@ -292,6 +292,13 @@
         if (i >= 0) pushCbs.splice(i, 1);
       };
     },
+
+    // 外壳导航：从全屏 App 面板切回「Apps 图标看板（home）」。App-only 模式下顶栏/tab 条被隐藏，
+    // 面板内没有可见入口回看板；桥把这条意图 postMessage 给外壳主页，由它 setCenterTab('apps')。
+    // 只切走、不销毁当前 App 的 iframe（对话/任务/播放位置原样保留），看板再点本 App 会复用同一 tab。
+    goApps: function () {
+      try { window.parent.postMessage({ type: 'qv-go-apps', app: APP }, '*'); } catch (_) { /* 非 iframe 内（直接打开面板）时忽略 */ }
+    },
   };
 
   // Open the SSE stream at init so the panel is always reachable for Agent control

@@ -5159,6 +5159,8 @@ function syncAppTabsFromState(appTabs) {
 window.addEventListener('message', e => {
   const m = e.data;
   if (!m || typeof m !== 'object') return;
+  // App 面板请求回「Apps 图标看板」：qevos.goApps() 经桥 postMessage 过来。只切走、不销毁当前 App iframe。
+  if (m.type === 'qv-go-apps') { setCenterTab('apps'); return; }
   const btns = [...document.querySelectorAll('[id^=ctab-term-]')];
   if (m.type === 'qv-session') {
     for (const b of btns) {

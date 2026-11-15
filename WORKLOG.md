@@ -94,3 +94,15 @@
 发版机制沿用 e6294a4：改 desktop/package.json version + desktop/package-lock.json 两处 version + 本 WORKLOG，commit 'release: v0.4.1'，打 tag v0.4.1 并 push 触发 .github/workflows/release.yml（on push tags v*.*.*，三平台 Electron + Android 打包并创建 GitHub Release）。
 
 重要提醒（网站版本号）：qevos.ai 首页版本号由服务器 cron 脚本 scripts/sync_releases.sh 每天 04:00 从 GitHub releases/latest 拉取生成 /api/latest.json，前端 fetch 显示。上次 v0.4.0 网站仍显示 0.3.x，根因是 v0.4.0 的 GitHub Release 未成功生成（workflow 未跑成功），导致 cron 拉到的 latest 仍是旧 tag。故本次发版后须确认 GitHub Releases 中确实出现 v0.4.1，否则网站不会自动更新。
+
+## 2026-11-15 | feat(dashboard): 桥加 qevos.goApps() + 外壳监听，支持全屏 App 一键回看板
+
+背景：ChatCosmos 跑在 App-only 全屏模式（body.app-only），CSS 隐藏了 topbar/sidebar/tab 条，用户进全屏 App 后无任何可见入口回 Apps 图标看板（『关不掉、回不去』根因）。探讨照片管理时确认：图片管理器要做独立 App（方案B），必须有『从全屏 App 回看板』的把手。
+
+改动（两文件，共9行）：
+- dashboard/public/qevos-bridge.js：window.qevos 加 goApps()，向 parent postMessage {type:'qv-go-apps',app}。
+- dashboard/public/index.html：window message 监听加 qv-go-apps 分支 → setCenterTab('apps')。
+
+设计要点：goApps 只切走不销毁当前 App 的 iframe（setCenterTab 只 toggle active class，切走 pane 仅暂停音视频不 remove），对话/任务/播放位置原样保留；看板再点本 App 时 openAppPanel 检测 tab 已存在会复用不新建。goApps 方向是『回 home』，进 App 仍靠点图标。
+
+部署：bridge 属 QevosAgent=平台层，可纳入 ChatCosmos 更新包 platform 段（dashboard/public 相对根目录、不在 PLATFORM_PROTECT），随普通 OTA 下发 + chatcosmos-platform-switch 自动重启 QevosAgent，不必重打整机镜像。node --check 通过。配套 ChatCosmos 侧改动见 ChatCosmos 仓库 WORKLOG。
