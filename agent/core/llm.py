@@ -388,11 +388,24 @@ class OpenAIBackend(LLMBackend):
                     new_body = _json.dumps(data).encode("utf-8")
                     # httpx.Request has no .copy() with merge_content;
                     # build a new request with the cleaned body.
+                    #
+                    # 两个必须同时满足的坑（实测事故 run 20261118-011324）：
+                    # (1) content-length：删掉被拒字段后 new_body 变短，但
+                    #     dict(request.headers) 里残留的是【旧】body 的
+                    #     content-length，header 与实际 body 长度不符会让
+                    #     httpx 发送时协议错乱，被包装成 'Connection error'。
+                    #     必须 pop 掉让 httpx 按 new_body 重新计算。
+                    # (2) extensions：httpx 0.28+ 里 Request() 的 extensions
+                    #     默认为空 {}，原请求的 extensions 携带传输层握手字段
+                    #     （httpcore 协议协商等），漏传同样会让请求发送失败。
+                    _headers = dict(request.headers)
+                    _headers.pop("content-length", None)
                     request = Request(
                         method=request.method,
                         url=request.url,
-                        headers=dict(request.headers),
+                        headers=_headers,
                         content=new_body,
+                        extensions=getattr(request, "extensions", None) or {},
                     )
                 except Exception:
                     pass  # Not JSON, send as-is
@@ -803,7 +816,22 @@ class OpenAIBackend(LLMBackend):
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
         # Explicitly nullify any SDK-injected params this provider has rejected before.
+        #
+        # 关键：只能对【顶层】参数设 None。chat_template_kwargs / thinking /
+        # continue_final_message / add_generation_prompt 这些是 vLLM 专有、
+        # 经 extra_body 注入的参数，create() 根本没有同名顶层参数——把它们
+        # 设成 kwargs[_p]=None 会让 create() 抛 TypeError（实测事故：降级把
+        # chat_template_kwargs 记入 _suppressed 后，下一轮这里又把它当顶层参数
+        # 传 → 'unexpected keyword argument chat_template_kwargs'，run 20261118
+        # 系列反复复现的根因）。这类参数改由下面 extra_body 注入处按 _suppressed
+        # 跳过，绝不下放到顶层 kwargs。
+        _EXTRA_BODY_KEYS = {
+            "chat_template_kwargs", "thinking",
+            "continue_final_message", "add_generation_prompt",
+        }
         for _p in _suppressed:
+            if _p in _EXTRA_BODY_KEYS:
+                continue
             kwargs[_p] = None
         if self._is_official_openai:
             kwargs["max_completion_tokens"] = max_tokens
@@ -817,15 +845,19 @@ class OpenAIBackend(LLMBackend):
 
         if not self._is_official_openai:
             enable = budget > 0
-            extra: dict = {"chat_template_kwargs": {"enable_thinking": enable}}
-            if enable:
+            extra: dict = {}
+            # 已被本 provider 拒绝过的 extra_body 参数不再注入（否则又触发 400）。
+            if "chat_template_kwargs" not in _suppressed:
+                extra["chat_template_kwargs"] = {"enable_thinking": enable}
+            if enable and "thinking" not in _suppressed:
                 extra["thinking"] = {"type": "enabled", "budget_tokens": budget}
-            if continue_final:
+            if continue_final and "continue_final_message" not in _suppressed:
                 # Resume the final assistant message verbatim rather than emitting
                 # a fresh turn — lets us stitch a truncated response back together.
                 extra["continue_final_message"] = True
                 extra["add_generation_prompt"] = False
-            kwargs["extra_body"] = extra
+            if extra:
+                kwargs["extra_body"] = extra
 
         resp = self._create_with_retry(kwargs)
         self.last_finish_reason = _normalize_finish_reason(

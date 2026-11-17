@@ -130,3 +130,21 @@
 加固（用户授权，llm.py 属受保护文件）：在 `_try_create_with_param_strip` 的 response_format 降级块之后、is_param_error 之前，新增 TypeError 识别分支——匹配 `unexpected keyword argument 'X'`，把 X 从顶层 kwargs 弹出、并从 extra_body 移除、加入 _suppressed_params（HTTP 拦截器兜底），再重试一次。这样陈旧进程/旧 SDK 也不会无限刷。
 
 验证：py_compile 通过；端到端 harness（create 抛一次 TypeError 后第二次成功）通过，确认剥离后恢复且 suppressed 记录正确。已知缺口：未在真实 Google/vLLM 端点实测；对**已运行的旧进程无效**（补丁只对新启动/重载进程生效，需重启 agent/dashboard 才加载新代码）。分析报告 runs/20261118-010319/artifacts/why_010006_still_errors.md。
+
+## 2026-11-18 | 修复 chat_template_kwargs 三层降级死循环（Google OpenAI 兼容端点）
+
+承接 run 20261118-011324（全程 Connection error）与 003809/010006（已修 Google 400 + TypeError，commit f7594c9/e19630c）。用户反馈『修了 chat_template_kwargs 还是不行』，实证定位到之前修复引入了更隐蔽的次生 bug，最终表现成 Connection error / TypeError 反复刷屏。
+
+三层根因（均用脚本实证，非猜测）：
+1. wrapped_send（HTTP 拦截器）删 body 顶层被拒字段后重建 httpx.Request，但 dict(request.headers) 残留【旧】body 的 content-length，而删字段后 new_body 变短（实测 129→86），header 与实际 body 长度不符 → httpx 发送协议错乱 → 被包装成 'Connection error'。同时 httpx 0.28+ 的 Request() 默认 extensions={}，重建时漏传原 extensions 也会发送失败。
+2. _call_api 的 nullify 块 `for _p in _suppressed: kwargs[_p]=None` 把 extra_body 型参数（chat_template_kwargs/thinking/continue_final_message/add_generation_prompt）当【顶层】参数传给 create() → create() 无同名顶层参数 → TypeError 'unexpected keyword argument chat_template_kwargs'。降级救一次，但下一轮 _call_api 又重新设 None → 每轮先 TypeError。
+3. _call_api 的 extra_body 注入处无条件塞 chat_template_kwargs/thinking，即使已 suppressed 也照塞 → 又触发 400。
+
+三处修复（agent/core/llm.py）：
+1. wrapped_send 重建 Request 前 _headers.pop('content-length', None) 让 httpx 按 new_body 重算，并传 extensions=request.extensions。
+2. nullify 块新增 _EXTRA_BODY_KEYS 集合，跳过 extra_body 型参数，只对真正的顶层参数设 None。
+3. extra_body 注入改为守卫式：已被 _suppressed 拒绝的 key 不再注入。
+
+验证：verify_real2.py 用真实 OpenAIBackend 连续三次 _call_api(thinking_budget=1000 强制注入 chat_template_kwargs) 全部成功返回，无 TypeError/Connection error/400，_suppressed 最终为空（Google 端点直接接受干净请求）。Google 端点实测：带 chat_template_kwargs 报 400 Unknown name，plain 调用 OK。
+
+遗留：用户需重启 QevosAgent 进程加载新代码（长驻进程不重载字节码=白改，反复踩过的坑）。
