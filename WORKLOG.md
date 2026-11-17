@@ -106,3 +106,17 @@
 设计要点：goApps 只切走不销毁当前 App 的 iframe（setCenterTab 只 toggle active class，切走 pane 仅暂停音视频不 remove），对话/任务/播放位置原样保留；看板再点本 App 时 openAppPanel 检测 tab 已存在会复用不新建。goApps 方向是『回 home』，进 App 仍靠点图标。
 
 部署：bridge 属 QevosAgent=平台层，可纳入 ChatCosmos 更新包 platform 段（dashboard/public 相对根目录、不在 PLATFORM_PROTECT），随普通 OTA 下发 + chatcosmos-platform-switch 自动重启 QevosAgent，不必重打整机镜像。node --check 通过。配套 ChatCosmos 侧改动见 ChatCosmos 仓库 WORKLOG。
+## 2026-11-18 | 修复 Google OpenAI 兼容接口 400（logprobs/chat_template_kwargs 被 Protobuf 校验拒）
+
+**症状**：连 Google（generativelanguage.googleapis.com）OpenAI 兼容接口，第 0 轮调用即报 400 INVALID_ARGUMENT：`Unknown name "logprobs": Cannot find field` + `Unknown name "chat_template_kwargs": Cannot find field`。
+
+**根因**：Google 端点不被 `_detect_official_openai_endpoint` 识别为 official（只认 api.openai.com/openai.com），故 `_call_api` 走非 official 分支：① 主调用请求 `logprobs`（顶层 kwargs）；② 塞 `chat_template_kwargs` 进 `extra_body`（SDK 序列化后合并到请求体顶层）。Google 走严格 Protobuf JSON 校验，未定义顶层字段一律 `Cannot find field` 拒绝。框架本已有降级机制（`_suppressed_params` + `_wrap_create_method` 的 `wrapped_send` 拦截器从 HTTP body 顶层删 key + `_logprobs_enabled` 缓存降级），但 `_try_create_with_param_strip` 的 `is_param_error` 判据只匹配 `unsupported/unknown parameter`，正则只认 `unknown parameter: xxx`，都不认 Google 的 `Unknown name "x": Cannot find field` + `INVALID_ARGUMENT` 措辞 → 容错未触发，400 直接抛给上层。
+
+**方案（方法B，比无脑删字段更稳健）**：未采用「全局删字段」（那会破坏本地 vLLM/Qwen3 用户的 enable_thinking 控制和信心指数 logprobs 熵）。改为扩展 `_try_create_with_param_strip` 的错误识别：① `is_param_error` 增加 `unknown name`/`cannot find field`/`invalid_argument` 判据；② 字段提取改用 `re.findall(r'Unknown name "(\w+)"')` 一次抓全部被拒字段（Google 一次 400 同时报两个）。命中后 `logprobs`→`_logprobs_enabled=False`+顶层 pop；`chat_template_kwargs`→进 `_suppressed_params`，由 `wrapped_send` 拦截器在 HTTP 层从 body 顶层删除。本地 vLLM 永不返回此类错误，零副作用。
+
+**验证**：py_compile 语法 OK；用真实 Google 错误字符串走判据+正则，`is_param_error=True`，`bad_list=['logprobs','chat_template_kwargs']` 全部捕获。
+
+**改动文件**：agent/core/llm.py（`_try_create_with_param_strip`，约 L621 起）。备份 runs/20261118-003809/artifacts/llm.py.bak。
+
+**遗留**：未实机连 Google 端到端跑（本机无 Google key/网络受限）；逻辑已逐环节坐实，下次连 Google 首次 400 后应自动降级成功。
+

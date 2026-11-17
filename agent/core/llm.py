@@ -618,36 +618,57 @@ class OpenAIBackend(LLMBackend):
                     pass
                 return self.client.chat.completions.create(**kwargs)
 
+            es_low = es.lower()
             is_param_error = (
-                "unsupported parameter" in es.lower()
-                or "unknown parameter" in es.lower()
-                or "unknown_parameter" in es.lower()
+                "unsupported parameter" in es_low
+                or "unknown parameter" in es_low
+                or "unknown_parameter" in es_low
+                # Google 的 OpenAI 兼容接口走严格 Protobuf JSON 校验：遇到未定义的
+                # 顶层字段（如 logprobs / chat_template_kwargs）会一次性报
+                # 'Unknown name "x": Cannot find field' + status INVALID_ARGUMENT。
+                # 这不是"参数不支持"而是"字段不存在"，措辞完全不同，需单独识别，
+                # 否则容错逻辑认不出、400 直接抛给上层（实测事故根因）。
+                or "unknown name" in es_low
+                or "cannot find field" in es_low
+                or "invalid_argument" in es_low
             ) and "400" in es
 
             if not is_param_error:
                 raise
 
-            param = re.search(
-                r"[Uu]n(?:known|supported)\s+parameter[:\s]+['\"]?(\w+)['\"]?", es
+            # 提取被拒字段名。Google 一次 400 可同时报多个 'Unknown name "x"'，
+            # 用 findall 全部抓出，逐个降级，避免"删一个、重试又被另一个卡"。
+            bad_list = re.findall(
+                r"[Uu]nknown\s+name\s+['\"]?(\w+)['\"]?", es
             )
-            if not param:
+            if not bad_list:
+                _m = re.search(
+                    r"[Uu]n(?:known|supported)\s+parameter[:\s]+['\"]?(\w+)['\"]?", es
+                )
+                if _m:
+                    bad_list = [_m.group(1)]
+            if not bad_list:
                 raise
-            bad = param.group(1)
 
-            if bad == "temperature" and self.temperature is not None:
-                self.temperature = None
+            suppressed = getattr(self, "_suppressed_params", set())
+            for bad in bad_list:
+                if bad == "temperature" and self.temperature is not None:
+                    self.temperature = None
 
-            if bad == "logprobs":
-                # 缓存到实例：logprobs 是显式 kwargs，不缓存的话每次调用都要
-                # 白付一趟 400 往返。
-                self._logprobs_enabled = False
+                if bad == "logprobs":
+                    # 缓存到实例：logprobs 是显式 kwargs，不缓存的话每次调用都要
+                    # 白付一趟 400 往返。
+                    self._logprobs_enabled = False
 
-            if bad in kwargs:
-                kwargs.pop(bad)
-            else:
-                suppressed = getattr(self, "_suppressed_params", set())
-                suppressed.add(bad)
-                self._suppressed_params = suppressed
+                if bad in kwargs:
+                    kwargs.pop(bad)
+                else:
+                    # chat_template_kwargs 等藏在 extra_body 里、不在顶层 kwargs，
+                    # 这里加入 _suppressed_params，由 _wrap_create_method 的
+                    # wrapped_send 拦截器在 HTTP 层从序列化后的 body 顶层删除
+                    # （OpenAI SDK 会把 extra_body 合并到请求体顶层）。
+                    suppressed.add(bad)
+            self._suppressed_params = suppressed
 
             return self.client.chat.completions.create(**kwargs)
 
