@@ -618,6 +618,40 @@ class OpenAIBackend(LLMBackend):
                     pass
                 return self.client.chat.completions.create(**kwargs)
 
+            # ── Python TypeError：create() 收到非法顶层关键字参数 ──────────────
+            # 场景：陈旧进程/旧 SDK 把 chat_template_kwargs 之类参数当**顶层**参数
+            # 传给 create()（新版代码已改塞 extra_body，但旧字节码/旧进程仍在跑）。
+            # 这类错是 Python 在调用前就抛的 TypeError，错误串里**没有 '400'**，
+            # 下面 is_param_error 判据认不出 → 直接 re-raise → 外层退避用相同
+            # kwargs 无限重试 → 同一句错刷屏（实测事故根因，run 20261118-010006）。
+            # 这里单独识别：把被拒字段从顶层 kwargs 弹出（并从 extra_body 移除、
+            # 加入 _suppressed_params 让 HTTP 拦截器兜底），再重试一次。
+            if "unexpected keyword argument" in es:
+                _tk = re.search(
+                    r"unexpected keyword argument ['\"]?(\w+)['\"]?", es
+                )
+                if _tk:
+                    bad = _tk.group(1)
+                    if bad == "logprobs":
+                        self._logprobs_enabled = False
+                    kwargs.pop(bad, None)
+                    # 若藏在 extra_body 里也一并清掉，避免换个姿势又冒出来
+                    _eb = kwargs.get("extra_body")
+                    if isinstance(_eb, dict):
+                        _eb.pop(bad, None)
+                    suppressed = getattr(self, "_suppressed_params", set())
+                    suppressed.add(bad)
+                    self._suppressed_params = suppressed
+                    try:
+                        sys.stderr.write(
+                            f"[llm] create() 拒绝顶层参数 '{bad}'，已剥离后重试："
+                            f"{es[:200]}\n"
+                        )
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+                    return self.client.chat.completions.create(**kwargs)
+
             es_low = es.lower()
             is_param_error = (
                 "unsupported parameter" in es_low

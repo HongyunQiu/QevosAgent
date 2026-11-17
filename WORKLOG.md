@@ -120,3 +120,13 @@
 
 **遗留**：未实机连 Google 端到端跑（本机无 Google key/网络受限）；逻辑已逐环节坐实，下次连 Google 首次 400 后应自动降级成功。
 
+
+## 2026-11-18 | 加固 llm.py 容错：识别 create() 的 TypeError 非法顶层参数，避免无限重试刷屏
+
+承接 20261118-003809（修了 Google OpenAI 兼容 400 INVALID_ARGUMENT）。排查 run 20261118-010006 为何仍报错：实际报错是 Python TypeError `Completions.create() got an unexpected keyword argument 'chat_template_kwargs'`，从 short_term 第5行起无限刷屏到第575行——**不是** 003809 修的那个 HTTP 400。
+
+根因两条独立叠加：(1) 进程代码陈旧——旧 commit 91ba99b 把 chat_template_kwargs 当**顶层**参数传 `kwargs["chat_template_kwargs"]={...}`，新版代码已改塞 `extra_body`（llm.py:786/794，正确写法），但 010006 进程（01:00 启动）加载的是旧字节码没重载。实测复现：顶层传→TypeError；extra_body→OK。(2) 容错不覆盖 TypeError——f7594c9 的 is_param_error 判据要求 `'400' in es`，Python TypeError 串里没有 400，于是 re-raise，外层退避用相同 kwargs 无限重试。
+
+加固（用户授权，llm.py 属受保护文件）：在 `_try_create_with_param_strip` 的 response_format 降级块之后、is_param_error 之前，新增 TypeError 识别分支——匹配 `unexpected keyword argument 'X'`，把 X 从顶层 kwargs 弹出、并从 extra_body 移除、加入 _suppressed_params（HTTP 拦截器兜底），再重试一次。这样陈旧进程/旧 SDK 也不会无限刷。
+
+验证：py_compile 通过；端到端 harness（create 抛一次 TypeError 后第二次成功）通过，确认剥离后恢复且 suppressed 记录正确。已知缺口：未在真实 Google/vLLM 端点实测；对**已运行的旧进程无效**（补丁只对新启动/重载进程生效，需重启 agent/dashboard 才加载新代码）。分析报告 runs/20261118-010319/artifacts/why_010006_still_errors.md。
