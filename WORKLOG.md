@@ -238,3 +238,9 @@
 样式覆盖桌面与窄屏移动端，遮罩层位于现有看板面板之上，打开时锁定页面滚动。事件采用文档级委托，因此看板每 500ms 重绘回答内容后不需要重新绑定；若图片外层是链接，点击图片会阻止导航并优先打开查看器。
 
 扩展 `test/tests_dashboard_markdown_images.py`，验证缩放边界及滚轮、指针、Esc、Markdown 图片接线。Dashboard 内联 JavaScript `node --check`、`git diff --check` 通过；全仓 Python 测试 299/299 通过；运行中的 `http://127.0.0.1:8765` 已确认实时提供 `imageLightbox` 标记，无需重启 Dashboard。Playwright CLI 包因网络获取超时未安装，改用连接的真实浏览器确认看板成功加载新版查看器结构。
+
+## 2026-11-19 | 发版 v0.4.3
+
+发布 QevosAgent v0.4.3，包含 v0.4.2 之后的黄色框 Markdown 与 run 内图片渲染、图片路径可达性回炉校验、跨域/绝对路径/目录穿越防护、特殊字符路径编码，以及点击图片全屏查看、滚轮/按钮/双指缩放和拖动平移功能。发版前全仓 Python 测试 299/299 通过，Dashboard 内联 JavaScript 语法检查通过。
+
+使用仓库 `release.ps1 0.4.3` 同步 `desktop/package.json`、`desktop/package-lock.json` 和 Android `build.gradle`，生成提交 `c556217` 并推送 `main` 与标签 `v0.4.3`。GitHub Actions 运行 `44346881408` 中 Windows、macOS、Linux、Android 四个平台构建和最终 release job 全部成功，GitHub Release 已创建。现有未提交的 `dashboard/server.js` 代理探测改动和其他未跟踪文件未纳入版本。
