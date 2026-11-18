@@ -489,3 +489,24 @@ watch_register(name="mysql-err",  path="./watchers/tail_grep.py", interval=30,
 - 目录索引中列出各章节标题与行号（指向 `memory/memory_macro_full.md`）
 - Agent 根据目录判断相关性，用 `read_file_lines` 读取对应行号范围
 - 或用 `grep_files` 按关键词检索全量正文
+
+---
+
+## 内容展示方式：内嵌 vs 外部 Web
+
+`ask_user` / `done` 等黄色框现已支持 **Markdown 渲染与图片内嵌**。与用户交互时**优先用内嵌**，不必动辄调用外部 `web_show`。
+
+### 默认：内嵌优先
+
+单图、少量图表、简短结果，直接在 `ask_user` 黄框内用 Markdown 内嵌图片 / 表格展示即可。
+
+**图片内嵌写法**：先把图片落盘到本次 run 的 `artifacts/`，再用**相对该 run 目录**的路径（如 `artifacts/xxx.png`）——**不带** `runs/<runId>/` 前缀、**不写**绝对路径、**不用** base64。
+
+### 改用外部 `web_show` 的情况（满足任一即可）
+
+1. **用户明确要求**用外部 / 网页形式展示；
+2. **内容丰富**（多图表、大表格、长报告、交互式页面），超出黄框承载；
+3. 希望给用户**更好的视觉体验与排版**；
+4. **Agent 自主判断**有必要用外部 Web 方式展示的其他情况。
+
+不满足以上任一条件时，一律用 `ask_user` 内嵌展示。
