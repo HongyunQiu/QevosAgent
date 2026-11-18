@@ -94,15 +94,35 @@ def check_answer_images(text, run_dir, run_id):
     return broken
 
 
+# 反馈里固定附带的『正样本 / 方法说明』：让模型一眼看清正确写法，加速修正。
+_GOOD_EXAMPLE = """【正确写法（照抄即可）】图片 src 一律写「相对本次 run 目录」的路径，不带 runs/<runId>/ 前缀、不写绝对路径、不用 base64。
+  ✅ Markdown：![说明](artifacts/demo.png)
+  ✅ HTML：<img src="artifacts/demo.png">
+  ❌ 错误：![说明](runs/20261118-213144/artifacts/demo.png)   ← 带 runs/<runId>/ 前缀，前端会再拼一次→路径重复→破图
+  ❌ 错误：![说明](E:/workspace/.../demo.png)                ← 绝对路径，浏览器加载不到
+（图片先落盘到 run 目录的 artifacts/ 下，再用上面的相对路径引用。）"""
+
+
 def format_feedback(broken):
-    """把破图列表拼成回传给模型的反馈消息。"""
-    lines = ["[图片校验] 你这条回答里有图片在用户端会显示成破图标，请先修正 src 再重新提交："]
+    """把破图列表拼成回传给模型的反馈消息。
+
+    固定附带一段『正样本 / 方法说明』（_GOOD_EXAMPLE），让模型直接照抄正确写法，
+    比只描述错误更快收敛；随后逐条列出每个破图的错误 src、解析结果与同名文件建议。
+    """
+    lines = [
+        "[图片校验] 你这条回答里有图片在用户端会显示成破图标，请先修正 src 再重新提交。",
+        "",
+        _GOOD_EXAMPLE,
+        "",
+        "【本次需要你修正的具体图片】",
+    ]
     for b in broken:
         lines.append(f"  - src=`{b['src']}` 解析到 run 目录下的 `{b['resolved']}`，该文件不存在。")
         if b["suggestions"]:
             lines.append(f"    该 run 目录下同名文件其实在：{', '.join('`'+s+'`' for s in b['suggestions'])}")
-            lines.append("    请把 src 改成上面之一（相对 run 目录的路径，如 artifacts/xxx.png，不要带 runs/<runId>/ 前缀，也不要写绝对路径）。")
+            lines.append("    请把 src 改成上面之一（按上面的正确写法，相对 run 目录、不带前缀）。")
         else:
             lines.append("    该 run 目录下找不到同名文件：请确认图片是否真的落盘、路径是否写对；若尚未生成请先生成再引用。")
+    lines.append("")
     lines.append("修正后重新提交即可；图片正常显示无需再提。")
     return "\n".join(lines)

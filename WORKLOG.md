@@ -206,3 +206,11 @@
 验证：py_compile 通过；端到端 harness（MockState+RUN_DIR=真实 run）跑通四条路径——破图连续回炉 1/3→2/3→3/3 拦截、第4次达上限放行；注入反馈内容正确；无破图放行且计数清零；空文本放行。
 
 遗留：未在真实 run 端到端实机验证（需重启 agent 后让模型真发一条含破图的 ask_user/done 看回炉）；normalize_img_src 与前端 _resolveRunImgSrc 是两份实现，将来改一处需同步另一处（已在两处注释标注）。长驻 agent 进程改 loop.py 需重启才生效。
+
+## 2026-11-18 | img_guard 反馈提示词加入正样本/方法说明
+
+承接 runs/20261118-212125 续作的图片校验门(img_guard)。用户反馈:校验失败回传给模型的提示词只有纠错式描述(错误src+解析结果+同名建议),缺『正确应该长这样』的示例,模型收敛慢。要求加正样本或具体方法说明。
+
+改动 agent/core/img_guard.py 的 format_feedback:新增模块级常量 _GOOD_EXAMPLE,固定附在反馈开头——给出 markdown `![说明](artifacts/demo.png)` 与 HTML `<img src="artifacts/demo.png">` 两种正确 src 写法,配 ❌带 runs/<runId>/ 前缀、❌绝对路径 两个错误对照,并注明『先落盘 run 目录 artifacts/ 再相对引用、不用 base64』。逐条纠错逻辑保留,措辞精简(前缀规则统一在正样本区块说明)。验证:py_compile 通过;run_python harness 构造两条 broken(一条有同名建议一条无)调用 format_feedback,输出含完整正样本区块+逐条纠错,符合预期。
+
+遗留:真实 run 实机回炉仍需重启 agent 验证(改源码不重载=白改)。
