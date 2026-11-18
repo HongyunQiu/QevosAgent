@@ -222,3 +222,11 @@
 用户拍板『不用样本了,只给规则』。把 _GOOD_EXAMPLE 改成纯规则说明(4条:相对run目录以artifacts/开头/不带runs前缀/不写绝对路径/不用base64先落盘再引用),绝对不写任何 ![]() 或 <img> 图片语法,路径片段用反引号包裹(反引号非图片语法不被抓)。验证:py_compile 通过;format_feedback 生成的反馈文本对 extract_image_srcs 返回 [](空),证明规则区块不再自我触发。在 img_guard.py 注释里记录此坑。
 
 复用规律:校验器+回炉反馈机制里,反馈文本自身绝不能含会被校验器识别的语法(示例/占位路径),否则自我触发循环;规则说明用纯文字+反引号,不写真实图片语法。改 agent/core 源码需重启 agent 生效。
+
+## 2026-11-18 | 加固 Markdown 图片展示边界与路径校验
+
+审查同日黄色框 Markdown/图片功能后修复五类问题：跨域 HTTP(S)、协议相对、data/blob 和任意 `/api/` 图片不再由浏览器自动加载，避免跟踪像素及向内网/localhost 自动发 GET；服务端其他磁盘的绝对路径也不直接展示，统一要求先复制或下载到本次 run 的 `artifacts/`。`img_guard` 现在会把这些来源作为可纠正错误回炉，并用 `realpath + commonpath` 拒绝 `../` 及符号链接越界；当前 run 的 `run-file-raw` URL 仍可归一后校验。
+
+同时完善 Markdown 图片目的地址解析，支持尖括号包裹的带空格文件名；前端按路径段 URL 编码，修复空格和 `#` 等合法文件名被浏览器截断；无法访问的图片替换为明确的阻止占位文字。系统提示词折叠时不再执行 Markdown 渲染，展开后按 run 和正文缓存，避免看板频繁重绘时重复执行 marked、DOMPurify 和 DOMParser。
+
+新增 `test/tests_img_guard.py` 8 项及 `test/tests_dashboard_markdown_images.py` 1 项回归，覆盖本地相对图片、空格、`#`、跨域/data、绝对路径、目录穿越和跨 run API。`py_compile`、Dashboard 内联 JavaScript `node --check`、`git diff --check` 均通过；全仓 `python -m unittest discover -s test -p 'tests_*.py'` 共 298/298 通过。现有未提交的 `dashboard/server.js` 代理探测修改未纳入本次变更。

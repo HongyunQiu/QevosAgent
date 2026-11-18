@@ -14,9 +14,10 @@ normalize_img_src 与 dashboard/public/index.html 的 _resolveRunImgSrc 保持�
 """
 import os
 import re
+from urllib.parse import unquote
 
 # markdown 图片 ![alt](src) 与 HTML <img ... src="src" ...>
-_MD_IMG = re.compile(r"!\[[^\]]*\]\(\s*([^)\s]+)")
+_MD_IMG = re.compile(r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^)\s]+))")
 _HTML_IMG = re.compile(r"<img\b[^>]*?\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
 
 
@@ -25,8 +26,12 @@ def extract_image_srcs(text):
     if not text:
         return []
     seen, out = set(), []
-    for m in list(_MD_IMG.finditer(text)) + list(_HTML_IMG.finditer(text)):
-        s = m.group(1).strip()
+    matches = []
+    for m in _MD_IMG.finditer(text):
+        matches.append((m.start(), (m.group(1) or m.group(2) or "").strip()))
+    for m in _HTML_IMG.finditer(text):
+        matches.append((m.start(), m.group(1).strip()))
+    for _, s in sorted(matches):
         if s and s not in seen:
             seen.add(s)
             out.append(s)
@@ -37,20 +42,25 @@ def normalize_img_src(src, run_id):
     """把 src 归一成 run 内相对路径。
 
     返回 (kind, rel)：
-      - ("run", rel)  ：rel 是相对该 run 目录的路径，需要检查文件是否存在。
-      - ("external", src)：外链 / data / blob / 已是 /api/ / 绝对文件系统路径，
-        不归 run 目录管，跳过校验。
-    与前端 _resolveRunImgSrc 等价：先剥 ./，绝对路径判 external，
-    再剥冗余的 runs/ 与紧跟的当前 runId/ 段。
+      - ("run", rel)     ：rel 是相对该 run 目录的路径，需要检查文件是否存在。
+      - ("blocked", src) ：远程 URL、data/blob、任意绝对路径或非当前 run 的 API 路径，
+        前端不会自动加载，必须先复制/下载到本次 run 的 artifacts/。
+    与前端 _resolveRunImgSrc 保持等价：只允许当前 run 内的相对路径。
     """
     if not src:
-        return ("external", src)
+        return ("blocked", src)
+    api = re.match(r"^/api/run-file-raw/([^/]+)/(.+)$", src, re.IGNORECASE)
+    if api:
+        api_run_id = unquote(api.group(1))
+        if run_id and api_run_id == run_id:
+            return ("run", unquote(api.group(2)))
+        return ("blocked", src)
     if re.match(r"^(https?:|data:|blob:|//|/api/)", src, re.IGNORECASE):
-        return ("external", src)
+        return ("blocked", src)
     rel = src[2:] if src.startswith("./") else src
-    # 绝对文件系统路径（Windows 盘符 / file: / 以 / 或 \ 开头）→ 前端不服务，跳过
+    # 服务端磁盘绝对路径浏览器无法访问；要求先复制到 run/artifacts 再引用。
     if re.match(r"^([A-Za-z]:[\\/]|file:|[\\/])", rel):
-        return ("external", src)
+        return ("blocked", src)
     if rel.startswith("runs/"):
         rel = rel[5:]
     if run_id and rel.startswith(run_id + "/"):
@@ -77,20 +87,39 @@ def check_answer_images(text, run_dir, run_id):
     """校验回答文本里的 run 内图片是否可达。
 
     返回破图列表，每项 {src, resolved, suggestions:[相对路径]}；全部可达则返回 []。
-    external（外链/绝对路径）跳过，不计入破图。
+    只放行当前 run 目录内的实际文件；外链、绝对路径及目录穿越均返回 broken。
     """
     broken = []
     for src in extract_image_srcs(text):
         kind, rel = normalize_img_src(src, run_id)
-        if kind != "run":
+        if kind == "blocked":
+            broken.append({
+                "src": src,
+                "resolved": src,
+                "suggestions": [],
+                "reason": "blocked_source",
+            })
             continue
-        full = os.path.normpath(os.path.join(run_dir, rel))
+        run_root = os.path.realpath(run_dir)
+        full = os.path.realpath(os.path.join(run_root, rel))
+        try:
+            inside_run = os.path.commonpath([run_root, full]) == run_root
+        except ValueError:
+            inside_run = False
+        if not inside_run:
+            broken.append({
+                "src": src,
+                "resolved": rel,
+                "suggestions": [],
+                "reason": "outside_run",
+            })
+            continue
         if os.path.isfile(full):
             continue
         suggestions = _find_similar(run_dir, os.path.basename(rel))
         # 去重、排除与当前错误路径相同者
         suggestions = [s for s in dict.fromkeys(suggestions) if s != rel][:5]
-        broken.append({"src": src, "resolved": rel, "suggestions": suggestions})
+        broken.append({"src": src, "resolved": rel, "suggestions": suggestions, "reason": "missing"})
     return broken
 
 
@@ -119,6 +148,14 @@ def format_feedback(broken):
         "【本次需要你修正的具体图片】",
     ]
     for b in broken:
+        if b.get("reason") == "blocked_source":
+            lines.append(f"  - src=`{b['src']}` 是外链、data/blob、API 或本机绝对路径，前端已禁止自动加载。")
+            lines.append("    若需要展示，请先把图片下载或复制到本次 run 的 artifacts/，再使用相对 run 目录的 src。")
+            continue
+        if b.get("reason") == "outside_run":
+            lines.append(f"  - src=`{b['src']}` 会越出本次 run 目录，前端会拒绝访问。")
+            lines.append("    请把图片复制到本次 run 的 artifacts/，再使用相对 run 目录的 src。")
+            continue
         lines.append(f"  - src=`{b['src']}` 解析到 run 目录下的 `{b['resolved']}`，该文件不存在。")
         if b["suggestions"]:
             lines.append(f"    该 run 目录下同名文件其实在：{', '.join('`'+s+'`' for s in b['suggestions'])}")
