@@ -94,13 +94,15 @@ def check_answer_images(text, run_dir, run_id):
     return broken
 
 
-# 反馈里固定附带的『正样本 / 方法说明』：让模型一眼看清正确写法，加速修正。
-_GOOD_EXAMPLE = """【正确写法（照抄即可）】图片 src 一律写「相对本次 run 目录」的路径，不带 runs/<runId>/ 前缀、不写绝对路径、不用 base64。
-  ✅ Markdown：![说明](artifacts/demo.png)
-  ✅ HTML：<img src="artifacts/demo.png">
-  ❌ 错误：![说明](runs/20261118-213144/artifacts/demo.png)   ← 带 runs/<runId>/ 前缀，前端会再拼一次→路径重复→破图
-  ❌ 错误：![说明](E:/workspace/.../demo.png)                ← 绝对路径，浏览器加载不到
-（图片先落盘到 run 目录的 artifacts/ 下，再用上面的相对路径引用。）"""
+# 反馈里固定附带的『规则说明』：让模型看清正确写法，加速修正。
+# 注意：这里只用纯文字描述规则，绝不写任何 ![]() 或 <img> 图片语法——
+# 否则这些示例路径会被本校验器 extract_image_srcs 当成真实图片再次判为破图，
+# 形成『规则里的示例自我触发校验』的死循环（2026-11-18 实测踩到，故改为纯规则）。
+_GOOD_EXAMPLE = """【图片 src 正确规则】
+  1. src 一律写「相对本次 run 目录」的路径，例如以 `artifacts/` 开头（`artifacts/xxx.png`）。
+  2. 不要带 `runs/<runId>/` 前缀——前端会自动再拼一次 run 目录，带前缀会导致路径重复、404 破图。
+  3. 不要写绝对路径（如盘符开头或 /home 开头），浏览器加载不到。
+  4. 不要用 base64 内嵌，先把图片落盘到 run 目录的 `artifacts/` 下，再用相对路径引用。"""
 
 
 def format_feedback(broken):

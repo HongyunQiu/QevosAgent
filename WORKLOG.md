@@ -214,3 +214,11 @@
 改动 agent/core/img_guard.py 的 format_feedback:新增模块级常量 _GOOD_EXAMPLE,固定附在反馈开头——给出 markdown `![说明](artifacts/demo.png)` 与 HTML `<img src="artifacts/demo.png">` 两种正确 src 写法,配 ❌带 runs/<runId>/ 前缀、❌绝对路径 两个错误对照,并注明『先落盘 run 目录 artifacts/ 再相对引用、不用 base64』。逐条纠错逻辑保留,措辞精简(前缀规则统一在正样本区块说明)。验证:py_compile 通过;run_python harness 构造两条 broken(一条有同名建议一条无)调用 format_feedback,输出含完整正样本区块+逐条纠错,符合预期。
 
 遗留:真实 run 实机回炉仍需重启 agent 验证(改源码不重载=白改)。
+
+## 2026-11-18 | img_guard 正样本改为纯规则说明(修示例自我触发循环)
+
+承接 a0a345f(给 format_feedback 加 _GOOD_EXAMPLE 正样本)。上线后校验门连续拦截我含示例的 ask_user 提问,活体复现新 bug:_GOOD_EXAMPLE 区块里举的示例 `![说明](artifacts/demo.png)` 本身被 extract_image_srcs 当成真实图片,归一后 isfile=False 判破图回炉——模型照抄/复述示例文本就被再次拦截,形成『正样本自我触发校验』死循环。run_python 坐实:对反馈文本本身跑 extract_image_srcs 能抓到 artifacts/demo.png。
+
+用户拍板『不用样本了,只给规则』。把 _GOOD_EXAMPLE 改成纯规则说明(4条:相对run目录以artifacts/开头/不带runs前缀/不写绝对路径/不用base64先落盘再引用),绝对不写任何 ![]() 或 <img> 图片语法,路径片段用反引号包裹(反引号非图片语法不被抓)。验证:py_compile 通过;format_feedback 生成的反馈文本对 extract_image_srcs 返回 [](空),证明规则区块不再自我触发。在 img_guard.py 注释里记录此坑。
+
+复用规律:校验器+回炉反馈机制里,反馈文本自身绝不能含会被校验器识别的语法(示例/占位路径),否则自我触发循环;规则说明用纯文字+反引号,不写真实图片语法。改 agent/core 源码需重启 agent 生效。
