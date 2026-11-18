@@ -66,6 +66,21 @@ class DashboardImageResolverTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
+    def test_lightbox_zoom_is_bounded_and_wired_to_markdown_images(self):
+        source = INDEX.read_text(encoding="utf-8")
+        fn = _extract_js_function(source, "_clampImageZoom")
+        script = fn + "\nconst got=[_clampImageZoom(-1),_clampImageZoom(0.5),_clampImageZoom(99)];" \
+            + "if (JSON.stringify(got)!=='[0.25,0.5,8]') throw new Error(JSON.stringify(got));"
+        result = subprocess.run(
+            ["node", "-e", script], cwd=ROOT, text=True, capture_output=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn('id="imageLightbox"', source)
+        self.assertIn("data-image-zoomable", source)
+        self.assertIn("viewport.addEventListener('wheel'", source)
+        self.assertIn("viewport.addEventListener('pointermove'", source)
+        self.assertIn("event.key === 'Escape'", source)
+
 
 if __name__ == "__main__":
     unittest.main()

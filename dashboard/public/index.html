@@ -1514,6 +1514,50 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 .img-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .img-preview svg { max-width: 100%; max-height: 100%; }
 
+/* ── Click-to-zoom image lightbox ───────────────────────────────────────── */
+.md-zoomable-img { cursor: zoom-in; }
+.image-lightbox {
+  position: fixed; inset: 0; z-index: 10000; display: none;
+  background: rgba(3, 7, 13, 0.92); color: #fff; overflow: hidden;
+  touch-action: none; user-select: none;
+}
+.image-lightbox.open { display: flex; flex-direction: column; }
+.image-lightbox-toolbar {
+  position: relative; z-index: 2; display: flex; align-items: center; justify-content: center;
+  gap: 6px; min-height: 48px; padding: 6px 12px; background: rgba(10, 14, 22, 0.82);
+  border-bottom: 1px solid rgba(255,255,255,0.12); backdrop-filter: blur(8px);
+}
+.image-lightbox-btn {
+  min-width: 36px; height: 34px; padding: 0 10px; border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 6px; background: rgba(255,255,255,0.08); color: #fff; font: 600 13px var(--sans);
+  cursor: pointer;
+}
+.image-lightbox-btn:hover, .image-lightbox-btn:focus-visible { background: rgba(255,255,255,0.18); outline: none; }
+.image-lightbox-scale { min-width: 58px; text-align: center; font: 12px var(--mono); color: rgba(255,255,255,0.82); }
+.image-lightbox-close { position: absolute; right: 12px; font-size: 20px; }
+.image-lightbox-viewport {
+  position: relative; flex: 1; min-height: 0; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; cursor: grab;
+}
+.image-lightbox-viewport.dragging { cursor: grabbing; }
+.image-lightbox-image {
+  display: block; max-width: 92vw; max-height: calc(100vh - 108px); object-fit: contain;
+  transform-origin: center center; will-change: transform;
+  box-shadow: 0 12px 50px rgba(0,0,0,0.45);
+}
+.image-lightbox-caption {
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  max-width: min(80vw, 900px); padding: 4px 10px; border-radius: 5px;
+  background: rgba(0,0,0,0.58); color: rgba(255,255,255,0.8); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none;
+}
+body.image-lightbox-open { overflow: hidden; }
+@media (max-width: 600px) {
+  .image-lightbox-toolbar { justify-content: flex-start; padding-right: 54px; }
+  .image-lightbox-btn { min-width: 34px; padding: 0 8px; }
+  .image-lightbox-image { max-width: 96vw; max-height: calc(100vh - 96px); }
+}
+
 /* ── Video / audio preview ───────────────────────────────────────────────── */
 .media-preview {
   flex: 1; overflow: auto; min-height: 0; padding: 16px; background: var(--bg);
@@ -2283,6 +2327,21 @@ body.app-only .center-pane[id^="cpane-app-"].active { display: flex; }
 
 <!-- Mobile overlay backdrop (closes drawers on tap) -->
 <div class="mobile-overlay" id="mobileOverlay" onclick="closeMobilePanels()"></div>
+
+<!-- Markdown image viewer: wheel/buttons zoom, drag/pinch pan, Esc/backdrop close. -->
+<div class="image-lightbox" id="imageLightbox" role="dialog" aria-modal="true" aria-label="大图查看器" aria-hidden="true">
+  <div class="image-lightbox-toolbar">
+    <button class="image-lightbox-btn" type="button" onclick="zoomImageLightboxBy(0.8)" aria-label="缩小">−</button>
+    <button class="image-lightbox-btn" type="button" onclick="resetImageLightbox()" aria-label="恢复原始缩放">适合</button>
+    <button class="image-lightbox-btn" type="button" onclick="zoomImageLightboxBy(1.25)" aria-label="放大">＋</button>
+    <span class="image-lightbox-scale" id="imageLightboxScale">100%</span>
+    <button class="image-lightbox-btn image-lightbox-close" id="imageLightboxClose" type="button" onclick="closeImageLightbox()" aria-label="关闭">×</button>
+  </div>
+  <div class="image-lightbox-viewport" id="imageLightboxViewport">
+    <img class="image-lightbox-image" id="imageLightboxImage" alt="" draggable="false">
+    <div class="image-lightbox-caption" id="imageLightboxCaption" style="display:none"></div>
+  </div>
+</div>
 
 <!-- ── Settings modal (LLM connection config) ─────────────────────── -->
 <div class="set-modal" id="setModal" style="display:none;">
@@ -4968,6 +5027,11 @@ function renderMd(str) {
         const resolved = _resolveRunImgSrc(original);
         if (resolved) {
           img.setAttribute('src', resolved);
+          img.classList.add('md-zoomable-img');
+          img.setAttribute('data-image-zoomable', 'true');
+          img.setAttribute('tabindex', '0');
+          img.setAttribute('role', 'button');
+          img.setAttribute('aria-label', `${img.getAttribute('alt') || '图片'}，点击查看大图`);
         } else {
           const blocked = doc.createElement('span');
           blocked.className = 'blocked-image';
@@ -4986,6 +5050,187 @@ function renderMd(str) {
     return escPaths(s);
   }
 }
+
+// ── Markdown image lightbox ────────────────────────────────────────────────
+const _imageLightboxState = {
+  scale: 1, x: 0, y: 0, pointers: new Map(), drag: null, pinch: null, lastFocus: null
+};
+
+function _clampImageZoom(value) {
+  return Math.min(8, Math.max(0.25, Number(value) || 1));
+}
+
+function _applyImageLightboxTransform() {
+  const img = document.getElementById('imageLightboxImage');
+  const label = document.getElementById('imageLightboxScale');
+  if (img) img.style.transform = `translate3d(${_imageLightboxState.x}px, ${_imageLightboxState.y}px, 0) scale(${_imageLightboxState.scale})`;
+  if (label) label.textContent = `${Math.round(_imageLightboxState.scale * 100)}%`;
+}
+
+function resetImageLightbox() {
+  _imageLightboxState.scale = 1;
+  _imageLightboxState.x = 0;
+  _imageLightboxState.y = 0;
+  _applyImageLightboxTransform();
+}
+
+function zoomImageLightboxTo(value, clientX, clientY) {
+  const viewport = document.getElementById('imageLightboxViewport');
+  if (!viewport) return;
+  const oldScale = _imageLightboxState.scale;
+  const newScale = _clampImageZoom(value);
+  const rect = viewport.getBoundingClientRect();
+  const px = Number.isFinite(clientX) ? clientX - (rect.left + rect.width / 2) : 0;
+  const py = Number.isFinite(clientY) ? clientY - (rect.top + rect.height / 2) : 0;
+  const ratio = newScale / oldScale;
+  _imageLightboxState.x = px - (px - _imageLightboxState.x) * ratio;
+  _imageLightboxState.y = py - (py - _imageLightboxState.y) * ratio;
+  _imageLightboxState.scale = newScale;
+  if (newScale === 1 && !Number.isFinite(clientX)) {
+    _imageLightboxState.x = 0;
+    _imageLightboxState.y = 0;
+  }
+  _applyImageLightboxTransform();
+}
+
+function zoomImageLightboxBy(factor, clientX, clientY) {
+  zoomImageLightboxTo(_imageLightboxState.scale * factor, clientX, clientY);
+}
+
+function openImageLightbox(src, alt, opener) {
+  const box = document.getElementById('imageLightbox');
+  const img = document.getElementById('imageLightboxImage');
+  const caption = document.getElementById('imageLightboxCaption');
+  if (!box || !img || !src) return;
+  _imageLightboxState.lastFocus = opener || document.activeElement;
+  _imageLightboxState.pointers.clear();
+  _imageLightboxState.drag = null;
+  _imageLightboxState.pinch = null;
+  img.src = src;
+  img.alt = alt || '';
+  caption.textContent = alt || '';
+  caption.style.display = alt ? '' : 'none';
+  box.classList.add('open');
+  box.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('image-lightbox-open');
+  resetImageLightbox();
+  document.getElementById('imageLightboxClose')?.focus({ preventScroll: true });
+}
+
+function closeImageLightbox() {
+  const box = document.getElementById('imageLightbox');
+  const img = document.getElementById('imageLightboxImage');
+  if (!box || !box.classList.contains('open')) return;
+  box.classList.remove('open');
+  box.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('image-lightbox-open');
+  _imageLightboxState.pointers.clear();
+  _imageLightboxState.drag = null;
+  _imageLightboxState.pinch = null;
+  if (img) img.removeAttribute('src');
+  const focus = _imageLightboxState.lastFocus;
+  _imageLightboxState.lastFocus = null;
+  if (focus && typeof focus.focus === 'function') focus.focus({ preventScroll: true });
+}
+
+function _lightboxPoint(event) {
+  return { x: event.clientX, y: event.clientY };
+}
+
+function _lightboxPinchSnapshot(viewport) {
+  const pts = [..._imageLightboxState.pointers.values()];
+  if (pts.length < 2) return null;
+  const [a, b] = pts;
+  const rect = viewport.getBoundingClientRect();
+  return {
+    distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+    centerX: (a.x + b.x) / 2 - (rect.left + rect.width / 2),
+    centerY: (a.y + b.y) / 2 - (rect.top + rect.height / 2),
+    scale: _imageLightboxState.scale, x: _imageLightboxState.x, y: _imageLightboxState.y
+  };
+}
+
+function _initImageLightbox() {
+  const box = document.getElementById('imageLightbox');
+  const viewport = document.getElementById('imageLightboxViewport');
+  if (!box || !viewport) return;
+
+  document.addEventListener('click', event => {
+    const img = event.target.closest && event.target.closest('img[data-image-zoomable="true"]');
+    if (img) {
+      event.preventDefault();
+      openImageLightbox(img.currentSrc || img.src, img.alt, img);
+    }
+  });
+  document.addEventListener('keydown', event => {
+    const img = event.target.closest && event.target.closest('img[data-image-zoomable="true"]');
+    if (img && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      openImageLightbox(img.currentSrc || img.src, img.alt, img);
+      return;
+    }
+    if (!box.classList.contains('open')) return;
+    if (event.key === 'Escape') closeImageLightbox();
+    else if (event.key === '+' || event.key === '=') zoomImageLightboxBy(1.25);
+    else if (event.key === '-') zoomImageLightboxBy(0.8);
+    else if (event.key === '0') resetImageLightbox();
+  });
+  box.addEventListener('click', event => { if (event.target === box || event.target === viewport) closeImageLightbox(); });
+  viewport.addEventListener('wheel', event => {
+    event.preventDefault();
+    zoomImageLightboxBy(event.deltaY < 0 ? 1.15 : 1 / 1.15, event.clientX, event.clientY);
+  }, { passive: false });
+  viewport.addEventListener('dblclick', event => {
+    event.preventDefault();
+    if (_imageLightboxState.scale > 1.01) resetImageLightbox();
+    else zoomImageLightboxTo(2, event.clientX, event.clientY);
+  });
+  viewport.addEventListener('pointerdown', event => {
+    event.preventDefault();
+    viewport.setPointerCapture(event.pointerId);
+    _imageLightboxState.pointers.set(event.pointerId, _lightboxPoint(event));
+    if (_imageLightboxState.pointers.size === 1) {
+      _imageLightboxState.drag = { px: event.clientX, py: event.clientY, x: _imageLightboxState.x, y: _imageLightboxState.y };
+      viewport.classList.add('dragging');
+    } else if (_imageLightboxState.pointers.size === 2) {
+      _imageLightboxState.pinch = _lightboxPinchSnapshot(viewport);
+      _imageLightboxState.drag = null;
+    }
+  });
+  viewport.addEventListener('pointermove', event => {
+    if (!_imageLightboxState.pointers.has(event.pointerId)) return;
+    _imageLightboxState.pointers.set(event.pointerId, _lightboxPoint(event));
+    if (_imageLightboxState.pointers.size >= 2 && _imageLightboxState.pinch) {
+      const now = _lightboxPinchSnapshot(viewport);
+      const base = _imageLightboxState.pinch;
+      const nextScale = _clampImageZoom(base.scale * now.distance / base.distance);
+      const ratio = nextScale / base.scale;
+      _imageLightboxState.scale = nextScale;
+      _imageLightboxState.x = now.centerX - (base.centerX - base.x) * ratio;
+      _imageLightboxState.y = now.centerY - (base.centerY - base.y) * ratio;
+      _applyImageLightboxTransform();
+    } else if (_imageLightboxState.drag) {
+      _imageLightboxState.x = _imageLightboxState.drag.x + event.clientX - _imageLightboxState.drag.px;
+      _imageLightboxState.y = _imageLightboxState.drag.y + event.clientY - _imageLightboxState.drag.py;
+      _applyImageLightboxTransform();
+    }
+  });
+  const endPointer = event => {
+    _imageLightboxState.pointers.delete(event.pointerId);
+    _imageLightboxState.pinch = null;
+    if (_imageLightboxState.pointers.size === 1) {
+      const [point] = _imageLightboxState.pointers.values();
+      _imageLightboxState.drag = { px: point.x, py: point.y, x: _imageLightboxState.x, y: _imageLightboxState.y };
+    } else {
+      _imageLightboxState.drag = null;
+      viewport.classList.remove('dragging');
+    }
+  };
+  viewport.addEventListener('pointerup', endPointer);
+  viewport.addEventListener('pointercancel', endPointer);
+}
+
+_initImageLightbox();
 
 /** JSON 字符串值专用：整个值就是一条路径才连接。传进来的是 JSON 字面量原文，
  *  所以 `\\` 才是真正的反斜杠，落单的 `\n` `\t` 是转义符 —— 含这种转义的一律

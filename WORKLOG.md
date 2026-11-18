@@ -230,3 +230,11 @@
 同时完善 Markdown 图片目的地址解析，支持尖括号包裹的带空格文件名；前端按路径段 URL 编码，修复空格和 `#` 等合法文件名被浏览器截断；无法访问的图片替换为明确的阻止占位文字。系统提示词折叠时不再执行 Markdown 渲染，展开后按 run 和正文缓存，避免看板频繁重绘时重复执行 marked、DOMPurify 和 DOMParser。
 
 新增 `test/tests_img_guard.py` 8 项及 `test/tests_dashboard_markdown_images.py` 1 项回归，覆盖本地相对图片、空格、`#`、跨域/data、绝对路径、目录穿越和跨 run API。`py_compile`、Dashboard 内联 JavaScript `node --check`、`git diff --check` 均通过；全仓 `python -m unittest discover -s test -p 'tests_*.py'` 共 298/298 通过。现有未提交的 `dashboard/server.js` 代理探测修改未纳入本次变更。
+
+## 2026-11-19 | Markdown 内嵌图片支持点击放大与缩放查看
+
+为 ask_user、done 和系统提示词中经 `renderMd` 渲染的图片增加统一大图查看器。图片现在带可点击和键盘可访问标记；点击或按 Enter/空格后打开全屏遮罩，并保留图片 alt 说明。查看器支持工具栏缩小/适合/放大、缩放百分比、鼠标滚轮以指针为中心缩放、拖动平移、双击在 100%/200% 间切换、触控双指缩放、Esc/背景/关闭按钮退出，缩放范围限制为 25%–800%，关闭后焦点返回原图。
+
+样式覆盖桌面与窄屏移动端，遮罩层位于现有看板面板之上，打开时锁定页面滚动。事件采用文档级委托，因此看板每 500ms 重绘回答内容后不需要重新绑定；若图片外层是链接，点击图片会阻止导航并优先打开查看器。
+
+扩展 `test/tests_dashboard_markdown_images.py`，验证缩放边界及滚轮、指针、Esc、Markdown 图片接线。Dashboard 内联 JavaScript `node --check`、`git diff --check` 通过；全仓 Python 测试 299/299 通过；运行中的 `http://127.0.0.1:8765` 已确认实时提供 `imageLightbox` 标记，无需重启 Dashboard。Playwright CLI 包因网络获取超时未安装，改用连接的真实浏览器确认看板成功加载新版查看器结构。
