@@ -352,6 +352,11 @@ class OpenAIBackend(LLMBackend):
         self.context_window = self._probe_context_window()
         # Track SDK-injected parameters that the provider rejects (e.g. 'include').
         self._suppressed_params: set[str] = set()
+        # Keep rejection locations separate. A name rejected by create() must be
+        # removed from Python kwargs, while a vLLM extension rejected from
+        # extra_body must only be omitted from that dictionary.
+        self._suppressed_create_params: set[str] = set()
+        self._suppressed_extra_body_params: set[str] = set()
         # Wrap the SDK create method to strip suppressed params from the request body
         # before they reach the HTTP layer. This is necessary because some OpenAI SDK
         # versions auto-inject parameters (e.g. 'include') that third-party proxies reject.
@@ -591,133 +596,161 @@ class OpenAIBackend(LLMBackend):
         return type(exc).__name__
 
     def _try_create_with_param_strip(self, kwargs: dict):
-        """Single attempt that auto-strips provider-rejected params (400-class).
+        """Auto-strip rejected optional params with a bounded, progressing loop.
 
-        Handles two categories of provider incompatibility:
-        - "Unsupported parameter: temperature" → clear self.temperature, pop from kwargs
-        - "Unknown parameter: X" / "Unsupported parameter: X" for any other X →
-          pop X from kwargs if present; otherwise record in self._suppressed_params so
-          the caller can avoid re-sending it (SDK-injected params cannot be popped here)
-
-        Retries once after stripping the offending parameter within this attempt.
-        Non-param errors propagate to the outer backoff loop.
+        Providers may report only one bad field per response. Handle a short chain
+        of distinct rejections in one outer attempt, but require every retry to
+        remove or newly suppress a field and cap the number of retries. Providers
+        that accept the original request still execute exactly one create() call.
         """
-        try:
-            return self.client.chat.completions.create(**kwargs)
-        except Exception as e:
-            es = str(e)
+        max_param_strips = 8
+        suppressed_create = getattr(self, "_suppressed_create_params", set())
+        suppressed_extra = getattr(self, "_suppressed_extra_body_params", set())
 
-            # ── response_format 专用降级 ─────────────────────────────────────
-            # 结构化输出默认开启，所以「不支持的服务端」必须能安全退回软模式。
-            # 不能依赖下面那套 "unknown/unsupported parameter: X" 的话术匹配：
-            # 各家拒绝 response_format 的措辞五花八门（"response_format is not
-            # supported for this model" / "json_object not supported" / ...），
-            # 枚举不完。改为只要 400 类错误里提到了 response_format 就降级——
-            # 参数名本身几乎总会出现在报错里，这个判据与措辞无关。
-            if (
-                "response_format" in es
-                and "400" in es
-                and "response_format" in kwargs
-            ):
-                kwargs.pop("response_format", None)
-                self._use_response_format = False
-                try:
-                    sys.stderr.write(
-                        "[llm] 服务端拒绝 response_format，已降级为提示词约束（本 run 不再重试）："
-                        f"{es[:200]}\n"
-                    )
-                    sys.stderr.flush()
-                except Exception:
-                    pass
+        # Cached location-aware suppression is a no-op for unaffected providers.
+        for bad in suppressed_create:
+            kwargs.pop(bad, None)
+        initial_extra = kwargs.get("extra_body")
+        if isinstance(initial_extra, dict):
+            for bad in suppressed_extra:
+                initial_extra.pop(bad, None)
+            if not initial_extra:
+                kwargs.pop("extra_body", None)
+
+        for strip_attempt in range(max_param_strips + 1):
+            try:
                 return self.client.chat.completions.create(**kwargs)
+            except Exception as e:
+                if strip_attempt >= max_param_strips:
+                    raise
 
-            # ── Python TypeError：create() 收到非法顶层关键字参数 ──────────────
-            # 场景：陈旧进程/旧 SDK 把 chat_template_kwargs 之类参数当**顶层**参数
-            # 传给 create()（新版代码已改塞 extra_body，但旧字节码/旧进程仍在跑）。
-            # 这类错是 Python 在调用前就抛的 TypeError，错误串里**没有 '400'**，
-            # 下面 is_param_error 判据认不出 → 直接 re-raise → 外层退避用相同
-            # kwargs 无限重试 → 同一句错刷屏（实测事故根因，run 20261118-010006）。
-            # 这里单独识别：把被拒字段从顶层 kwargs 弹出（并从 extra_body 移除、
-            # 加入 _suppressed_params 让 HTTP 拦截器兜底），再重试一次。
-            if "unexpected keyword argument" in es:
-                _tk = re.search(
-                    r"unexpected keyword argument ['\"]?(\w+)['\"]?", es
-                )
-                if _tk:
-                    bad = _tk.group(1)
-                    if bad == "logprobs":
-                        self._logprobs_enabled = False
-                    kwargs.pop(bad, None)
-                    # 若藏在 extra_body 里也一并清掉，避免换个姿势又冒出来
-                    _eb = kwargs.get("extra_body")
-                    if isinstance(_eb, dict):
-                        _eb.pop(bad, None)
-                    suppressed = getattr(self, "_suppressed_params", set())
-                    suppressed.add(bad)
-                    self._suppressed_params = suppressed
+                es = str(e)
+                es_low = es.lower()
+                status = getattr(e, "status_code", None)
+                if status is None:
+                    status = getattr(getattr(e, "response", None), "status_code", None)
+                try:
+                    is_bad_request = int(status) == 400
+                except (TypeError, ValueError):
+                    is_bad_request = bool(re.search(r"(?<!\d)400(?!\d)", es))
+
+                # response_format has highly variable provider wording. A 400 that
+                # names the field is sufficient, as long as the request sent it.
+                if (
+                    "response_format" in es_low
+                    and is_bad_request
+                    and "response_format" in kwargs
+                ):
+                    kwargs.pop("response_format", None)
+                    self._use_response_format = False
+                    suppressed_create.add("response_format")
+                    self._suppressed_create_params = suppressed_create
                     try:
                         sys.stderr.write(
-                            f"[llm] create() 拒绝顶层参数 '{bad}'，已剥离后重试："
+                            "[llm] 服务端拒绝 response_format，已降级为提示词约束（本 run 不再重试）："
                             f"{es[:200]}\n"
                         )
                         sys.stderr.flush()
                     except Exception:
                         pass
-                    return self.client.chat.completions.create(**kwargs)
+                    continue
 
-            es_low = es.lower()
-            is_param_error = (
-                "unsupported parameter" in es_low
-                or "unknown parameter" in es_low
-                or "unknown_parameter" in es_low
-                # Google 的 OpenAI 兼容接口走严格 Protobuf JSON 校验：遇到未定义的
-                # 顶层字段（如 logprobs / chat_template_kwargs）会一次性报
-                # 'Unknown name "x": Cannot find field' + status INVALID_ARGUMENT。
-                # 这不是"参数不支持"而是"字段不存在"，措辞完全不同，需单独识别，
-                # 否则容错逻辑认不出、400 直接抛给上层（实测事故根因）。
-                or "unknown name" in es_low
-                or "cannot find field" in es_low
-                or "invalid_argument" in es_low
-            ) and "400" in es
+                # Python rejects an invalid create() keyword before any HTTP request.
+                if "unexpected keyword argument" in es_low:
+                    match = re.search(
+                        r"unexpected keyword argument ['\"]?(\w+)['\"]?",
+                        es,
+                        re.IGNORECASE,
+                    )
+                    if match:
+                        bad = match.group(1)
+                        progressed = bad in kwargs or bad not in suppressed_create
+                        if bad == "logprobs":
+                            self._logprobs_enabled = False
+                        kwargs.pop(bad, None)
+                        extra = kwargs.get("extra_body")
+                        if isinstance(extra, dict) and bad in extra:
+                            progressed = True
+                            extra.pop(bad, None)
+                            suppressed_extra.add(bad)
+                            if not extra:
+                                kwargs.pop("extra_body", None)
+                        suppressed_create.add(bad)
+                        self._suppressed_create_params = suppressed_create
+                        self._suppressed_extra_body_params = suppressed_extra
+                        if not progressed:
+                            raise
+                        try:
+                            sys.stderr.write(
+                                f"[llm] create() 拒绝顶层参数 '{bad}'，已剥离后重试："
+                                f"{es[:200]}\n"
+                            )
+                            sys.stderr.flush()
+                        except Exception:
+                            pass
+                        continue
 
-            if not is_param_error:
-                raise
+                is_param_error = (
+                    "unsupported parameter" in es_low
+                    or "unknown parameter" in es_low
+                    or "unknown_parameter" in es_low
+                    or "unknown name" in es_low
+                    or "cannot find field" in es_low
+                    or "invalid_argument" in es_low
+                ) and is_bad_request
+                if not is_param_error:
+                    raise
 
-            # 提取被拒字段名。Google 一次 400 可同时报多个 'Unknown name "x"'，
-            # 用 findall 全部抓出，逐个降级，避免"删一个、重试又被另一个卡"。
-            bad_list = re.findall(
-                r"[Uu]nknown\s+name\s+['\"]?(\w+)['\"]?", es
-            )
-            if not bad_list:
-                _m = re.search(
-                    r"[Uu]n(?:known|supported)\s+parameter[:\s]+['\"]?(\w+)['\"]?", es
+                bad_list = re.findall(
+                    r"unknown\s+name\s+['\"]?(\w+)['\"]?",
+                    es,
+                    re.IGNORECASE,
                 )
-                if _m:
-                    bad_list = [_m.group(1)]
-            if not bad_list:
-                raise
+                if not bad_list:
+                    match = re.search(
+                        r"un(?:known|supported)\s+parameter[:\s]+['\"]?(\w+)['\"]?",
+                        es,
+                        re.IGNORECASE,
+                    )
+                    if match:
+                        bad_list = [match.group(1)]
+                if not bad_list:
+                    raise
 
-            suppressed = getattr(self, "_suppressed_params", set())
-            for bad in bad_list:
-                if bad == "temperature" and self.temperature is not None:
-                    self.temperature = None
+                suppressed = getattr(self, "_suppressed_params", set())
+                progressed = False
+                for bad in bad_list:
+                    if bad == "temperature" and self.temperature is not None:
+                        self.temperature = None
+                    if bad == "logprobs":
+                        self._logprobs_enabled = False
 
-                if bad == "logprobs":
-                    # 缓存到实例：logprobs 是显式 kwargs，不缓存的话每次调用都要
-                    # 白付一趟 400 往返。
-                    self._logprobs_enabled = False
+                    if bad in kwargs:
+                        progressed = True
+                        kwargs.pop(bad, None)
+                        suppressed_create.add(bad)
+                        continue
 
-                if bad in kwargs:
-                    kwargs.pop(bad)
-                else:
-                    # chat_template_kwargs 等藏在 extra_body 里、不在顶层 kwargs，
-                    # 这里加入 _suppressed_params，由 _wrap_create_method 的
-                    # wrapped_send 拦截器在 HTTP 层从序列化后的 body 顶层删除
-                    # （OpenAI SDK 会把 extra_body 合并到请求体顶层）。
-                    suppressed.add(bad)
-            self._suppressed_params = suppressed
+                    extra = kwargs.get("extra_body")
+                    if isinstance(extra, dict) and bad in extra:
+                        progressed = True
+                        extra.pop(bad, None)
+                        suppressed_extra.add(bad)
+                        if not extra:
+                            kwargs.pop("extra_body", None)
+                    elif bad not in suppressed:
+                        # The SDK injected this field after receiving kwargs; remove
+                        # it from the serialized body in wrapped_send().
+                        progressed = True
+                        suppressed.add(bad)
 
-            return self.client.chat.completions.create(**kwargs)
+                self._suppressed_params = suppressed
+                self._suppressed_create_params = suppressed_create
+                self._suppressed_extra_body_params = suppressed_extra
+                if not progressed:
+                    raise
+
+        raise RuntimeError("LLM parameter-strip loop exited without result")
 
     def _create_with_retry(self, kwargs: dict, is_stream: bool = False):
         """Call chat.completions.create with two layers of retry:
@@ -730,9 +763,9 @@ class OpenAIBackend(LLMBackend):
            propagate to loop.py.
 
         2. Inner (_try_create_with_param_strip): 400-class param-rejection
-           handling — strips the offending param and retries once within the
-           same attempt.  Successful strips are cached so subsequent calls
-           skip the bad param entirely.
+           handling — strips up to eight distinct rejected params while each
+           retry makes progress. Successful strips are cached by request layer
+           so subsequent calls skip the bad param entirely.
 
         Env vars:
             LLM_RETRY_MAX_ATTEMPTS  - total attempts (default 5, min 1)
@@ -809,29 +842,18 @@ class OpenAIBackend(LLMBackend):
         normalized = self._normalize_messages(messages)
         full_messages = [{"role": "system", "content": system}] + normalized
         _suppressed = getattr(self, "_suppressed_params", set())
+        _suppressed_create = getattr(self, "_suppressed_create_params", set())
+        _suppressed_extra = getattr(self, "_suppressed_extra_body_params", set())
         kwargs: dict = {
             "model": self.model,
             "messages": full_messages,
         }
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
-        # Explicitly nullify any SDK-injected params this provider has rejected before.
-        #
-        # 关键：只能对【顶层】参数设 None。chat_template_kwargs / thinking /
-        # continue_final_message / add_generation_prompt 这些是 vLLM 专有、
-        # 经 extra_body 注入的参数，create() 根本没有同名顶层参数——把它们
-        # 设成 kwargs[_p]=None 会让 create() 抛 TypeError（实测事故：降级把
-        # chat_template_kwargs 记入 _suppressed 后，下一轮这里又把它当顶层参数
-        # 传 → 'unexpected keyword argument chat_template_kwargs'，run 20261118
-        # 系列反复复现的根因）。这类参数改由下面 extra_body 注入处按 _suppressed
-        # 跳过，绝不下放到顶层 kwargs。
-        _EXTRA_BODY_KEYS = {
-            "chat_template_kwargs", "thinking",
-            "continue_final_message", "add_generation_prompt",
-        }
+        # Only SDK-injected serialized-body fields are nullified here. Rejected
+        # create kwargs and extra_body extensions have separate suppression sets,
+        # so neither can leak into the wrong request layer.
         for _p in _suppressed:
-            if _p in _EXTRA_BODY_KEYS:
-                continue
             kwargs[_p] = None
         if self._is_official_openai:
             kwargs["max_completion_tokens"] = max_tokens
@@ -847,17 +869,23 @@ class OpenAIBackend(LLMBackend):
             enable = budget > 0
             extra: dict = {}
             # 已被本 provider 拒绝过的 extra_body 参数不再注入（否则又触发 400）。
-            if "chat_template_kwargs" not in _suppressed:
+            if "chat_template_kwargs" not in _suppressed_extra:
                 extra["chat_template_kwargs"] = {"enable_thinking": enable}
-            if enable and "thinking" not in _suppressed:
+            if enable and "thinking" not in _suppressed_extra:
                 extra["thinking"] = {"type": "enabled", "budget_tokens": budget}
-            if continue_final and "continue_final_message" not in _suppressed:
+            if continue_final and "continue_final_message" not in _suppressed_extra:
                 # Resume the final assistant message verbatim rather than emitting
                 # a fresh turn — lets us stitch a truncated response back together.
                 extra["continue_final_message"] = True
-                extra["add_generation_prompt"] = False
+                if "add_generation_prompt" not in _suppressed_extra:
+                    extra["add_generation_prompt"] = False
             if extra:
                 kwargs["extra_body"] = extra
+
+        # Apply cached create()-level rejections last. Until a provider rejects a
+        # field this set is empty, preserving the existing normal request exactly.
+        for _p in _suppressed_create:
+            kwargs.pop(_p, None)
 
         resp = self._create_with_retry(kwargs)
         self.last_finish_reason = _normalize_finish_reason(

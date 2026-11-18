@@ -156,3 +156,11 @@
 修复方式：将桌面端左右面板折叠的列宽与隐藏规则整体限制在 `@media (min-width: 769px) and (orientation: landscape)` 内。移动端断点（窄屏或任意竖屏）因此不再受到残留折叠 class 影响，同时桌面横屏折叠行为保持不变。
 
 验证：使用独立 Edge DevTools 会话加载本机 Dashboard，覆盖 4 种视口（704×879 折叠屏竖屏、900×1200 宽竖屏、700×400 窄横屏、1200×800 桌面横屏）× 4 种折叠状态（无/左/右/双侧）× 2 种字号模式（普通/大字），32/32 组合通过；移动端 topbar/events/cmdbar 均占满单列，桌面横屏三列与折叠列宽均符合预期。手机当前连接的 Dashboard 来源是远端 ZeroTier 主机 `172.24.217.34:8765`，不是本机工作树；源代码修复需部署到该主机后，手机端刷新页面才会永久生效。为不中断正在运行的 Agent，又通过 WebView DevTools 向当前页面注入了等价的临时媒体规则：保留 `right-panel-collapsed` 时计算列宽从 `230px 474px 0` 恢复为单列 `704px`，topbar/events/cmdbar 均为 704px，Agent 计时持续运行且页面未刷新。
+
+## 2026-11-18 | 完善 OpenAI 兼容后端多阶段参数降级且保持正常连接零变化
+
+审查 f7594c9/e19630c/be3e30c 三段 LLM 连接修复后，用离线仿真确认三个缺口：参数剥离只重试一次，服务端逐项拒绝 `response_format → logprobs → chat_template_kwargs` 时第二个 400 会逃逸；400 只从异常文本判断，异常对象已有 `status_code=400` 但文本不含数字时无法降级；`_suppressed_params` 未记录字段位于 create kwargs、extra_body 还是 SDK 序列化请求体，未知 extra 字段会在后续调用被错误投到顶层并反复触发 TypeError。
+
+修复集中在错误降级路径：`_try_create_with_param_strip` 改为最多剥离 8 个字段、每轮必须实际取得进展的有界循环，优先读取 `status_code/response.status_code`；新增 `_suppressed_create_params` 与 `_suppressed_extra_body_params`，与原 `_suppressed_params`（仅 SDK 注入的序列化 body 字段）分层缓存；`_call_api` 按来源跳过字段，并补齐 `add_generation_prompt` 的独立守卫。未发生参数拒绝时三个集合均为空，仍只调用一次 `create()`，原请求字典不变。
+
+新增 `test/tests_llm_param_fallback.py` 9 项离线回归：正常兼容后端单次调用及完整请求字典、官方 OpenAI 请求形状、连续结构化 400、TypeError 后继续 400、无进展立即终止、普通异常原对象原样抛出、extra_body 不泄漏顶层、HTTP content-length 重算与 extensions 保留。`py_compile` 通过；新测试 9/9；全仓 `python -m unittest discover -s test -p 'tests_*.py'` 共 289/289 通过。未调用真实付费模型端点；此前正常连接行为由精确请求字典断言覆盖。
