@@ -193,3 +193,16 @@
 用户反馈：20261118-212125 演示任务最终回答里嵌入的图片显示成破缺图标。排查定位根因：上个任务回答里图片 markdown 的 src 写成了仓库相对路径 runs/20261118-212125/artifacts/demo_image.png（带 runs/ 前缀）。而 dashboard/public/index.html 的 _resolveRunImgSrc 会自动用当前 runId 再拼一次 run 目录（/api/run-file-raw/{runId}/{rel}），后端 server.js:4057 再把 {runId}/{rel} 解析为 runs/{runId}/{rel}，最终变成 runs/20261118-212125/runs/20261118-212125/artifacts/... 路径重复→文件不存在→404→破图标。正确写法应只写相对该 run 目录的路径 artifacts/demo_image.png（不带 runs/runId 前缀）。
 
 修复（防御性，而非只教用户写对）：增强 _resolveRunImgSrc，拼接前剥掉 rel 开头冗余的 runs/ 与紧跟的当前 runId/ 段（startsWith 判断，无正则转义风险），使带 runs/runId 前缀、纯相对、带 runs/、带 ./ 四种写法全部归一到 artifacts/...。run_python 模拟前后端拼接验证四种 src 均 EXISTS=True；node 跑增强函数确认语法正确且输出正确（外链原样保留）。遗留：未在真实浏览器刷新含图 run 实机验证，需用户刷新看板确认；长驻 dashboard 进程改 index.html 后静态资源实时读盘无需重启，但浏览器缓存需刷新。
+
+## 2026-11-18 | 新增图片可达性校验门（破图回炉让模型自改，避免用户看到破图标）
+
+承接同日破图标修复：前端 _resolveRunImgSrc 已能静默吞掉无歧义误写（反斜杠/冗余 runs/ 前缀），但文件根本不存在、跨 run 歧义这类前端救不回来的情况，用户仍会看到破图标。用户提出并拍板：做一个『程序化校验』——在内容呈现给用户之前检测破图，把错误+纠正建议作为反馈回传给模型，让模型改了再发，复用 agent 已有的『输出有问题→回传重试』范式（同 loop.py:340 stale_completion_report、JSON 解析重试）。
+
+落地：
+1. 新增 agent/core/img_guard.py：extract_image_srcs（提取 markdown ![]() 与 HTML <img src>，去重保序）+ normalize_img_src（与前端 _resolveRunImgSrc 等价规则：剥 ./、绝对路径/外链/data 判 external 跳过、剥冗余 runs/ 与当前 runId/ 段）+ check_answer_images（归一后 os.path.isfile 检查，破图则按 basename 限定深度3找同名给纠正建议）+ format_feedback（回传消息，含『你是不是想引用 artifacts/xxx.png』）。两边归一规则需与前端保持同步。
+2. loop.py 新增模块级 _img_guard_gate(state,text,hooks)：取 RUN_DIR，无则放行；调 check_answer_images，无破图则清零 _img_guard_rejections 并放行；有破图且计数<IMG_GUARD_RETRY_MAX（默认3，对齐 JSON_PARSE_RETRY_MAX）则 _append_short_term 注入反馈+计数+1+返回 True（调用方 continue 回炉）；达上限放行避免死循环。计数器是『连续』语义（每次无破图清零），避免早期一次误报导致后期所有出口被拦。校验器自身异常一律 catch 后放行，绝不影响主流程。
+3. 两处出口插入：ask_user 分支（存 awaiting_input 之前）和 done 分支（拿 _final 之后、验收门之前）各加 `if _img_guard_gate(state, text, hooks): state.iteration+=1; continue`。
+
+验证：py_compile 通过；端到端 harness（MockState+RUN_DIR=真实 run）跑通四条路径——破图连续回炉 1/3→2/3→3/3 拦截、第4次达上限放行；注入反馈内容正确；无破图放行且计数清零；空文本放行。
+
+遗留：未在真实 run 端到端实机验证（需重启 agent 后让模型真发一条含破图的 ask_user/done 看回炉）；normalize_img_src 与前端 _resolveRunImgSrc 是两份实现，将来改一处需同步另一处（已在两处注释标注）。长驻 agent 进程改 loop.py 需重启才生效。

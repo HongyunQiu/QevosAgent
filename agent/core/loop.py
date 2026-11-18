@@ -26,6 +26,7 @@ from .compression import (
     _apply_runtime_patch,
 )
 from . import graph as _graph
+from . import img_guard as _img_guard
 from . import timing as _timing
 from .artifact_index import register_artifact
 from .confidence import compute_confidence
@@ -1377,6 +1378,12 @@ def run(
                 _nostop  = state.meta.get("nostop", False)
                 _final   = (action.final_answer or "").strip()
 
+                # 图片校验门：done 的 final_answer 里引用的 run 内图片若破图，先回炉让
+                # 模型改，避免用户看到破图标（同 ask_user 出口；上限 IMG_GUARD_RETRY_MAX）
+                if _img_guard_gate(state, _final, hooks):
+                    state.iteration += 1
+                    continue
+
                 # done 可以顺带闭合最后一个节点。先应用再过验收门：出口证据校验
                 # 失败时模型必须看到原因，否则它无从知道图上还挂着一个没关的节点。
                 _done_op, _done_misplaced = _rescue_graph_op(action)
@@ -1720,6 +1727,10 @@ def run(
 
                 if action.tool == "ask_user":
                     q = action.args.get("question") or (result.output or {}).get("question")
+                    # 图片校验门：破图则回炉让模型改，避免用户看到破图标（同 done 出口）
+                    if _img_guard_gate(state, q or "", hooks):
+                        state.iteration += 1
+                        continue
                     state.meta["awaiting_input"] = q or "(no question provided)"
                     state.meta["paused"] = True
                     if hooks.on_error:
@@ -2416,6 +2427,42 @@ def _trim_excess_image_blocks(state: AgentState, keep: int) -> int:
         else:
             msg["content"] = ph
     return dropped
+
+
+def _img_guard_gate(state: AgentState, text: str, hooks: "AgentHooks") -> bool:
+    """图片可达性校验门：在 ask_user / done 内容呈现给用户之前，检测回答里引用的
+    run 内图片是否真的存在。破图则把错误+纠正建议作为 user 反馈注入、回炉让模型改，
+    复用 agent 已有的『输出有问题→回传重试』范式（同 stale_completion_report 上限逻辑）。
+
+    返回 True 表示已拦截（调用方应跳过本次呈现并 continue）；False 表示放行。
+    计数器 _img_guard_rejections 为『连续』回炉次数：每次无破图即清零，避免早期一次
+    误报导致后期所有 ask_user 都被拦。上限 IMG_GUARD_RETRY_MAX（默认 3，对齐 JSON 重试）。
+    """
+    run_dir = os.environ.get("RUN_DIR")
+    if not run_dir or not text:
+        return False
+    run_id = os.path.basename(run_dir.rstrip("/\\"))
+    try:
+        broken = _img_guard.check_answer_images(text, run_dir, run_id)
+    except Exception as e:  # 校验器自身异常绝不影响主流程
+        if hooks.on_error:
+            hooks.on_error(f"[图片校验] 校验器异常已忽略: {e}")
+        return False
+    if not broken:
+        state.meta.pop("_img_guard_rejections", None)  # 无破图 → 清零连续计数
+        return False
+    cap = int(os.environ.get("IMG_GUARD_RETRY_MAX", "3"))
+    n = int(state.meta.get("_img_guard_rejections", 0))
+    if n >= cap:
+        # 达上限仍破图：放行，避免死循环。用户会看到破图，但任务不被卡死。
+        if hooks.on_error:
+            hooks.on_error(f"[图片校验] 仍有 {len(broken)} 张图破图，已达回炉上限 {cap}，放行")
+        return False
+    state.meta["_img_guard_rejections"] = n + 1
+    _append_short_term(state, {"role": "user", "content": _img_guard.format_feedback(broken)})
+    if hooks.on_error:
+        hooks.on_error(f"[图片校验] 检出 {len(broken)} 张破图，已回炉让模型修正（{n+1}/{cap}）")
+    return True
 
 
 def _enforce_image_budget(state: AgentState, hooks: "AgentHooks") -> int:
