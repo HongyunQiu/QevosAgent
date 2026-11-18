@@ -187,3 +187,9 @@
 验证：node --check 内联 JS 0 失败；playwright 离线 harness 端到端，marked+DOMPurify 均加载，IMG_SRC 正确重写为 /api/run-file-raw/{runId}/artifacts/test_chart.png，截图中标题/加粗/列表/表格/代码块/图片全部正确渲染（harness 里图显示破损图标是 file:// 下无该路由的离线限制，真实 dashboard 路由存在即正常加载）。
 
 遗留：未实机在浏览器里用真实 run 数据触发一次黄色框看图片实际加载（dashboard 8765 在跑，但 web_interact 执行体可能为手机连不到 PC，且需真实 run 含图）。改动为前端，serveStatic 实时读盘无构建产物，刷新看板即生效。备份见 runs/20261118-204520/artifacts/index.html.bak。
+
+## 2026-11-18 | 修复看板回答内嵌入图片显示破图标（run-file-raw 前缀重复）
+
+用户反馈：20261118-212125 演示任务最终回答里嵌入的图片显示成破缺图标。排查定位根因：上个任务回答里图片 markdown 的 src 写成了仓库相对路径 runs/20261118-212125/artifacts/demo_image.png（带 runs/ 前缀）。而 dashboard/public/index.html 的 _resolveRunImgSrc 会自动用当前 runId 再拼一次 run 目录（/api/run-file-raw/{runId}/{rel}），后端 server.js:4057 再把 {runId}/{rel} 解析为 runs/{runId}/{rel}，最终变成 runs/20261118-212125/runs/20261118-212125/artifacts/... 路径重复→文件不存在→404→破图标。正确写法应只写相对该 run 目录的路径 artifacts/demo_image.png（不带 runs/runId 前缀）。
+
+修复（防御性，而非只教用户写对）：增强 _resolveRunImgSrc，拼接前剥掉 rel 开头冗余的 runs/ 与紧跟的当前 runId/ 段（startsWith 判断，无正则转义风险），使带 runs/runId 前缀、纯相对、带 runs/、带 ./ 四种写法全部归一到 artifacts/...。run_python 模拟前后端拼接验证四种 src 均 EXISTS=True；node 跑增强函数确认语法正确且输出正确（外链原样保留）。遗留：未在真实浏览器刷新含图 run 实机验证，需用户刷新看板确认；长驻 dashboard 进程改 index.html 后静态资源实时读盘无需重启，但浏览器缓存需刷新。

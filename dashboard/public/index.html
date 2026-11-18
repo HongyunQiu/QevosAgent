@@ -4903,8 +4903,13 @@ function _resolveRunImgSrc(src) {
              || (typeof gState !== 'undefined' && gState && gState.activeRunId);
   if (!src || !runId) return src;
   if (/^(https?:|data:|blob:|\/\/|\/api\/)/i.test(src)) return src;   // 外链/base64/已是API → 原样
-  const rel = src.replace(/^\.\//, '');
+  let rel = src.replace(/^\.\//, '');
   if (/^([A-Za-z]:[\\/]|file:|[\\/])/i.test(rel)) return src;          // 绝对文件系统路径 → 不服务
+  // 容错：agent 常把 run 内图片写成仓库相对路径 runs/<runId>/...，而本函数会自动再拼一次
+  // run 目录，直接拼会得到 runs/<runId>/runs/<runId>/... 重复路径 → 404 破图标。
+  // 这里剥掉冗余的 runs/ 与紧跟的当前 runId/ 段，使两种写法都能正确命中。
+  if (rel.startsWith('runs/')) rel = rel.slice(5);
+  if (rel.startsWith(runId + '/')) rel = rel.slice(runId.length + 1);
   return `/api/run-file-raw/${encodeURIComponent(runId)}/${rel}`;
 }
 
