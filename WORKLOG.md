@@ -170,3 +170,20 @@
 发布 v0.4.2（补丁版本，上一版 v0.4.1）。本次包含 v0.4.1 之后的连接兼容与移动端布局修复：① OpenAI 兼容后端可识别 Google Protobuf 400 和 SDK `TypeError`，修复 `chat_template_kwargs` 降级死循环、错误 `content-length` 及丢失 request extensions；② 参数降级改为按来源隔离、最多 8 步且必须取得进展的有界流程，正常模型连接仍保持单次调用和原请求字典不变；③ 修复折叠屏从横屏旋转到竖屏后，残留面板折叠状态导致主界面只占左侧窄列的问题。
 
 验证：LLM 参数降级新增 9 项回归，全仓 Python 测试 289/289 通过；Dashboard 响应式布局覆盖 4 种视口 × 4 种折叠状态 × 2 种字号模式，32/32 通过。发版沿用 `.github/workflows/release.yml`：提交版本号后打 `v0.4.2` tag，自动构建 Windows、macOS、Linux、Android 四个平台并创建 GitHub Release。
+
+
+## 2026-11-18 | 看板黄色框（ask_user/任务完成/系统提示词）支持 Markdown + 图片渲染
+
+需求：agent 的黄色框回复此前用 escPaths() 纯文本转义，markdown 符号原样显示、无法嵌图，导致 agent 为发图只能去写整个网页（慢）。用户要求所有黄色框支持 markdown 与图片，图片用 run 内文件（非 base64），并解决相对/绝对路径导致的图片破损。
+
+改动（dashboard/public/index.html）：
+- 引入 DOMPurify@3 CDN（与已有 marked@12 同级）。
+- 新增 renderMd(text)：marked.parse → DOMPurify.sanitize（白名单放行 img/a/table/code 等）→ DOMParser 把 <img src> 相对路径重写为 /api/run-file-raw/{runId}/{rel}。复用 web_show 面板（view.html:585-655）已验证的 resolveRunPath 三件套逻辑；外链 http/data/blob/绝对路径原样保留；marked/DOMPurify 任一未加载则回退 escPaths（绝不破坏显示）。
+- 三处黄色框由 escPaths/esc 改 renderMd：ask_user 的 .ev-ask-q、任务完成 done 的 .ev-body、系统提示词 sysprompt。
+- done 的 CSS 去掉 white-space:pre-wrap，补 img/p/ul/table/code 样式。
+
+图片路径破损的解法：不依赖浏览器相对路径解析，统一走后端 /api/run-file-raw/:runId/*（serveFileRanged 带正确 MIME + path.relative 防穿越），与 web_show 一致，从根上消除破损。
+
+验证：node --check 内联 JS 0 失败；playwright 离线 harness 端到端，marked+DOMPurify 均加载，IMG_SRC 正确重写为 /api/run-file-raw/{runId}/artifacts/test_chart.png，截图中标题/加粗/列表/表格/代码块/图片全部正确渲染（harness 里图显示破损图标是 file:// 下无该路由的离线限制，真实 dashboard 路由存在即正常加载）。
+
+遗留：未实机在浏览器里用真实 run 数据触发一次黄色框看图片实际加载（dashboard 8765 在跑，但 web_interact 执行体可能为手机连不到 PC，且需真实 run 含图）。改动为前端，serveStatic 实时读盘无构建产物，刷新看板即生效。备份见 runs/20261118-204520/artifacts/index.html.bak。

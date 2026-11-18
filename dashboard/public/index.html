@@ -513,7 +513,16 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
 .ev-done { background: rgba(227,179,65,0.08); border: 1px solid rgba(227,179,65,0.25); border-radius: 7px; padding: 11px 13px; }
 .ev-done .ev-label { font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--yellow); margin-bottom: 5px; }
-.ev-done .ev-body  { font-size: 12px; color: var(--text); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.ev-done .ev-body  { font-size: 12px; color: var(--text); line-height: 1.6; word-break: break-word; }
+.ev-done .ev-body img, .ev-ask-q img { max-width: 100%; height: auto; border-radius: 6px; margin: 6px 0; display: block; }
+.ev-done .ev-body p, .ev-ask-q p { margin: 0.4em 0; }
+.ev-done .ev-body p:first-child, .ev-ask-q p:first-child { margin-top: 0; }
+.ev-done .ev-body p:last-child, .ev-ask-q p:last-child { margin-bottom: 0; }
+.ev-done .ev-body ul, .ev-done .ev-body ol, .ev-ask-q ul, .ev-ask-q ol { margin: 0.4em 0; padding-left: 1.4em; }
+.ev-done .ev-body code, .ev-ask-q code { background: var(--bg3); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+.ev-done .ev-body pre, .ev-ask-q pre { background: var(--bg3); padding: 8px; border-radius: 5px; overflow-x: auto; margin: 0.4em 0; }
+.ev-done .ev-body table, .ev-ask-q table { border-collapse: collapse; margin: 0.4em 0; font-size: 11px; }
+.ev-done .ev-body th, .ev-done .ev-body td, .ev-ask-q th, .ev-ask-q td { border: 1px solid var(--border); padding: 3px 7px; }
 
 .ev-error { background: rgba(248,81,73,0.07); border-left: 3px solid rgba(248,81,73,0.6); padding: 8px 12px; }
 .ev-error .ev-body { color: #f07070; font-size: 12px; font-style: italic; }
@@ -1778,6 +1787,7 @@ body.app-only .center-pane[id^="cpane-app-"].active { display: flex; }
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script src="/cm6-bundle.js"></script>
 <script src="/ui_i18n.js"></script>
 </head>
@@ -3901,7 +3911,7 @@ function renderSystemPrompt(text) {
   // Collapsed = title row only (content fully hidden); expanded = full content, no cap.
   return `<div class="ev ev-sysprompt">
     <div class="ev-header"><span class="ev-arrow">⚙</span><span class="ev-sysprompt-label">System Prompt</span><span class="ev-tok">${fmtTok(text)}</span></div>
-    <div class="ev-output expanded" id="sysprompt" style="${exp ? '' : 'display:none'}">${esc(text)}</div>
+    <div class="ev-output expanded" id="sysprompt" style="${exp ? '' : 'display:none'}">${renderMd(text)}</div>
     <button class="expand-btn" onclick="toggleSysPrompt(this)">${exp ? '▲ show less' : '▼ show more'}</button>
   </div>`;
 }
@@ -3930,7 +3940,7 @@ function renderAskUserEntry(question, thought, isActiveAsk) {
   return `<div class="ev ev-ask-user${activeCls}"${isActiveAsk ? ' id="evAskActive"' : ''}>
     ${thoughtHtml}
     <div class="ev-ask-label">${uiT('ask_user.label')}</div>
-    <div class="ev-ask-q">${escPaths(question)}</div>
+    <div class="ev-ask-q">${renderMd(question)}</div>
     ${awaitHint}
   </div>`;
 }
@@ -3999,7 +4009,7 @@ function renderEvent(ev, goalHead = '', isActiveAsk = false) {
       </div>`;
     }
     case 'done':
-      return `<div class="ev ev-done"><div class="ev-label">✓ Task complete</div><div class="ev-body">${escPaths(ev.answer || '')}</div></div>`;
+      return `<div class="ev ev-done"><div class="ev-label">✓ Task complete</div><div class="ev-body">${renderMd(ev.answer || '')}</div></div>`;
     case 'error':
       return `<div class="ev ev-error"><div class="ev-body">✗ ${escPaths(ev.text || 'Error occurred')}</div></div>`;
     case 'advisor': {
@@ -4881,6 +4891,54 @@ function escPaths(str) {
     _PATH_RE.lastIndex = last;
   }
   return out + esc(s.slice(last));
+}
+
+// ── 黄色框（ask_user / 任务完成）的 Markdown + 图片渲染 ──────────────────────
+// 复用 web_show 面板（view.html）已验证的图片路径解析机制：相对路径统一重写为
+// /api/run-file-raw/{runId}/{rel}，由后端带正确 MIME + 防穿越地服务，从根上消除
+// 相对/绝对路径导致的图片破损。图片一律用 run 内文件（artifacts/x.png），不用 base64。
+// 把一次匹配收敛成真正的路径；不像路径就返回 null。
+function _resolveRunImgSrc(src) {
+  const runId = (typeof gViewRunId !== 'undefined' && gViewRunId)
+             || (typeof gState !== 'undefined' && gState && gState.activeRunId);
+  if (!src || !runId) return src;
+  if (/^(https?:|data:|blob:|\/\/|\/api\/)/i.test(src)) return src;   // 外链/base64/已是API → 原样
+  const rel = src.replace(/^\.\//, '');
+  if (/^([A-Za-z]:[\\/]|file:|[\\/])/i.test(rel)) return src;          // 绝对文件系统路径 → 不服务
+  return `/api/run-file-raw/${encodeURIComponent(runId)}/${rel}`;
+}
+
+// DOMPurify 配置：在默认安全白名单基础上，额外放行 img 的 src/alt 等属性。
+const _MD_SANITIZE_CFG = {
+  ADD_ATTR: ['src', 'alt', 'title', 'target', 'rel', 'class'],
+  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|data:image|\/api\/):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+};
+
+/** 黄色框正文渲染：markdown → 安全 HTML → 相对图片路径重写到 run-file-raw。
+ *  marked/DOMPurify 任一未加载则回退 escPaths（保持旧行为，绝不破坏显示）。 */
+function renderMd(str) {
+  const s = String(str == null ? '' : str);
+  if (!s) return '';
+  if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') return escPaths(s);
+  try {
+    let html = marked.parse(s);
+    if (typeof DOMPurify.sanitize === 'function') html = DOMPurify.sanitize(html, _MD_SANITIZE_CFG);
+    // 把 <img src="artifacts/x.png"> 等相对路径重写为 /api/run-file-raw/{runId}/...
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.querySelectorAll('img[src]').forEach(img => {
+        img.setAttribute('src', _resolveRunImgSrc(img.getAttribute('src')));
+      });
+      doc.querySelectorAll('a[href]').forEach(a => {
+        const h = a.getAttribute('href');
+        if (h && /^(https?:|mailto:|\/api\/)/i.test(h)) { a.setAttribute('target', '_blank'); a.setAttribute('rel', 'noopener'); }
+      });
+      html = doc.body.innerHTML;
+    } catch { /* DOMParser 失败则用未重写的 html */ }
+    return html;
+  } catch {
+    return escPaths(s);
+  }
 }
 
 /** JSON 字符串值专用：整个值就是一条路径才连接。传进来的是 JSON 字面量原文，
