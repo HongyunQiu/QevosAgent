@@ -164,3 +164,9 @@
 修复集中在错误降级路径：`_try_create_with_param_strip` 改为最多剥离 8 个字段、每轮必须实际取得进展的有界循环，优先读取 `status_code/response.status_code`；新增 `_suppressed_create_params` 与 `_suppressed_extra_body_params`，与原 `_suppressed_params`（仅 SDK 注入的序列化 body 字段）分层缓存；`_call_api` 按来源跳过字段，并补齐 `add_generation_prompt` 的独立守卫。未发生参数拒绝时三个集合均为空，仍只调用一次 `create()`，原请求字典不变。
 
 新增 `test/tests_llm_param_fallback.py` 9 项离线回归：正常兼容后端单次调用及完整请求字典、官方 OpenAI 请求形状、连续结构化 400、TypeError 后继续 400、无进展立即终止、普通异常原对象原样抛出、extra_body 不泄漏顶层、HTTP content-length 重算与 extensions 保留。`py_compile` 通过；新测试 9/9；全仓 `python -m unittest discover -s test -p 'tests_*.py'` 共 289/289 通过。未调用真实付费模型端点；此前正常连接行为由精确请求字典断言覆盖。
+
+## 2026-11-18 | 发版 v0.4.2
+
+发布 v0.4.2（补丁版本，上一版 v0.4.1）。本次包含 v0.4.1 之后的连接兼容与移动端布局修复：① OpenAI 兼容后端可识别 Google Protobuf 400 和 SDK `TypeError`，修复 `chat_template_kwargs` 降级死循环、错误 `content-length` 及丢失 request extensions；② 参数降级改为按来源隔离、最多 8 步且必须取得进展的有界流程，正常模型连接仍保持单次调用和原请求字典不变；③ 修复折叠屏从横屏旋转到竖屏后，残留面板折叠状态导致主界面只占左侧窄列的问题。
+
+验证：LLM 参数降级新增 9 项回归，全仓 Python 测试 289/289 通过；Dashboard 响应式布局覆盖 4 种视口 × 4 种折叠状态 × 2 种字号模式，32/32 通过。发版沿用 `.github/workflows/release.yml`：提交版本号后打 `v0.4.2` tag，自动构建 Windows、macOS、Linux、Android 四个平台并创建 GitHub Release。
