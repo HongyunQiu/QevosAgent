@@ -148,3 +148,11 @@
 验证：verify_real2.py 用真实 OpenAIBackend 连续三次 _call_api(thinking_budget=1000 强制注入 chat_template_kwargs) 全部成功返回，无 TypeError/Connection error/400，_suppressed 最终为空（Google 端点直接接受干净请求）。Google 端点实测：带 chat_template_kwargs 报 400 Unknown name，plain 调用 OK。
 
 遗留：用户需重启 QevosAgent 进程加载新代码（长驻进程不重载字节码=白改，反复踩过的坑）。
+
+## 2026-11-18 | 修复折叠屏旋转后竖屏主界面只占左侧窄列
+
+连接三星折叠屏真机保留现场后确认：Android Activity 与 WebView 尺寸均正常（WebView 1848×2307），没有 FATAL/ANR；异常来自 Dashboard CSS。横屏桌面布局中点过右侧面板折叠后，`.app.right-panel-collapsed` 会在旋转进入竖屏时继续保留。该选择器的优先级高于移动端 `.app` 单列规则，使竖屏仍计算为 `230px 1fr 0` 三列，topbar/events/cmdbar 只占第一列；230 CSS px × 2.625 DPR ≈ 604 物理像素，与现场截图完全吻合。
+
+修复方式：将桌面端左右面板折叠的列宽与隐藏规则整体限制在 `@media (min-width: 769px) and (orientation: landscape)` 内。移动端断点（窄屏或任意竖屏）因此不再受到残留折叠 class 影响，同时桌面横屏折叠行为保持不变。
+
+验证：使用独立 Edge DevTools 会话加载本机 Dashboard，覆盖 4 种视口（704×879 折叠屏竖屏、900×1200 宽竖屏、700×400 窄横屏、1200×800 桌面横屏）× 4 种折叠状态（无/左/右/双侧）× 2 种字号模式（普通/大字），32/32 组合通过；移动端 topbar/events/cmdbar 均占满单列，桌面横屏三列与折叠列宽均符合预期。手机当前连接的 Dashboard 来源是远端 ZeroTier 主机 `172.24.217.34:8765`，不是本机工作树；源代码修复需部署到该主机后，手机端刷新页面才会永久生效。为不中断正在运行的 Agent，又通过 WebView DevTools 向当前页面注入了等价的临时媒体规则：保留 `right-panel-collapsed` 时计算列宽从 `230px 474px 0` 恢复为单列 `704px`，topbar/events/cmdbar 均为 704px，Agent 计时持续运行且页面未刷新。

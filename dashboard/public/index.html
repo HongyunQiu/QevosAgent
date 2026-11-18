@@ -1609,15 +1609,19 @@ mark.sh { background: rgba(210,153,34,0.35); color: inherit; border-radius: 2px;
 
 /* Desktop side-panel controls. The same two topbar buttons become persistent
    collapse controls outside the drawer layout, so panel access is available
-   at every viewport size. */
-.app.left-panel-collapsed { grid-template-columns: 0 1fr 310px; }
-.app.right-panel-collapsed { grid-template-columns: 230px 1fr 0; }
-.app.left-panel-collapsed.right-panel-collapsed { grid-template-columns: 0 1fr 0; }
-.app.left-panel-collapsed .sidebar,
-.app.right-panel-collapsed .right-panel { display: none; }
-body.large-font .app.left-panel-collapsed { grid-template-columns: 0 1fr 248px; }
-body.large-font .app.right-panel-collapsed { grid-template-columns: 184px 1fr 0; }
-body.large-font .app.left-panel-collapsed.right-panel-collapsed { grid-template-columns: 0 1fr 0; }
+   at every desktop viewport size. Keep these higher-specificity column rules
+   out of the drawer layout: foldable rotation can preserve a collapsed class
+   while entering portrait, where it must not override the mobile single column. */
+@media (min-width: 769px) and (orientation: landscape) {
+  .app.left-panel-collapsed { grid-template-columns: 0 1fr 310px; }
+  .app.right-panel-collapsed { grid-template-columns: 230px 1fr 0; }
+  .app.left-panel-collapsed.right-panel-collapsed { grid-template-columns: 0 1fr 0; }
+  .app.left-panel-collapsed .sidebar,
+  .app.right-panel-collapsed .right-panel { display: none; }
+  body.large-font .app.left-panel-collapsed { grid-template-columns: 0 1fr 248px; }
+  body.large-font .app.right-panel-collapsed { grid-template-columns: 184px 1fr 0; }
+  body.large-font .app.left-panel-collapsed.right-panel-collapsed { grid-template-columns: 0 1fr 0; }
+}
 
 /* ── Mobile overlay backdrop ─────────────────────────────────────────────── */
 .mobile-overlay {
