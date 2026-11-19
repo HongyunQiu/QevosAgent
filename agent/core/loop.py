@@ -75,6 +75,48 @@ def _failure_class(text) -> str:
     return base.strip().lower()
 
 
+# shell 类工具：失败时 result.error 通常是 "exit code 1" + stdout，没有 Python
+# 异常类名，_failure_class 会一律归成 "exit code n"——于是 git push / git log /
+# scp / ssh / curl 等**完全不同的命令**只要都因网络/代理失败就指纹相同，被
+# 「同类失败」检测误判为循环（2026-11-19 实测：23 条同类失败触发里多数是模型
+# 在换不同命令应对外部故障，却被判循环）。给 shell 命令补一个「命令指纹」，
+# 只有**同一命令**反复失败才累计，不同命令换策略不触发。
+_SHELL_TOOLS = frozenset({
+    "shell", "terminal_run", "ssh_execute", "remote_shell", "shell_bg",
+})
+
+
+def _shell_cmd_hint(command) -> str:
+    """从 shell 命令串里提取「关键操作」标识，用于失败类指纹区分不同命令。
+
+    返回形如 "git push" / "git ls-remote" / "scp" / "ssh" / "curl" 的短标识；
+    提取不到时返回 "shell"（退化为按工具名归类，仍比纯 exit code 略细）。
+    只关心命令名 + git 子命令，不关心参数细节（参数不同但同一子命令仍算同类）。
+    """
+    if not command or not isinstance(command, str):
+        return "shell"
+    # 按 shell 分隔符切段，跳过纯噪声段（cd/echo/dir/set 等）
+    segs = re.split(r"&&|\|\||\|(?!=)|;|&(?!=)", command)
+    for seg in segs:
+        s = seg.strip().lstrip("@")
+        if not s:
+            continue
+        m = re.match(r"^\s*([A-Za-z][\w.\-]*)", s)
+        if not m:
+            continue
+        name = m.group(1).lower()
+        # 跳过 cd/echo/dir/set/nul 这类非实质命令
+        if name in ("cd", "echo", "dir", "set", "nul", "cd", "timeout", "move"):
+            continue
+        # git 取子命令（push/ls-remote/log/show/diff/commit/...）
+        if name in ("git",):
+            sub = re.match(r"^\s*git\s+(?:-[\w]+\s+)*([A-Za-z][\w-]*)", s)
+            return f"git {sub.group(1).lower()}" if sub else "git"
+        # 其它直接取命令名
+        return name
+    return "shell"
+
+
 def _ensure_user_turn_last(state: AgentState) -> bool:
     """保证 short_term 不以 assistant 结尾，必要时补一条最短的 user 回执。
 
@@ -2697,12 +2739,21 @@ def _build_feedback(action: Action, result: ToolResult, state: Optional["AgentSt
             # 用滑动窗口而非连续计数：真实的卡死是"失败-成功-失败-成功-失败"的
             # 振荡形态，连续计数永远够不到阈值。
             fail_hist = state.meta.setdefault("_fail_class_history", [])
-            fail_hist.append(
-                "" if result.success
-                else f"{action.tool}|{_failure_class(result.error or result.to_str())}"
-            )
+            # shell 类工具：错误几乎总是 "exit code N"，_failure_class 会把
+            # push/log/scp/ssh 等**不同命令**的失败归成同一个 "exit code n"，
+            # 导致模型换不同命令应对外部故障时被误判为「同类失败」循环。
+            # 这里给 shell 命令补上「命令指纹」（命令名 + git 子命令），只有
+            # **同一命令**反复失败才累计，不同命令换策略不再触发。
+            if result.success:
+                _fc_cur = ""
+            else:
+                _fc_base = _failure_class(result.error or result.to_str())
+                if action.tool in _SHELL_TOOLS:
+                    _fc_cur = f"{action.tool}|{_fc_base}|{_shell_cmd_hint(action.args.get('command'))}"
+                else:
+                    _fc_cur = f"{action.tool}|{_fc_base}"
+            fail_hist.append(_fc_cur)
             del fail_hist[:-40]   # 有界，防止 meta 膨胀
-            _fc_cur = fail_hist[-1]
             if _fc_cur and not loop_triggered and not _is_polling:
                 _fc_win = int(os.environ.get("LOOP_FAIL_CLASS_WINDOW", "8"))
                 _fc_thresh = int(os.environ.get("LOOP_FAIL_CLASS_THRESH", "3"))
