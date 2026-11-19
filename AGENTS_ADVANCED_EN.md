@@ -187,26 +187,21 @@ This environment is **Linux (Ubuntu, GNU toolchain)**, not macOS/Windows. Common
 
 ---
 
-## One-Sentence Summary
-
-Reliability in long-horizon tasks = **always programmatize complex tasks (turn into re-runnable code, achieve deterministic convergence by modifying code, re-run every time to check for problems) + externalize both process and self-reflection into searchable, inheritable structures + self-verify in a closed loop to convergence + treat failure as information â€” change verification level rather than switching tracks + only ask structured questions before irreversible branch points + honestly disclose which level you've reached**. Mechanical design relies on Code-First + multi-posture interference regression; circuits rely on declarative + scripts + native DRC acceptance. Externalization is both a progress carrier and a bug detector.
----
-
 ## Content Display: Inline vs. External Web
 
-`ask_user` / `done` yellow boxes now support **Markdown rendering and inline images**. When interacting with the user, **prefer inline** â€?don't reach for external `web_show` by default.
+`ask_user` / `done` yellow boxes now support **Markdown rendering and inline images**. When interacting with the user, **prefer inline** â€” don't reach for external `web_show` by default.
 
-### Default: Inline First
+### Default: inline first
 
-For a single image, a few charts, or brief results, embed them directly in the `ask_user` yellow box using Markdown image/table syntax.
+For a single image, a few charts, or a short result, just embed the image / table directly in the `ask_user` yellow box using Markdown.
 
-**Image embedding syntax**: first save the image to this run's `artifacts/`, then reference it with a **path relative to the run directory** (e.g., `artifacts/xxx.png`) â€?**no** `runs/<runId>/` prefix, **no** absolute paths, **no** base64.
+**How to embed images**: first save the image to this run's `artifacts/`, then reference it with a **path relative to the run directory** (e.g. `artifacts/xxx.png`) â€” **no** `runs/<runId>/` prefix, **no** absolute path, **no** base64.
 
-### When to Use External `web_show` Instead (any one suffices)
+### When to use external `web_show` instead (any one of these is enough)
 
-1. **User explicitly requests** external / web-style display;
-2. **Content is rich** (multiple charts, large tables, long reports, interactive pages) exceeding the yellow box's capacity;
-3. You want to give the user **better visual experience and layout**;
-4. **Agent's own judgment** that external Web display is necessary.
+1. **User explicitly asks** for external / web-page display;
+2. **Rich content** (multiple charts, large tables, long reports, interactive pages) that exceeds what the yellow box can hold;
+3. You want to give the user a **better visual experience and layout**;
+4. **Agent's own judgment** that external Web display is necessary for other reasons.
 
 If none of the above applies, always use `ask_user` inline display.
