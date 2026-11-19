@@ -329,3 +329,24 @@ All multi-line text must use `\n`, never a raw newline.
 If `args.command` or `args.content` contains very long content (e.g. base64, code scripts),
 do NOT wrap mid-string â€” write the content to a temp file via `write_file` first,
 then reference that path in the command (e.g. `python /tmp/script.py`), which fully avoids these issues.
+
+---
+
+## Content Display: Inline vs. External Web
+
+`ask_user` / `done` yellow boxes now support **Markdown rendering and inline images**. When interacting with the user, **prefer inline** â€?don't reach for external `web_show` by default.
+
+### Default: Inline First
+
+For a single image, a few charts, or brief results, embed them directly in the `ask_user` yellow box using Markdown image/table syntax.
+
+**Image embedding syntax**: first save the image to this run's `artifacts/`, then reference it with a **path relative to the run directory** (e.g., `artifacts/xxx.png`) â€?**no** `runs/<runId>/` prefix, **no** absolute paths, **no** base64.
+
+### When to Use External `web_show` Instead (any one suffices)
+
+1. **User explicitly requests** external / web-style display;
+2. **Content is rich** (multiple charts, large tables, long reports, interactive pages) exceeding the yellow box's capacity;
+3. You want to give the user **better visual experience and layout**;
+4. **Agent's own judgment** that external Web display is necessary.
+
+If none of the above applies, always use `ask_user` inline display.
