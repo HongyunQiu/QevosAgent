@@ -69,6 +69,19 @@ const APP_COPY_MAP = [
   { src: path.join(REPO_ROOT, 'ADVISOR.md'),  dest: path.join(VENDOR_APP_DIR, 'ADVISOR.md') },
 ];
 
+// AGENTS_*.md — per-OS/locale variant agent specs (e.g. AGENTS_WIN_CN.md,
+// AGENTS_LINUX_EN.md). Unlike AGENTS.md itself (which is install-overwrite
+// protected so a user's own edits survive an upgrade), these variant files are
+// meant to be *published and refreshed on every install*: the user receives the
+// updated variant docs, so they are deliberately NOT added to the protected
+// path lists in build/preserve-paths.nsh. They are discovered by glob so new
+// OS/locale variants ship automatically without editing this list.
+APP_COPY_MAP.push(...fs
+  .readdirSync(REPO_ROOT)
+  .filter((f) => /^AGENTS_.*\.md$/.test(f) && f !== 'AGENTS.md')
+  .sort()
+  .map((f) => ({ src: path.join(REPO_ROOT, f), dest: path.join(VENDOR_APP_DIR, f) })));
+
 // ── Platform detection ─────────────────────────────────────────────────────
 
 /**

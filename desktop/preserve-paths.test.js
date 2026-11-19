@@ -66,3 +66,55 @@ test('example apps are not install-overwrite protected', () => {
   assert.ok(!protectedPaths.includes('resources/app/vendor/app/apps'));
   assert.ok(preservedPaths.includes('resources/app/vendor/app/apps'));
 });
+
+// AGENTS_*.md — per-OS/locale variant agent specs (e.g. AGENTS_WIN_CN.md).
+// Unlike AGENTS.md itself (protected so a user's own edits survive an upgrade),
+// these variant docs are meant to be published and refreshed on every install:
+// the user receives the updated variant docs. So they must NOT appear in either
+// protected path list — that is what keeps them updatable on install/upgrade.
+test('AGENTS_*.md variant specs are not protected (updatable on install)', () => {
+  const protectedPaths = readMacroPaths('DefineInstallOverwriteProtectedPaths');
+  const preservedPaths = readMacroPaths('DefinePreservePaths');
+
+  const variantPrefix = 'resources/app/vendor/app/AGENTS_';
+  for (const p of [...protectedPaths, ...preservedPaths]) {
+    assert.ok(
+      !p.startsWith(variantPrefix),
+      `${p} must not be protected so AGENTS_*.md stay updatable on install`
+    );
+  }
+  // AGENTS.md itself must remain install-overwrite protected.
+  assert.ok(protectedPaths.includes('resources/app/vendor/app/AGENTS.md'));
+});
+
+// macOS equivalent of the Windows install-overwrite protection: the pkg
+// preinstall/postinstall scripts back up (and later restore) a fixed list of
+// user-modifiable paths so a fresh bundle install does not clobber them.
+// AGENTS.md must be preserved; AGENTS_*.md variant specs must NOT be, so they
+// stay updatable on macOS install/upgrade just like on Windows.
+function readMacosPreservePaths(scriptName) {
+  const raw = fs.readFileSync(
+    path.join(__dirname, 'build', 'pkg-scripts', scriptName), 'utf8');
+  const m = raw.match(/PRESERVE_PATHS=\(([^)]*)\)/s);
+  assert.ok(m, `${scriptName} should define PRESERVE_PATHS`);
+  return m[1].split('\n')
+    .map((line) => line.trim().match(/"([^"]+)"$/))
+    .filter(Boolean)
+    .map(([, p]) => p);
+}
+
+test('macOS preinstall/postinstall preserve AGENTS.md but not AGENTS_*.md', () => {
+  for (const script of ['preinstall', 'postinstall']) {
+    const paths = readMacosPreservePaths(script);
+
+    // AGENTS.md stays protected on macOS (user edits survive an upgrade).
+    assert.ok(paths.includes('AGENTS.md'),
+      `${script}: AGENTS.md must be preserved`);
+
+    // AGENTS_*.md variant specs are not preserved → updatable on install.
+    for (const p of paths) {
+      assert.ok(!/^AGENTS_.*\.md$/.test(p),
+        `${script}: ${p} must not be preserved so AGENTS_*.md stay updatable`);
+    }
+  }
+});

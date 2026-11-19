@@ -244,3 +244,20 @@
 发布 QevosAgent v0.4.3，包含 v0.4.2 之后的黄色框 Markdown 与 run 内图片渲染、图片路径可达性回炉校验、跨域/绝对路径/目录穿越防护、特殊字符路径编码，以及点击图片全屏查看、滚轮/按钮/双指缩放和拖动平移功能。发版前全仓 Python 测试 299/299 通过，Dashboard 内联 JavaScript 语法检查通过。
 
 使用仓库 `release.ps1 0.4.3` 同步 `desktop/package.json`、`desktop/package-lock.json` 和 Android `build.gradle`，生成提交 `c556217` 并推送 `main` 与标签 `v0.4.3`。GitHub Actions 运行 `44346881408` 中 Windows、macOS、Linux、Android 四个平台构建和最终 release job 全部成功，GitHub Release 已创建。现有未提交的 `dashboard/server.js` 代理探测改动和其他未跟踪文件未纳入版本。
+
+## 2026-11-19 | 允许发布并随安装更新 AGENTS_*.md（保持 AGENTS.md 保护机制不变）
+
+需求（承接 20261119-145617 对 AGENTS.md 安装保护机制的调研）：AGENTS.md 本身继续用既有保护机制（安装时备份-恢复不被覆盖、卸载时询问保留），但 AGENTS_*.md（按 OS/语言区分的变体规范，如 AGENTS_WIN_CN.md、AGENTS_LINUX_EN.md 等）要允许发布——即随安装包分发，且安装/升级时用户能拿到更新后的版本。
+
+排查结论：变体文件此前既不分发也不保护。分发由 `desktop/scripts/setup_python.js` 的 `APP_COPY_MAP` 控制（把仓库根目录文件拷进 `vendor/app/` 随包），其中只显式列了 `AGENTS.md` 和 `ADVISOR.md`，没有 `AGENTS_*.md`；保护由 `desktop/build/preserve-paths.nsh` 的两个宏控制（`DefineInstallOverwriteProtectedPaths` 安装时不覆盖、`DefinePreservePaths` 卸载时保留），其中只有 `AGENTS.md`。
+
+改动：
+1. `setup_python.js`：在 `APP_COPY_MAP` 之后用 glob（`readdirSync` 过滤 `^AGENTS_.*\.md$` 且排除 `AGENTS.md`）动态把仓库根目录所有 `AGENTS_*.md` 追加进拷贝清单，新增 OS/语言变体自动随包，无需再改这份清单。当前命中 4 个：AGENTS_LINUX_CN/EN.md、AGENTS_WIN_CN/EN.md。
+2. `preserve-paths.nsh`：**不加** `AGENTS_*.md` 到任何保护宏——这正是『可随安装更新』的关键：不在 `DefineInstallOverwriteProtectedPaths` 里，安装/升级时新版本的变体文件会直接覆盖旧版，用户拿到更新；AGENTS.md 的保护逻辑保持原样不动。
+3. `preserve-paths.test.js`：新增两条回归——①『AGENTS_*.md 变体不被保护（安装时可更新）』，断言 Windows 两个保护宏里都不含 `resources/app/vendor/app/AGENTS_` 前缀路径，同时断言 `AGENTS.md` 仍在安装保护列表（防止误删）；②『macOS preinstall/postinstall 保留 AGENTS.md 但不保留 AGENTS_*.md』，解析 `desktop/build/pkg-scripts/{preinstall,postinstall}` 的 `PRESERVE_PATHS` 数组，断言含 `AGENTS.md` 且不含任何 `AGENTS_*.md`。
+
+macOS 能力确认（用户追加要求）：macOS 的安装保护走 pkg 的 preinstall（备份）/postinstall（恢复）脚本，其 `PRESERVE_PATHS` 只含 AGENTS.md/ADVISOR.md/SKILLS/runs/记忆文件/agent_tools.json，**不含** AGENTS_*.md——与 Windows NSIS 行为一致：AGENTS.md 安装时不被覆盖（用户改动保留），AGENTS_*.md 不被备份/恢复 → 新 bundle 安装时直接覆盖旧版，用户拿到更新。分发集中在 `setup_python.js`（平台无关，填充同一 `vendor/app/`），故 Windows/macOS/Linux 三个平台都随包带上变体文件且都可更新，无需平台各自改动。
+
+验证：`node` 跑 glob 逻辑确认命中 4 个变体文件；`npm test` 9/9 通过（含 Windows + macOS 两条新增回归）；`git diff --check` 无问题。只提交本次三个文件（setup_python.js、preserve-paths.test.js、WORKLOG.md），未纳入其他任务的无关改动（dashboard/server.js、.agents/、apps/*.md、memory/ 等）。
+
+遗留：未实际跑完整 `npm run setup` + `npm run build` 出安装包做端到端验证（会触发 Python 下载/重打包，较重）；逻辑已逐环节坐实（glob 命中 + 拷贝走既有 `copyRecursive` + Windows/macOS 保护列表均不含变体）。下次发版出包后可确认变体文件确实随包且升级时被刷新。
