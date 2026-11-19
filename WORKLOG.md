@@ -261,3 +261,20 @@ macOS 能力确认（用户追加要求）：macOS 的安装保护走 pkg 的 pr
 验证：`node` 跑 glob 逻辑确认命中 4 个变体文件；`npm test` 9/9 通过（含 Windows + macOS 两条新增回归）；`git diff --check` 无问题。只提交本次三个文件（setup_python.js、preserve-paths.test.js、WORKLOG.md），未纳入其他任务的无关改动（dashboard/server.js、.agents/、apps/*.md、memory/ 等）。
 
 遗留：未实际跑完整 `npm run setup` + `npm run build` 出安装包做端到端验证（会触发 Python 下载/重打包，较重）；逻辑已逐环节坐实（glob 命中 + 拷贝走既有 `copyRecursive` + Windows/macOS 保护列表均不含变体）。下次发版出包后可确认变体文件确实随包且升级时被刷新。
+
+
+## 2026-11-19 | 修复循环侦测『同类失败』对 shell 命令的误报
+
+背景：用户反馈循环侦测容易误触发，导致模型频繁 ask_user、工作无法持续。分析 agent/core/loop.py 的 _build_feedback 循环侦测 + 50 条实际运行日志触发实例（runs/*/short_term.jsonl），确认存在系统性误报。
+
+核心发现：50 条触发里『同类失败』占 23 条(46%)，是误报主来源。根因 = _failure_class(loop.py L51) 把错误压成指纹：有 Python 异常类名就用类名，没有就取错误文本第一行。shell 命令失败的 error 是 "exit code 1"，无异常类名 → git push / ls-remote / log / scp / ssh / curl 等**完全不同的命令**只要都因网络/代理间歇故障失败，指纹全是 "exit code n"（run_python 实证六种命令指纹完全相同）。模型连续做 3 个不同命令且都因外部故障失败 → 触发『同类失败』循环，但模型其实是在**换策略推进**（push失败→验证→SSH绕行→scp），被误判为原地打转。
+
+误报→频繁ask_user 链路：单次触发不直接问用户，而是 advisor 介入一次(置 _advisor_tried_for_loop)。误报触发消耗这次机会；advisor 介入后模型仍在合理推进(换不同命令)却再次被误报触发 → 立即暂停 ask_user。外部网络故障期间模型反复换策略推进却被反复打断。
+
+修复(commit dd2a8c0, agent/core/loop.py)：① 新增 _SHELL_TOOLS 集合 + _shell_cmd_hint(command) 函数——从 shell 命令串提取关键操作标识(git push / git ls-remote / scp / ssh / curl 等，跳过 cd/echo/dir 噪声段，git 取子命令)；② 改 B' 段 fail_hist.append：对 shell 工具，失败类指纹 = tool|_failure_class|_shell_cmd_hint(command)，不同命令不同指纹不再累计，只有**同一命令**反复失败才触发；非 shell 工具保持原指纹不变。
+
+验证(runs/20261119-202101/artifacts/verify_fix.py, 4 场景全 PASS)：① 模型换不同命令应对外部故障 → 未触发(误报消除)；② 同一 git push 反复失败3次 → 正确触发(真循环仍拦截)；③ Python 异常同类失败 → 正确触发(非shell路径不受影响)；④ 连续相同命令+参数 → A连续检测仍生效。py_compile 通过。
+
+实证案例(误报)：20261115-202100(18次,push/ls-remote/log/scp/ssh 全是不同操作因代理故障)、20261116-102337(4次,Gitea 502)。真冗余案例：20261115-185327(重复commit/push)、20261115-175554(重复push)。
+
+遗留/下一步：① 长驻 agent 进程需重启才加载新代码，实机端到端待重启验证；② 其它误报来源(连续重复/振荡/记账空转)未深入，本次聚焦最大来源(同类失败46%)；③ 可进一步对网络/代理类瞬态故障加语义豁免、对 shell 放宽阈值、advisor 介入后换命令重置已求助标记(报告 loop_detection_analysis.md 已列建议)。
