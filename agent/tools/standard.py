@@ -3229,6 +3229,12 @@ def tool_panel_control(state: AgentState, app: str, action: str, selector: str =
       eval     — 在面板内求值 code（表达式，返回可 JSON 序列化的值）
       listControls — 自动枚举面板内所有可交互控件（button/input/select/textarea/[onclick]/[role=button]等），
                    返回 [{selector, tag, text, type, enabled}, ...] 清单，agent 可据此逐个 click/fill
+      status   — 查询 APP 当前健康/异常状态（全局错误捕获的环形缓冲）：
+                   {ok, app, errorCount, newCount, lastErrorAt, errors:[{ts,seq,kind,msg,stack}]}。
+                   args 可带 sinceTs（毫秒时间戳）只看该时刻之后的新错误。alias: diagnostics。
+    异常感知：每次操控（click/eval 等）返回的 output 可能附带 newErrors 字段——本次操作期间
+    APP 全局捕获到的新运行时错误（uncaught/unhandledrejection/resource/console.error），
+    使 Agent 在操作后立刻感知 APP 是否出事，无需额外查询。
     root: （可选）项目根绝对路径，同 openProject 的 root。
     """
     import urllib.request as _ur
@@ -3268,17 +3274,27 @@ def tool_panel_control(state: AgentState, app: str, action: str, selector: str =
         return ToolResult(success=False, output=None, error=result.get("error") or "面板控制失败")
 
     res = result.get("result")
+    # newErrors：本次操控期间 APP 全局错误捕获到的新运行时错误（bridge 附带）。
+    # 暴露给 Agent，使其在操作后立刻感知 APP 是否出事（无需额外查询）。
+    new_errors = result.get("newErrors") or None
+
+    def _with_new_errors(output):
+        if new_errors:
+            output = dict(output) if isinstance(output, dict) else {"result": output}
+            output["newErrors"] = new_errors
+        return output
+
     # screenshot + inject=True：把面板渲染图直接注入上下文，LLM 下一轮即可"看到"。
     if action == "screenshot" and isinstance(res, dict) and res.get("image"):
         if inject:
             from ..core.llm import image_block as _image_block
             return ToolResult(
                 success=True,
-                output=f"面板截图完成（app={app}，DOM 渲染，非像素抓屏）",
+                output=_with_new_errors(f"面板截图完成（app={app}，DOM 渲染，非像素抓屏）"),
                 content_blocks=[_image_block(res["image"], res.get("mime") or "image/png")],
             )
-        return ToolResult(success=True, output={"image_len": len(res["image"]), "mime": res.get("mime")})
-    return ToolResult(success=True, output={"result": res})
+        return ToolResult(success=True, output=_with_new_errors({"image_len": len(res["image"]), "mime": res.get("mime")}))
+    return ToolResult(success=True, output=_with_new_errors({"result": res}))
 
 
 # ── APP 工具（用户态可执行程序，陈列在 Dashboard 的 Apps Tab）─────────────────

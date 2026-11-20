@@ -2997,6 +2997,122 @@ const server = http.createServer(async (req, res) => {
         url = new URL(base + '/models');
       } catch { json(200, { ok: false, error: 'URL 格式无效' }); return; }
       const mod = url.protocol === 'https:' ? require('https') : require('http');
+      // Guard: the response must be written exactly once. The end/timeout/error
+      // callbacks can race (a slow cross-border link hits the 8s timeout first,
+      // preq.destroy() then makes Node emit a follow-up 'error' on the already
+      // destroyed ClientRequest), and without this guard each callback calls
+      // json() again -> ERR_HTTP_HEADERS_SENT uncaught in the Electron main process.
+      let responded = false;
+      const respond = (status, obj) => { if (responded) return; responded = true; try { json(status, obj); } catch { /* already sent */ } };
+
+      // ── helper: resolve proxy URL reliably ─────────────────────────────
+      // The Electron main process may inherit a stale/empty env block (session
+      // not refreshed after the proxy was changed in HKCU\Environment). Read the
+      // persisted User registry value as a fallback so the probe always finds
+      // the proxy the user actually configured.
+      const readProxyFromRegistry = () => {
+        try {
+          const out = execFileSync('reg', ['query', 'HKCU\\Environment', '/v', 'HTTPS_PROXY'], { encoding: 'utf8', timeout: 3000 });
+          const m = out.match(/HTTPS_PROXY\s+REG_SZ\s+(\S+)/);
+          return m ? m[1].trim() : '';
+        } catch { return ''; }
+      };
+      // Prefer the persisted registry value over the inherited process.env:
+      // the Electron process may carry a stale/empty env block from before the
+      // proxy was changed (e.g. an old 127.0.0.1:2080 sing-box cascade), so the
+      // registry is the single most reliable source of the user's real proxy.
+      const getProxyUrl = () => {
+        const reg = readProxyFromRegistry();
+        if (reg) return reg;
+        return (process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy || '').trim();
+      };
+
+      // ── helper: is the target host a local/LAN address (must stay direct) ──
+      const isLocalHost = (h) => {
+        h = (h || '').toLowerCase();
+        return h === 'localhost' || h === '127.0.0.1' || h.startsWith('127.') ||
+               h.startsWith('192.168.') || h.startsWith('10.') ||
+               /^172\.(1[6-9]|2\d|3[01])\./.test(h) || h === '::1';
+      };
+
+      // ── helper: parse proxy "http://host:port" -> {host, port} ──────────
+      const parseProxy = (pu) => {
+        try { const u = new URL(pu.includes('://') ? pu : 'http://' + pu); return { host: u.hostname, port: Number(u.port) || 80 }; } catch { return null; }
+      };
+
+      // ── helper: HTTPS probe through an HTTP CONNECT tunnel (zero-dep) ────
+      const probeViaProxy = (targetUrl, key, timeoutMs, done) => {
+        const px = parseProxy(getProxyUrl());
+        if (!px) { done({ error: 'no proxy configured' }); return; }
+        const tHost = targetUrl.hostname;
+        const tPort = targetUrl.port || 443;
+        const tPath = targetUrl.pathname + targetUrl.search;
+        const net = require('net'); const tls = require('tls');
+        let settled = false; const finish = (r) => { if (!settled) { settled = true; try { done(r); } catch { /* ignore */ } } };
+        const sock = net.connect(px.port, px.host);
+        sock.setTimeout(timeoutMs);
+        const cleanup = () => { try { sock.destroy(); } catch { /* ignore */ } };
+        sock.on('timeout', () => { sock.on('error', () => {}); cleanup(); finish({ error: '连接超时' }); });
+        sock.on('error', (e) => { cleanup(); finish({ error: e.message }); });
+        sock.once('connect', () => {
+          sock.write(`CONNECT ${tHost}:${tPort} HTTP/1.1\r\nHost: ${tHost}:${tPort}\r\n\r\n`);
+        });
+        let headerBuf = Buffer.alloc(0); let inTunnel = true;
+        sock.on('data', (chunk) => {
+          if (!inTunnel) return;
+          headerBuf = Buffer.concat([headerBuf, chunk]);
+          const idx = headerBuf.indexOf('\r\n\r\n');
+          if (idx < 0) return;
+          const head = headerBuf.slice(0, idx).toString('latin1');
+          if (!/HTTP\/1\.[01] 200/.test(head.split('\r\n')[0])) { cleanup(); finish({ error: 'proxy CONNECT failed: ' + head.split('\r\n')[0] }); return; }
+          inTunnel = false;
+          sock.removeAllListeners('data');
+          const rest = headerBuf.slice(idx + 4);
+          const tlsSock = tls.connect({ socket: sock, servername: tHost }, () => {
+            tlsSock.setTimeout(0);
+            tlsSock.write(`GET ${tPath} HTTP/1.1\r\nHost: ${tHost}\r\nAuthorization: Bearer ${key || 'local'}\r\nConnection: close\r\n\r\n`);
+          });
+          tlsSock.setTimeout(timeoutMs);
+          let raw = rest.length ? rest : Buffer.alloc(0); let status = 0; let bodyStart = -1;
+          tlsSock.on('data', (d) => {
+            raw = Buffer.concat([raw, d]);
+            if (bodyStart < 0) {
+              const h = raw.indexOf('\r\n\r\n');
+              if (h >= 0) { const hs = raw.slice(0, h).toString('latin1').split('\r\n')[0]; const mm = hs.match(/ (\d{3})/); status = mm ? Number(mm[1]) : 0; bodyStart = h + 4; }
+            }
+          });
+          const emit = () => { const body = bodyStart >= 0 ? raw.slice(bodyStart).toString('utf8') : ''; finish({ status, body }); };
+          tlsSock.on('end', emit);
+          tlsSock.on('close', emit);
+          tlsSock.on('timeout', () => { tlsSock.on('error', () => {}); cleanup(); finish({ error: '连接超时' }); });
+          tlsSock.on('error', (e) => { cleanup(); finish({ error: e.message }); });
+        });
+      };
+
+      const handleProbeResult = (res) => {
+        try {
+          if (res && res.status >= 200 && res.status < 300) {
+            let models = [];
+            try { const j = JSON.parse(res.body); if (Array.isArray(j.data)) models = j.data.map(m => m.id || m.name).filter(Boolean); } catch { /* non-JSON, ignore */ }
+            respond(200, { ok: true, status: res.status, models });
+          } else if (res && res.status) {
+            respond(200, { ok: false, status: res.status, error: `HTTP ${res.status}` });
+          } else {
+            respond(200, { ok: false, error: (res && res.error) || 'unknown error' });
+          }
+        } catch { /* swallow */ }
+      };
+
+      // Decide: cross-border public https target + proxy available -> go via proxy;
+      // local/LAN or http or no proxy -> direct (preserve original behaviour).
+      const proxyUrl = getProxyUrl();
+      const needProxy = url.protocol === 'https:' && !isLocalHost(url.hostname) && !!proxyUrl && !!parseProxy(proxyUrl);
+
+      if (needProxy) {
+        probeViaProxy(url, apiKey, 15000, handleProbeResult);
+        return;
+      }
+
       const preq = mod.request({
         hostname: url.hostname,
         port:     url.port || (url.protocol === 'https:' ? 443 : 80),
@@ -3009,20 +3125,22 @@ const server = http.createServer(async (req, res) => {
         pres.setEncoding('utf8');
         pres.on('data', c => { body += c; });
         pres.on('end', () => {
-          if (pres.statusCode >= 200 && pres.statusCode < 300) {
-            let models = [];
-            try {
-              const j = JSON.parse(body);
-              if (Array.isArray(j.data)) models = j.data.map(m => m.id || m.name).filter(Boolean);
-            } catch { /* non-JSON, ignore */ }
-            json(200, { ok: true, status: pres.statusCode, models });
-          } else {
-            json(200, { ok: false, status: pres.statusCode, error: `HTTP ${pres.statusCode}` });
-          }
+          try {
+            if (pres.statusCode >= 200 && pres.statusCode < 300) {
+              let models = [];
+              try {
+                const j = JSON.parse(body);
+                if (Array.isArray(j.data)) models = j.data.map(m => m.id || m.name).filter(Boolean);
+              } catch { /* non-JSON, ignore */ }
+              respond(200, { ok: true, status: pres.statusCode, models });
+            } else {
+              respond(200, { ok: false, status: pres.statusCode, error: `HTTP ${pres.statusCode}` });
+            }
+          } catch { /* swallow async callback errors */ }
         });
       });
-      preq.on('timeout', () => { preq.destroy(); json(200, { ok: false, error: '连接超时' }); });
-      preq.on('error',   err => json(200, { ok: false, error: err.message }));
+      preq.on('timeout', () => { preq.on('error', () => {}); preq.destroy(); respond(200, { ok: false, error: '连接超时' }); });
+      preq.on('error',   err => { try { respond(200, { ok: false, error: err.message }); } catch { /* ignore */ } });
       preq.end();
     } catch (e) { json(500, { error: String(e) }); }
     return;
@@ -3595,12 +3713,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /api/panel-control-result   body: { id, ok, result, error }  (panel → server)
+  // POST /api/panel-control-result   body: { id, ok, result, error, newErrors? }  (panel → server)
+  // newErrors：本次操控期间 APP 全局错误捕获到的新运行时错误（bridge 附带），透传给 Agent。
   if (req.method === 'POST' && req.url === '/api/panel-control-result') {
     try {
-      const { id, ok, result, error } = JSON.parse(await readBody(req));
+      const { id, ok, result, error, newErrors } = JSON.parse(await readBody(req));
       const p = panelCtlPending.get(id);
-      if (p) { clearTimeout(p.timer); panelCtlPending.delete(id); p.resolve({ ok: ok !== false, result, error }); }
+      if (p) { clearTimeout(p.timer); panelCtlPending.delete(id); p.resolve({ ok: ok !== false, result, error, newErrors: newErrors || null }); }
       json(200, { ok: true });
     } catch (e) { json(500, { error: String(e) }); }
     return;

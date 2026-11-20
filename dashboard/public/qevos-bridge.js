@@ -71,6 +71,60 @@
     return '?' + keys.map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(p[k]); }).join('&');
   }
 
+  // ── 全局异常捕获 + 诊断（供 Agent 感知 APP 运行时错误，无需 APP 主动埋点）──
+  // 桥是共享 SDK，所有内置 APP 自动获得：window 级未捕获异常 / 资源加载失败 /
+  // unhandledrejection / console.error 都被收集进环形缓冲，并 emit('app-error') 落
+  // panel_events.jsonl 持久化。Agent 经 panel_control 的 status action 或每次操控
+  // 结果附带项查询『自上次操作以来的新错误』，从而在操作后立刻知道 APP 是否出事。
+  var ERR_MAX = 50;
+  var errLog = [];
+  var errSeq = 0;
+  var lastCtlAt = 0;
+  function _pushErr(kind, msg, stack) {
+    var entry = { ts: Date.now(), seq: ++errSeq, kind: kind, msg: String(msg).slice(0, 500), stack: (stack ? String(stack).slice(0, 1500) : '') };
+    errLog.push(entry);
+    if (errLog.length > ERR_MAX) errLog.splice(0, errLog.length - ERR_MAX);
+    try {
+      fetch('/api/panel-event', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app: APP, event: 'app-error', data: entry, root: ROOT || undefined }),
+      }).catch(function () {});
+    } catch (_) {}
+  }
+  window.addEventListener('error', function (e) {
+    if (e && e.error) _pushErr('uncaught', e.error.message || e.message, e.error.stack);
+    else if (e && e.target && e.target !== window) _pushErr('resource', '资源加载失败: ' + (e.target.src || e.target.href || e.target.tagName || e.target), '');
+    else _pushErr('window-error', (e && e.message) || 'window error', (e && e.filename) ? (e.filename + ':' + e.lineno) : '');
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e && e.reason;
+    _pushErr('unhandledrejection', (r && r.message) || String(r), (r && r.stack) || '');
+  });
+  (function () {
+    var origErr = console.error;
+    console.error = function () {
+      try { origErr.apply(console, arguments); } catch (_) {}
+      try {
+        var parts = Array.prototype.slice.call(arguments).map(function (x) {
+          if (x instanceof Error) return x.message + (x.stack ? ' | ' + x.stack : '');
+          if (typeof x === 'object' && x !== null) { try { return JSON.stringify(x).slice(0, 300); } catch (_) { return String(x); } }
+          return String(x);
+        });
+        _pushErr('console.error', parts.join(' ').slice(0, 500), '');
+      } catch (_) {}
+    };
+  })();
+  function getDiagnostics(sinceTs) {
+    var since = sinceTs || 0;
+    var items = errLog.filter(function (e) { return e.ts > since; });
+    return {
+      ok: true, app: APP, errorCount: errLog.length, newCount: items.length,
+      lastErrorAt: errLog.length ? errLog[errLog.length - 1].ts : null,
+      errors: items.slice(-20),
+    };
+  }
+  function newErrorsSince(ts) { return getDiagnostics(ts).errors; }
+
   async function req(method, url, body) {
     var opt = { method: method };
     if (body !== undefined) {
@@ -204,20 +258,31 @@
       case 'screenshot': return screenshot(a);
       case 'eval':    return (0, eval)(a.code);   // expression; returns JSON-serializable value
       case 'listControls': return listControls(a);
+      // status / diagnostics：返回 APP 当前健康/异常状态（全局错误捕获的环形缓冲）。
+      // sinceTs(毫秒) 可选：只看该时间戳之后的新错误；缺省返回全部（最近20条）。
+      case 'status':      case 'diagnostics': return getDiagnostics(a.sinceTs);
       default: throw new Error('未知控制动作: ' + action);
     }
   }
   async function handleCtl(msg) {
+    var t0 = Date.now();   // 操作起点：操作后用它过滤『本次操作期间新出现的错误』
     var out = { id: msg.id, ok: true, result: null };
     try { out.result = await runCtl(msg.action, msg.args || {}); }
     catch (e) { out.ok = false; out.error = String((e && e.message) || e); }
     try { JSON.stringify(out.result); } catch (_) { out.result = String(out.result); }  // keep serializable
+    // 附带『自本次操作开始以来 APP 新捕获的运行时错误』——Agent 操作后立刻感知异常，
+    // 无需额外查询。这是用户核心诉求：操作后知道那边有没有出事。
+    try {
+      var ne = newErrorsSince(t0);
+      if (ne.length) out.newErrors = ne;   // 仅在有新错误时附带，避免每次回传空数组
+    } catch (_) {}
     try {
       await fetch('/api/panel-control-result', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: out.id, ok: out.ok, result: out.result, error: out.error }),
+        body: JSON.stringify({ id: out.id, ok: out.ok, result: out.result, error: out.error, newErrors: out.newErrors || null }),
       });
     } catch (_) { /* server gone */ }
+    lastCtlAt = Date.now();
   }
 
   window.qevos = {
@@ -271,6 +336,12 @@
     emit: async function (event, data) {
       return req('POST', '/api/panel-event', { app: APP, event: event, data: data || {}, root: ROOT || undefined });
     },
+
+    // 诊断：返回 APP 当前运行时健康/异常状态（全局错误捕获的环形缓冲）。
+    // sinceTs(毫秒) 可选：只看该时间戳之后的新错误；缺省返回全部（最近20条）。
+    // 返回 {ok, app, errorCount, newCount, lastErrorAt, errors:[{ts,seq,kind,msg,stack}]}。
+    // Agent 也可经 panel_control 的 status action 查询同一数据。
+    diagnostics: function (sinceTs) { return getDiagnostics(sinceTs); },
 
     // 受管 sidecar RPC(App frontmatter 声明 sidecar: worker.py 后可用;见 SKILLS/ui_app.md §4.5)。
     // 平台负责 worker 进程启停;超时秒数经 opts.timeout 传(缺省 30s)。失败抛 Error。
