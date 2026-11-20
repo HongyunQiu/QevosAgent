@@ -200,8 +200,16 @@ function run(cmd, opts = {}) {
  */
 function extract(archivePath, format) {
   if (format === 'zip') {
+    // Use .NET's ZipFile.ExtractToDirectory (2-arg overload) directly instead of
+    // the PowerShell Expand-Archive module. On recent GitHub Actions windows-latest
+    // runners, the Microsoft.PowerShell.Archive module's Expand-Archive internally
+    // calls ExtractToDirectory with a 3-arg overload (compressionLevel) that is not
+    // available on the runner's .NET runtime, failing with
+    // "Cannot find an overload for ExtractToDirectory and the argument count: 3"
+    // (MethodCountCouldNotFindBest). The 2-arg .NET overload is stable across
+    // runtimes. VENDOR_DIR is pre-created empty by main(), so no -Force needed.
     run(
-      `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${VENDOR_DIR}' -Force"`
+      `powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('${archivePath}', '${VENDOR_DIR}')"`
     );
   } else {
     // tar.gz: extract to vendor/ — tarball's top-level dir is `python/`
