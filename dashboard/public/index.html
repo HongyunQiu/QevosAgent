@@ -3657,10 +3657,10 @@ function renderRunsList(runs, activeId) {
   // 置顶：当前正在运行的对话（live run）单独提到所有分组之上，分类多时也能一眼找到。
   // 同时把它加入 grouped 并在各分组 members 中排除，避免在下方分组/未分组里重复出现。
   let topHtml = '';
-  // 置顶对象：Agent 正在运行时优先置顶 live run（正在做的对话）；
-  // 空闲时置顶用户当前选中查看的 run。两种『当前对话』的理解都能被提到分组之上。
-  const pinnedId = (liveId && runSet.has(liveId)) ? liveId
-                 : (activeId && runSet.has(activeId) ? activeId : null);
+  // 置顶对象：仅当 Agent 正在运行（存在 live run）时，把正在做的对话置顶为『当前任务』。
+  // 空闲（无 live run）时不置顶用户选中的 run——选中任务仍留在原处按时间排序，
+  // 自然成为列表最上方的『最近任务』，避免点击任务被提到顶部打乱排序。
+  const pinnedId = (liveId && runSet.has(liveId)) ? liveId : null;
   if (pinnedId) {
     const topRow = row(pinnedId);
     if (topRow) topHtml = `<div class="runs-pinned"><div class="runs-pinned-head"><span class="caret">▾</span><span class="runs-pinned-name">当前任务</span></div>${topRow}</div>`;
