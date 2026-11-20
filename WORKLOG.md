@@ -278,3 +278,14 @@ macOS 能力确认（用户追加要求）：macOS 的安装保护走 pkg 的 pr
 实证案例(误报)：20261115-202100(18次,push/ls-remote/log/scp/ssh 全是不同操作因代理故障)、20261116-102337(4次,Gitea 502)。真冗余案例：20261115-185327(重复commit/push)、20261115-175554(重复push)。
 
 遗留/下一步：① 长驻 agent 进程需重启才加载新代码，实机端到端待重启验证；② 其它误报来源(连续重复/振荡/记账空转)未深入，本次聚焦最大来源(同类失败46%)；③ 可进一步对网络/代理类瞬态故障加语义豁免、对 shell 放宽阈值、advisor 介入后换命令重置已求助标记(报告 loop_detection_analysis.md 已列建议)。
+## 2026-11-20 | 修复 v0.4.5 CI 编译错误 (windows-latest Expand-Archive 失败)
+
+**问题**：v0.4.5 发版后 GitHub Actions CI 在 windows-latest 的 `npm run build` 步骤 exit 1。真实报错在 `Setup embedded Python` 步骤：PowerShell `Expand-Archive` 报 `Cannot find an overload for "ExtractToDirectory" and the argument count: "3"` (MethodCountCouldNotFindBest)，导致 python embeddable zip 没解压成功，`python311._pth` 不存在，setup 失败。
+
+**为何这次才出现（用户追问）**：`git log v0.4.4..v0.4.5 -- desktop/scripts/setup_python.js` 为空 → v0.4.4→v0.4.5 之间 setup_python.js 零改动，extract 逻辑完全相同（都是 `Expand-Archive ... -Force`）。∴ **不是代码改动导致**，是 GitHub Actions `windows-latest` runner 镜像在两次构建间被更新（PowerShell 7/.NET 运行时版本漂移），使 `Microsoft.PowerShell.Archive` 模块的 `Expand-Archive` 内部调用的 `ExtractToDirectory` 三参数重载（带 compressionLevel）在新运行时上不可用。典型 CI 环境漂移（runner image drift）。
+
+**修复**：`desktop/scripts/setup_python.js` 的 `extract()` zip 分支从 `Expand-Archive` 改为直接调用 .NET 两参数 `[System.IO.Compression.ZipFile]::ExtractToDirectory(src, dest)`，绕开有问题的 PowerShell 模块。两参数重载跨运行时稳定。VENDOR_DIR 已被 main() 预先 rm+mkdir 为空目录，无需 -Force。commit 976adfb。
+
+**验证**：本地轻量验证（Compress-Archive 建小 zip → 新 .NET 2参数命令解压 → returncode=0/无 stderr/文件正确解出）。发版 v0.4.6（commit fafe914, tag v0.4.6 推 origin 触发 CI），CI Build & Release #81 全绿成功（浏览器截图确认 + 用户确认）。
+
+**踩坑**：`desktop/scripts` 被 .gitignore 的 `scripts/` 规则忽略，已跟踪文件用 `git add -f` 强制暂存。本环境无 GitHub token/gh CLI，查 CI 状态改用浏览器（web_interact 手机执行体）打开 GitHub Actions 页面截图。
